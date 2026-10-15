@@ -4,6 +4,7 @@ import { asCoreError } from "../../ipc/api";
 import type { Group } from "../../ipc/bindings/Group";
 import { emptyGroup, useHosts } from "../../stores/hosts";
 import { Button, Field, Modal, Select, TextInput } from "../../ui/primitives";
+import { RefreshFields } from "./RefreshFields";
 
 const COLORS = ["#FF7A7A", "#F2BA45", "#57C994", "#8AB4FF", "#C792EA", "#7FDBCA", "#A3ADC2"];
 
@@ -102,6 +103,7 @@ export function GroupEditor({ group, onClose }: { group: Group | null; onClose: 
           ))}
         </Select>
       </Field>
+      <RefreshFields value={g.refresh} onChange={(refresh) => setG({ ...g, refresh })} parentGroupId={g.parent_id} />
       {err && <div className="text-prod-fg">{err}</div>}
     </Modal>
   );

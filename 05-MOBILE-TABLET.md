@@ -1,12 +1,12 @@
 # 05 — Mobile (Android first) & Tablet
 
-The phone is for **checking and quick actions**, not long typing sessions. Same `rook-core`, same vault, same backup file, stricter power/data rules.
+The phone is for **checking and quick actions**, not long typing sessions. Same `rookery-core`, same vault, same backup file, stricter power/data rules.
 
 ---
 
 ## 1. Technology
-- **Tauri 2 mobile** (Android) with the same React app, responsive layouts (phone / tablet breakpoints), `rook-core` compiled for `aarch64-linux-android`.
-- If Tauri mobile falls short (WebView performance for xterm, background limits): expose `rook-core` through **UniFFI** and build a Kotlin (Compose) UI. The core API must stay UI-agnostic from day one (no Tauri types in `rook-core`).
+- **Tauri 2 mobile** (Android) with the same React app, responsive layouts (phone / tablet breakpoints), `rookery-core` compiled for `aarch64-linux-android`.
+- If Tauri mobile falls short (WebView performance for xterm, background limits): expose `rookery-core` through **UniFFI** and build a Kotlin (Compose) UI. The core API must stay UI-agnostic from day one (no Tauri types in `rookery-core`).
 - Terminal: xterm.js in WebView is acceptable for short sessions; evaluate early (v0.1 spike) on a mid-range phone.
 - iOS after Android (same path; Keychain + Face ID via `robius-authentication`).
 
@@ -48,7 +48,7 @@ Tablet landscape mirrors desktop: Overview · Terminal · Docker · Files · Log
 ---
 
 ## 6. First run & data
-- Create or **Restore from Google Drive** (same OAuth PKCE flow via Custom Tabs) or import a `.rookbackup` from the file picker. Enter master password once → set PIN → enable fingerprint.
+- Create or **Restore from Google Drive** (same OAuth PKCE flow via Custom Tabs) or import a `.rookerybackup` from the file picker. Enter master password once → set PIN → enable fingerprint.
 - Vault format identical to desktop; `VK` wrapped by PIN/biometric key in Android Keystore.
 
 ---

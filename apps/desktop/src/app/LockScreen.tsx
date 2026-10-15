@@ -160,7 +160,7 @@ function PinUnlock({
 
   return (
     <div className="flex w-full flex-col items-center gap-4">
-      <Title title="Rook is locked" sub="Type your PIN — opens on the last digit" />
+      <Title title="Rookery is locked" sub="Type your PIN — opens on the last digit" />
       <div className={clsx("w-full", shake && "shake")}>
         <PinField ref={inputRef} value={pin} onChange={change} maxLength={pinLength} bad={!!msg?.bad && pin === ""} disabled={busy} />
       </div>

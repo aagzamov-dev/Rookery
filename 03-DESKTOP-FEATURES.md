@@ -15,7 +15,7 @@ Every section says **when it loads**, **what it keeps**, and **what it costs the
 - Plain text → searches hosts, snippets, open tabs.
 
 ### 1.3 Icon rail (always visible)
-Hosts · Dashboard · Snippets · Tunnels · Hosts & identities · (spacer) · Lock · Settings.
+Hosts · Dashboard · Snippets · Tunnels · Hosts & identities · Keyboard shortcuts · (spacer) · Lock · Settings.
 - Hosts toggles the host list panel. Others open/focus their **page tab**.
 
 ### 1.4 Host list panel (collapsible, remembers width)
@@ -71,9 +71,11 @@ Hosts · Dashboard · Snippets · Tunnels · Hosts & identities · (spacer) · L
 - Theme per server/group/global; iTerm2 color scheme importer (`.itermcolors` → xterm theme). Font family/size, ligatures, cursor style, padding, optional background transparency/vibrancy.
 - PROD tint: subtle red top border + red tab marker (never changes terminal colors so logs stay readable).
 
-### 3.4 Safety
-- Multi-line paste warning with preview (bypass with Shift+Ctrl+V).
-- "Confirm before running on PROD" for snippets flagged dangerous.
+### 3.4 Copy, paste and safety
+- Copy: Ctrl+Shift+C / Ctrl+Insert (⌘C on macOS). Paste: Ctrl+Shift+V / Shift+Insert (⌘V). All rebindable.
+- Windows/Linux options (Settings › Terminal): Ctrl+C copies when text is selected (otherwise it still interrupts), Ctrl+V pastes, right-click copies the selection or pastes, copy on select.
+- Every paste path (keys, right-click, OS menu) uses the system clipboard plugin and the multi-line warning: "Paste N lines into prod-api-01?" with a preview; PROD servers get a red warning. Bracketed paste is used when the shell supports it.
+- "Ask before running on PROD" for snippets (on by default).
 
 ### 3.5 Local shell
 - Local tab kind: PowerShell / cmd / WSL / zsh via portable-pty. Appears in tab bar with a terminal icon, no stats bar.
@@ -110,7 +112,14 @@ Hosts · Dashboard · Snippets · Tunnels · Hosts & identities · (spacer) · L
 - Transfers queue with progress, pause/cancel; resumable where SFTP allows.
 
 ### 4.3 Follow terminal
-- Uses OSC 7 (cwd) when the shell integration snippet is installed (we offer "Install shell integration" which appends a few lines to `.bashrc`/`.zshrc`). Fallback: parse `PWD` from the prompt only if the user enabled "prompt parsing". **Never** runs `pwd` by itself.
+- Uses OSC 7 (cwd) reported by the prompt. The Files panel offers "Turn on", which (after showing the exact lines) appends a marked block to `~/.bashrc` / `~/.zshrc` once; it takes effect in new terminals. **Never** runs `pwd` or polls. Following only moves a browser that is already open — it never opens SFTP by itself.
+
+### 4.5 Implementation notes (v0.3)
+- One SFTP channel per server via `russh-sftp`, opened on first use, closed when the tab closes. Listings cached 60 s.
+- Uploads: toolbar button (file picker) or drag files from the OS onto the browser. Folders are skipped for now.
+- Downloads: save dialog, written to `<name>.rookerypart` and renamed when complete.
+- Edit locally: files ≤ 20 MB are copied to the app cache and opened with the OS default app; each save is uploaded back. If the server copy changed since opening, nothing is overwritten — the strip offers "Overwrite server copy" or "Reopen server copy".
+- Delete asks first; folders are deleted with `rm -rf` on the server after a red confirmation.
 
 ### 4.4 Edit locally
 - Double-click text file → download to a temp dir → open in built-in CodeMirror tab or external editor (setting). A watcher re-uploads on save with a toast; conflict check via mtime.
@@ -141,7 +150,8 @@ Hosts · Dashboard · Snippets · Tunnels · Hosts & identities · (spacer) · L
 - Snippets with scope "container" (match by name pattern or compose service). Run via `docker exec` in a new terminal or inline (output shown in a drawer).
 
 ### 5.6 Services view — loads on open
-- `systemctl list-units --type=service` once; manual refresh; optional 10 s refresh while visible. Actions: start/stop/restart/enable/disable (sudo via vault helper), "journal" → opens `journalctl -u <svc> -f` in the Logs view.
+- `systemctl list-units --type=service` once (cached 30 s); manual refresh; no polling. Filters: All / Running / Failed.
+- Start / stop / restart open a new terminal in the server tab running `sudo systemctl …` so the user types the sudo password there (never stored or sent in the background); PROD asks first. "Journal" opens `journalctl -u <svc> -f` in a new terminal.
 
 ### 5.7 Logs view (server log files)
 - Favorites per server (e.g. `storage/logs/laravel.log`, `/var/log/nginx/error.log`) + browse via SFTP. `tail -n 200 -f` only while visible, same gap-fill logic as 5.3 (by byte offset). Same highlighting/search UI.
@@ -164,7 +174,14 @@ Hosts · Dashboard · Snippets · Tunnels · Hosts & identities · (spacer) · L
 - Enter = run/open; Ctrl+Enter = paste only; Tab = edit variables inline; ↑↓ navigate. cmdk-based.
 
 ### 6.4 Hotkeys
-- "Record" button captures a chord; conflicts shown immediately. App-level via tinykeys; optional global via tauri-plugin-global-shortcut (palette, lock, quake window).
+- **Keyboard shortcuts page** (icon rail › keyboard, or Settings › Keyboard shortcuts) lists every function, MobaXterm style, grouped: App, Tabs, Server views, Terminal, Copy & paste, Scroll & find, Font size, Files. Many have no default — pick a function and give it keys.
+- Search by name or key; filters All / Has a shortcut / No shortcut yet / Changed by me. Click "+ Assign" / "+ Add", press the keys (Esc cancels, Backspace clears); several shortcuts per function; conflicts with other functions, custom keys or snippets are shown; reset per function or all.
+- Presets: Rookery default, MobaXterm/PuTTY-like (select copies, right-click / Shift+Insert pastes, Ctrl+C/V go to the shell), Windows Terminal-like (Windows), iTerm2-like (macOS).
+- Custom keys: a chord that types text into the active terminal (`\n` Enter, `\t` Tab, `\e` Esc, `\xNN` any byte) — e.g. `sudo !!\n`.
+- Import / export the keymap as `rookery-keymap` JSON (overrides, custom keys, copy/paste options). Snippet hotkeys are listed on the page and edited in Snippets.
+- Chords use physical keys (`KeyboardEvent.code`), so they work on any keyboard layout. Defaults use Ctrl on Windows/Linux and ⌘ on macOS. Stored in the local DB (`ui.keybindings`).
+- One capture-phase dispatcher handles everything. Inside a terminal on Windows/Linux, plain Ctrl+letter goes to the shell (Ctrl+L, Ctrl+R, Ctrl+K…); app actions also have Ctrl+Shift versions that work there.
+- Later (P2): optional system-wide shortcuts via tauri-plugin-global-shortcut (quake window).
 
 ### 6.5 PROD guard
 - Snippets with "Ask before PROD" show a confirm dialog with the final command and the server name.
@@ -200,7 +217,8 @@ Hosts · Dashboard · Snippets · Tunnels · Hosts & identities · (spacer) · L
 ## 8. Dashboard page tab
 
 ### 8.1 Rendering
-- Always from `server_snapshots` in SQLite. Opening the tab costs **zero network**. Cards: name, env tag, address/OS, CPU/RAM/Disk bars, "Synced X ago" (fades when old), refresh-setting pill, per-card ↻.
+- Always from `server_snapshots` in SQLite. Opening the tab costs **zero network**. Cards: name, env tag, address/OS, CPU/RAM/Disk bars, containers running / restarting / unhealthy, failed services, "Synced X ago" (fades after 15 min, greyed after 2 h), mode pill (Auto 5m / Own 30s / On demand / Manual / Never), per-card ↻. Click opens the server tab; right-click: Open, Sync now, Open Docker, Edit server.
+- A failed sync keeps the last good numbers on the card and shows the reason ("offline", "Needs password — add it to the identity", "Host key not confirmed yet").
 
 ### 8.2 Group tabs + Sync
 - Tabs: All · each group (shows `↻` + interval when auto-sync is on). Selected tab = **scope**.
@@ -216,6 +234,11 @@ Hosts · Dashboard · Snippets · Tunnels · Hosts & identities · (spacer) · L
 
 ### 8.5 Context menus
 - Right-click group tab: Sync, Auto-sync on/off, Interval, Edit group. Remembered last selected tab.
+
+### 8.6 Settings
+- Host and group editors: "Dashboard sync" — Mode (Inherit / Auto / Manual / Never), Interval, Collect (basic / + Docker / + failed services); Inherit shows what it resolves to.
+- Settings › Dashboard sync: master pause, keep syncing while minimised, default mode / interval / collect, servers at the same time (1–6), needs-attention thresholds.
+- Keyboard: "Dashboard: sync the selected group" (no default; assign it on the Shortcuts page).
 
 ---
 

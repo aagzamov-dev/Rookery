@@ -4,15 +4,19 @@ interface UiState {
   /** Window visible and focused (with a short grace on blur). Gates every live subscription. */
   windowActive: boolean;
   hostListOpen: boolean;
+  paletteOpen: boolean;
   setWindowActive: (v: boolean) => void;
   toggleHostList: () => void;
+  setPaletteOpen: (v: boolean) => void;
 }
 
 export const useUi = create<UiState>((set) => ({
   windowActive: true,
   hostListOpen: true,
+  paletteOpen: false,
   setWindowActive: (windowActive) => set({ windowActive }),
   toggleHostList: () => set((s) => ({ hostListOpen: !s.hostListOpen })),
+  setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
 }));
 
 const BLUR_GRACE_MS = 2000;

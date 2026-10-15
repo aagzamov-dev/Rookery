@@ -1,5 +1,5 @@
 {
-  "name": "rook",
+  "name": "rookery",
   "private": true,
   "version": "0.1.0",
   "workspaces": ["apps/desktop"],
@@ -7,8 +7,8 @@
     "tauri": "tauri",
     "dev": "tauri dev",
     "build": "tauri build",
-    "icons": "tauri icon app-icon.svg -o crates/rook-tauri/icons",
-    "bindings": "cargo test -p rook-core export_bindings",
+    "icons": "tauri icon app-icon.svg -o crates/rookery-tauri/icons",
+    "bindings": "cargo test -p rookery-core export_bindings",
     "test": "cargo test --workspace && npm --workspace apps/desktop run test",
     "typecheck": "npm --workspace apps/desktop run typecheck"
   },

@@ -8,7 +8,7 @@ apps/desktop/dist
 apps/desktop/.vite
 
 # Tauri
-crates/rook-tauri/gen/schemas
+crates/rookery-tauri/gen/schemas
 
 # OS / editor
 .DS_Store

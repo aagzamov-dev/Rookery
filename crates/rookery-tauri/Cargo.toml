@@ -1,0 +1,31 @@
+[package]
+name = "rookery-tauri"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Rookery desktop shell (Tauri 2). Thin glue over rookery-core."
+
+[lib]
+name = "rookery_tauri_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "rookery"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+rookery-core = { path = "../rookery-core" }
+tauri = { version = "2", features = [] }
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-notification = "2"
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+parking_lot.workspace = true

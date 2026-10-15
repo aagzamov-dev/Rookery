@@ -16,7 +16,7 @@ Goal: open the app, unlock with PIN, click a server, get a fast terminal in a ta
 
 | P | Feature | Spec |
 |---|---|---|
-| P0 | Tauri 2 + React project, `rook-core` crate, typed IPC, CI build for Win/mac | [A] §3, §6 |
+| P0 | Tauri 2 + React project, `rookery-core` crate, typed IPC, CI build for Win/mac | [A] §3, §6 |
 | P0 | SQLite storage, schema v1, migrations | [S] §1 |
 | P0 | Vault: master password, XChaCha20-Poly1305, Argon2id, keychain-wrapped key | [S] §2 |
 | P0 | Lock screen: 4–6 digit PIN, auto-submit, autofocus, attempt limits, auto-lock | [S] §2.3, [D] §9 |
@@ -37,10 +37,12 @@ Done when: 20 hosts in the list cause **zero** connections; opening/closing/swit
 
 ---
 
-## v0.2 — Productivity (snippets, palette, hotkeys)
+## v0.2 — Productivity (snippets, palette, hotkeys) — **built**
 
 | P | Feature | Spec |
 |---|---|---|
+| P0 | Keyboard shortcuts page (own page tab): ~50 functions, many unassigned so you pick the keys; search + filters, multiple chords, conflicts, reset; presets (Rookery, MobaXterm/PuTTY, Windows Terminal, iTerm2); custom "type this text" keys; keymap import/export | [D] §6.4 |
+| P0 | Terminal copy/paste: Ctrl+Shift+C/V, Shift+Insert, Ctrl+C copies selection, Ctrl+V pastes, right-click copy/paste, copy on select (all switchable) | [D] §3.4 |
 | P0 | Snippets: alias, command, variables `${var}` with defaults/ask, scope (all / tag / group / server) | [D] §6 |
 | P0 | Command palette (Ctrl/⌘K): snippets, hosts, actions; Enter run / Ctrl+Enter paste | [D] §6.3 |
 | P0 | Snippet bar in Terminal view, filtered by server tags | [D] §3.2 |
@@ -55,7 +57,7 @@ Done when: 20 hosts in the list cause **zero** connections; opening/closing/swit
 
 ---
 
-## v0.3 — Files & Docker (the differentiators)
+## v0.3 — Files & Docker (the differentiators) — **built**
 
 | P | Feature | Spec |
 |---|---|---|
@@ -74,7 +76,7 @@ Done when: 20 hosts in the list cause **zero** connections; opening/closing/swit
 
 ---
 
-## v0.4 — Dashboard & Refresh Engine
+## v0.4 — Dashboard & Refresh Engine — **built**
 
 | P | Feature | Spec |
 |---|---|---|
@@ -94,7 +96,7 @@ Done when: 20 hosts in the list cause **zero** connections; opening/closing/swit
 
 | P | Feature | Spec |
 |---|---|---|
-| P0 | Encrypted export/import `.rookbackup` (Argon2id + XChaCha20) with version/migration | [S] §5 |
+| P0 | Encrypted export/import `.rookerybackup` (Argon2id + XChaCha20) with version/migration | [S] §5 |
 | P0 | Google Drive manual backup/restore (OAuth PKCE, `drive.appdata`), refresh token in keychain | [S] §6 |
 | P0 | "Backed up to Drive · 2h ago" status in title bar; restore chooser | [D] §1.1 |
 | P1 | Import from `~/.ssh/config`, MobaXterm `.mxtsessions`, PuTTY registry | [S] §7 |
@@ -123,7 +125,7 @@ Done when: 20 hosts in the list cause **zero** connections; opening/closing/swit
 
 | P | Feature | Spec |
 |---|---|---|
-| P0 | Tauri mobile build of the same React app + `rook-core`; UniFFI fallback plan | [M] §1 |
+| P0 | Tauri mobile build of the same React app + `rookery-core`; UniFFI fallback plan | [M] §1 |
 | P0 | Lock (PIN, fingerprint, Android Keystore) | [M] §3 |
 | P0 | Dashboard home with group chips, Sync, Auto-sync, Wi-Fi-only, low-battery pause | [M] §4 |
 | P0 | Server screen: health, Containers, Logs, Terminal with key bar | [M] §5 |
@@ -141,8 +143,8 @@ X11 server, RDP, VNC, Telnet/serial, Mosh, team sharing, AI assistant, plugins/m
 
 ## Order of implementation inside v0.1 (first 3–4 weeks)
 
-1. `rook-core`: db + vault + model types → tests.
-2. `rook-core`: ssh ConnectionManager + PTY channel + metrics collector → integration test against a Docker sshd.
-3. `rook-tauri`: commands/events for the above; `ts-rs` export.
+1. `rookery-core`: db + vault + model types → tests.
+2. `rookery-core`: ssh ConnectionManager + PTY channel + metrics collector → integration test against a Docker sshd.
+3. `rookery-tauri`: commands/events for the above; `ts-rs` export.
 4. Frontend shell: lock → hosts list → tab bar → server tab → Terminal view.
 5. Subscriptions engine + stats bar. Verify every rule in [A] §5 by hand and with tests **before** adding any other view.

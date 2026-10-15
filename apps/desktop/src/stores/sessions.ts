@@ -29,6 +29,8 @@ export const useSessions = create<SessionsState>((set, get) => ({
     try {
       const id = await api.sessionAttach(hostId);
       set((st) => ({ attachIds: { ...st.attachIds, [hostId]: id } }));
+      // Don't rely only on events: read the state once so the tab can never wait forever.
+      get().setInfo(await api.sessionInfo(hostId));
     } catch (e) {
       set((st) => ({ errors: { ...st.errors, [hostId]: asCoreError(e) } }));
     } finally {

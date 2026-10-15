@@ -1,16 +1,16 @@
 import clsx from "clsx";
-import { useEffect, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from "react";
+import { forwardRef, useEffect, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from "react";
 import { X } from "lucide-react";
 
 type Variant = "primary" | "ghost" | "outline" | "danger";
 
-export function Button({
-  variant = "outline",
-  className,
-  ...rest
-}: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: Variant }) {
+export const Button = forwardRef<HTMLButtonElement, ButtonHTMLAttributes<HTMLButtonElement> & { variant?: Variant }>(function Button(
+  { variant = "outline", className, ...rest },
+  ref,
+) {
   return (
     <button
+      ref={ref}
       {...rest}
       className={clsx(
         "inline-flex h-8 items-center justify-center gap-2 rounded-md px-3 text-[13px] whitespace-nowrap",
@@ -22,7 +22,7 @@ export function Button({
       )}
     />
   );
-}
+});
 
 export function IconButton({ label, className, ...rest }: ButtonHTMLAttributes<HTMLButtonElement> & { label: string }) {
   return (

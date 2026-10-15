@@ -1,27 +1,47 @@
 import { useEffect, useState, type ReactNode } from "react";
 import clsx from "clsx";
-import { AlertTriangle, Loader2, Plus, ShieldAlert, ShieldQuestion, Terminal as TermIcon, X } from "lucide-react";
+import { AlertTriangle, FolderOpen, Loader2, Plus, Radio, ShieldAlert, ShieldQuestion, Terminal as TermIcon, X } from "lucide-react";
+import { isProblem, useDocker } from "../../stores/docker";
+import { useFiles } from "../../stores/files";
+import { FileBrowser } from "../files/FileBrowser";
+import { DockerView } from "../docker/DockerView";
+import { ServicesView } from "../services/ServicesView";
+import { LogsView } from "../logs/LogsView";
+import { ProcessesView } from "../processes/ProcessesView";
+import { useTermUi } from "../../stores/termui";
 import { api, asCoreError } from "../../ipc/api";
 import type { Host } from "../../ipc/bindings/Host";
 import { useHosts } from "../../stores/hosts";
 import { useMetrics } from "../../stores/metrics";
+import { ago, useSync } from "../../stores/sync";
 import { useSessions } from "../../stores/sessions";
 import { useTabs, type View } from "../../stores/tabs";
 import { useUi } from "../../stores/ui";
 import { Button } from "../../ui/primitives";
 import { bytes, pct, rate, uptime } from "../../ui/format";
 import { TerminalPane } from "./terminal/TerminalPane";
+import { SnippetBar } from "../snippets/SnippetBar";
 import { terminalRegistry } from "./terminal/registry";
 
-const VIEWS: { id: View; label: string; ready: boolean }[] = [
-  { id: "overview", label: "Overview", ready: true },
-  { id: "terminal", label: "Terminal", ready: true },
-  { id: "files", label: "Files", ready: false },
-  { id: "docker", label: "Docker", ready: false },
-  { id: "services", label: "Services", ready: false },
-  { id: "logs", label: "Logs", ready: false },
-  { id: "settings", label: "Settings", ready: true },
+const VIEWS: { id: View; label: string }[] = [
+  { id: "overview", label: "Overview" },
+  { id: "terminal", label: "Terminal" },
+  { id: "files", label: "Files" },
+  { id: "docker", label: "Docker" },
+  { id: "services", label: "Services" },
+  { id: "processes", label: "Processes" },
+  { id: "logs", label: "Logs" },
+  { id: "settings", label: "Settings" },
 ];
+
+/** Keeps a view mounted after its first open; hidden views keep their state (scroll, filters, selection). */
+function Keep({ show, children }: { show: boolean; children: ReactNode }) {
+  return (
+    <div className="absolute inset-0" style={{ display: show ? "block" : "none" }}>
+      {children}
+    </div>
+  );
+}
 
 interface Props {
   hostId: string;
@@ -41,10 +61,11 @@ export function ServerTab({ hostId, active, onEditHost }: Props) {
   const attach = useSessions((s) => s.attach);
   const [everConnected, setEverConnected] = useState(false);
 
-  // Connect when the tab is shown for the first time (not before).
+  const deferred = useTabs((s) => !!s.deferred[hostId]);
+  // Connect when the tab is shown for the first time (not before). Restored tabs wait for a click.
   useEffect(() => {
-    if (active) void attach(hostId);
-  }, [active, hostId, attach]);
+    if (active && !deferred) void attach(hostId);
+  }, [active, deferred, hostId, attach]);
 
   useEffect(() => {
     if (info?.state === "connected") setEverConnected(true);
@@ -57,11 +78,42 @@ export function ServerTab({ hostId, active, onEditHost }: Props) {
     <div className="absolute inset-0 flex-col" style={{ display: active ? "flex" : "none" }}>
       <ViewBar hostId={hostId} current={views.active} onSelect={(v) => (v === "settings" && host ? onEditHost(host) : setView(hostId, v))} />
       <ConnectionBanner hostId={hostId} host={host} onEditHost={onEditHost} />
+      {views.active === "terminal" && <SnippetBar hostId={hostId} />}
       <div className="relative min-h-0 flex-1 bg-term">
         {views.opened.includes("terminal") && everConnected && <TerminalView hostId={hostId} visible={show("terminal")} />}
-        {views.opened.includes("terminal") && !everConnected && show("terminal") && <Waiting />}
+        {views.opened.includes("terminal") && !everConnected && show("terminal") && <Waiting hostId={hostId} />}
         {views.opened.includes("overview") && show("overview") && <OverviewView hostId={hostId} />}
-        {VIEWS.filter((v) => !v.ready).map((v) => views.opened.includes(v.id) && show(v.id) && <ComingSoon key={v.id} view={v.label} />)}
+        {(["files", "docker", "services", "processes", "logs"] as const).map(
+          (v) =>
+            views.opened.includes(v) &&
+            !everConnected &&
+            show(v) && <Waiting key={v} hostId={hostId} />,
+        )}
+        {everConnected && views.opened.includes("files") && (
+          <Keep show={show("files")}>
+            <FileBrowser hostId={hostId} visible={show("files")} variant="full" />
+          </Keep>
+        )}
+        {everConnected && views.opened.includes("docker") && (
+          <Keep show={show("docker")}>
+            <DockerView hostId={hostId} />
+          </Keep>
+        )}
+        {everConnected && views.opened.includes("services") && (
+          <Keep show={show("services")}>
+            <ServicesView hostId={hostId} visible={show("services")} />
+          </Keep>
+        )}
+        {everConnected && views.opened.includes("processes") && (
+          <Keep show={show("processes")}>
+            <ProcessesView hostId={hostId} visible={show("processes")} />
+          </Keep>
+        )}
+        {everConnected && views.opened.includes("logs") && (
+          <Keep show={show("logs")}>
+            <LogsView hostId={hostId} />
+          </Keep>
+        )}
       </div>
       <StatsBar hostId={hostId} />
     </div>
@@ -70,6 +122,11 @@ export function ServerTab({ hostId, active, onEditHost }: Props) {
 
 function ViewBar({ hostId, current, onSelect }: { hostId: string; current: View; onSelect: (v: View) => void }) {
   const views = useTabs((s) => s.views[hostId]);
+  const panelOpen = useFiles((s) => s.byHost[hostId]?.panelOpen ?? false);
+  const patchFiles = useFiles((s) => s.patch);
+  const dockerProblem = useDocker((s) => (s.byHost[hostId]?.containers ?? []).some(isProblem));
+  const broadcast = useTermUi((s) => s.broadcast);
+  const setBroadcast = useTermUi((s) => s.setBroadcast);
   const addTerminal = useTabs((s) => s.addTerminal);
   const closeTerminal = useTabs((s) => s.closeTerminal);
   const setActiveTerminal = useTabs((s) => s.setActiveTerminal);
@@ -89,6 +146,7 @@ function ViewBar({ hostId, current, onSelect }: { hostId: string; current: View;
           {v.id === "terminal" && <TermIcon size={13} />}
           {v.label}
           {v.id === "terminal" && views && views.terminals.length > 0 && <span className="font-normal text-muted">{views.terminals.length}</span>}
+          {v.id === "docker" && dockerProblem && <span aria-label="problems" className="h-1.5 w-1.5 rounded-full bg-warn" />}
         </button>
       ))}
       {current === "terminal" && views && (
@@ -115,20 +173,64 @@ function ViewBar({ hostId, current, onSelect }: { hostId: string; current: View;
           </button>
         </div>
       )}
+      {current === "terminal" && (
+        <button
+          onClick={() => setBroadcast(broadcast.mode === "off" ? "tab" : broadcast.mode === "tab" ? "all" : "off", hostId)}
+          aria-pressed={broadcast.mode !== "off"}
+          title="Broadcast: type into several terminals at once (off → this tab → all tabs)"
+          className={clsx(
+            "ml-1.5 flex h-7 items-center gap-1.5 rounded-md border px-2.5 text-xs",
+            broadcast.mode !== "off" ? "border-[#6A5828] bg-[#352F20] text-[#F7CB6A]" : "border-line text-muted hover:text-text",
+          )}
+        >
+          <Radio size={13} />
+          {broadcast.mode === "off" ? "Broadcast" : broadcast.mode === "tab" ? "Broadcast: this tab" : "Broadcast: all tabs"}
+        </button>
+      )}
+      {current === "terminal" && (
+        <button
+          onClick={() => patchFiles(hostId, { panelOpen: !panelOpen })}
+          aria-pressed={panelOpen}
+          className={clsx(
+            "ml-1.5 flex h-7 items-center gap-1.5 rounded-md border px-2.5 text-xs",
+            panelOpen ? "border-accent-line bg-accent-bg text-text" : "border-line text-muted hover:text-text",
+          )}
+        >
+          <FolderOpen size={13} /> Files panel
+        </button>
+      )}
     </div>
   );
 }
 
 function TerminalView({ hostId, visible }: { hostId: string; visible: boolean }) {
   const views = useTabs((s) => s.views[hostId]);
+  const panelOpen = useFiles((s) => s.byHost[hostId]?.panelOpen ?? false);
+  const broadcast = useTermUi((s) => s.broadcast);
+  const setBroadcast = useTermUi((s) => s.setBroadcast);
+  const broadcasting = broadcast.mode === "all" || (broadcast.mode === "tab" && broadcast.hostId === hostId);
   if (!views) return null;
   return (
-    <div className="absolute inset-0" style={{ display: visible ? "block" : "none" }}>
-      {views.terminals.map((t) => (
-        <TerminalPane key={t.key} termKey={t.key} hostId={hostId} visible={visible && views.activeTerminal === t.key} opts={{ cwd: t.cwd, container: t.container }} />
-      ))}
-      {views.terminals.length === 0 && (
-        <div className="grid h-full place-items-center text-muted">No terminals. Use + to open one.</div>
+    <div className="absolute inset-0 flex" style={{ display: visible ? "flex" : "none" }}>
+      <div className="relative min-w-0 flex-1">
+        {broadcasting && (
+          <div className="absolute inset-x-0 top-0 z-10 flex items-center gap-2 border-b border-[#6A5828] bg-[#352F20] px-3 py-1 text-xs text-[#F7CB6A]">
+            <Radio size={12} /> Broadcasting — what you type goes to {terminalRegistry.broadcastTargets()} terminals
+            {broadcast.mode === "all" ? " in all tabs" : " in this tab"}
+            <button onClick={() => setBroadcast("off", null)} className="ml-auto text-text underline">
+              Stop
+            </button>
+          </div>
+        )}
+        {views.terminals.map((t) => (
+          <TerminalPane key={t.key} termKey={t.key} hostId={hostId} visible={visible && views.activeTerminal === t.key} opts={{ cwd: t.cwd, container: t.container }} />
+        ))}
+        {views.terminals.length === 0 && <div className="grid h-full place-items-center text-muted">No terminals. Use + to open one.</div>}
+      </div>
+      {panelOpen && (
+        <div className="w-[340px] flex-none border-l border-line">
+          <FileBrowser hostId={hostId} visible={visible} variant="panel" />
+        </div>
       )}
     </div>
   );
@@ -239,16 +341,38 @@ function Banner({ tone, icon, children }: { tone: "info" | "warn" | "bad"; icon:
   );
 }
 
-function Waiting() {
-  return <div className="grid h-full place-items-center text-muted">The terminal opens once connected.</div>;
-}
-
-function ComingSoon({ view }: { view: string }) {
+/** Shown until the first connection. Never a dead end: it says why and offers Connect. */
+function Waiting({ hostId }: { hostId: string }) {
+  const info = useSessions((s) => s.byHost[hostId]);
+  const attaching = useSessions((s) => s.attaching[hostId]);
+  const err = useSessions((s) => s.errors[hostId]);
+  const attach = useSessions((s) => s.attach);
+  const detach = useSessions((s) => s.detach);
+  const clearError = useSessions((s) => s.clearError);
+  const busy = attaching || info?.state === "connecting" || info?.state === "reconnecting";
   return (
-    <div className="grid h-full place-items-center bg-bg">
-      <div className="max-w-sm text-center text-muted">
-        <h3 className="m-0 mb-2 text-sm font-semibold text-text">{view}</h3>
-        This view arrives in v0.3. It will load only when you open it, and pause when hidden.
+    <div className="grid h-full place-items-center">
+      <div className="flex max-w-sm flex-col items-center gap-3 text-center text-muted">
+        {busy ? (
+          <span className="flex items-center gap-2">
+            <Loader2 size={15} className="animate-spin text-accent" /> Connecting…
+          </span>
+        ) : (
+          <>
+            <span>{err || info?.state === "error" ? "Not connected — see the message above." : "Not connected yet."}</span>
+            <Button
+              variant="primary"
+              onClick={async () => {
+                useTabs.getState().setDeferred(hostId, false);
+                clearError(hostId);
+                await detach(hostId);
+                await attach(hostId);
+              }}
+            >
+              Connect
+            </Button>
+          </>
+        )}
       </div>
     </div>
   );
@@ -257,18 +381,36 @@ function ComingSoon({ view }: { view: string }) {
 function OverviewView({ hostId }: { hostId: string }) {
   const m = useMetrics((s) => s.byHost[hostId]);
   const last = m?.last;
-  const cpu = (m?.history ?? []).map((s) => s.cpu_pct ?? 0);
+  const snap = useSync((s) => s.snapshots[hostId]);
+  const history = m?.history ?? [];
+  const cpu = history.map((s) => s.cpu_pct ?? 0);
+  const ram = history.map((s) => (s.ram_total_bytes ? (100 * s.ram_used_bytes) / s.ram_total_bytes : 0));
+  const rx = history.map((s) => s.net_rx_bps ?? 0);
+  const tx = history.map((s) => s.net_tx_bps ?? 0);
+  const netMax = Math.max(1, ...rx, ...tx);
   const ramPct = last && last.ram_total_bytes ? (100 * last.ram_used_bytes) / last.ram_total_bytes : null;
+  const d = snap?.docker;
   return (
     <div className="absolute inset-0 overflow-auto bg-bg p-5">
       <div className="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-3">
         <Card label="CPU" value={pct(last?.cpu_pct)} sub={`load ${last?.load1.toFixed(2) ?? "—"}`} pct={last?.cpu_pct ?? 0}>
           <Spark values={cpu} />
         </Card>
-        <Card label="Memory" value={bytes(last?.ram_used_bytes)} sub={`of ${bytes(last?.ram_total_bytes)}`} pct={ramPct ?? 0} />
+        <Card label="Memory" value={bytes(last?.ram_used_bytes)} sub={`of ${bytes(last?.ram_total_bytes)}`} pct={ramPct ?? 0}>
+          <Spark values={ram} />
+        </Card>
         <Card label="Disk /" value={pct(last?.disk_pct)} sub={`${bytes(last?.disk_used_bytes)} of ${bytes(last?.disk_total_bytes)}`} pct={last?.disk_pct ?? 0} />
-        <Card label="Network" value={`↓ ${rate(last?.net_rx_bps)}`} sub={`↑ ${rate(last?.net_tx_bps)}`} pct={0} />
+        <Card label="Network" value={`↓ ${rate(last?.net_rx_bps)}`} sub={`↑ ${rate(last?.net_tx_bps)}`} pct={0}>
+          <Spark values={rx.map((v) => (100 * v) / netMax)} second={tx.map((v) => (100 * v) / netMax)} />
+        </Card>
         <Card label="Uptime" value={uptime(last?.uptime_s)} sub={`load ${last ? `${last.load1} · ${last.load5} · ${last.load15}` : "—"}`} pct={0} />
+        {snap && (
+          <Card label="Last dashboard sync" value={snap.os ?? "—"} sub={snap.last_ok_at ? ago(snap.last_ok_at) : "failed"} pct={0}>
+            <span className="text-xs text-muted">
+              {d ? (d.error ? d.error : `${d.running}/${d.total} containers running${d.unhealthy.length ? ` · ${d.unhealthy.length} unhealthy` : ""}`) : "Docker not collected"}
+            </span>
+          </Card>
+        )}
       </div>
       <p className="mt-4 text-xs text-muted">Charts use the same 3-second sample as the stats bar — no extra load on the server. History: last 15 minutes while this tab is open.</p>
     </div>
@@ -294,14 +436,18 @@ function Card({ label, value, sub, pct: p, children }: { label: string; value: s
   );
 }
 
-function Spark({ values, w = 200, h = 34 }: { values: number[]; w?: number; h?: number }) {
+/** Last 3 minutes of samples (0–100). `second` draws a dimmer line (e.g. upload next to download). */
+function Spark({ values, second, w = 200, h = 34 }: { values: number[]; second?: number[]; w?: number; h?: number }) {
   if (values.length < 2) return <div style={{ height: h }} />;
-  const pts = values.slice(-60);
-  const step = w / (pts.length - 1);
-  const d = pts.map((v, i) => `${(i * step).toFixed(1)},${(h - (Math.min(100, v) / 100) * h).toFixed(1)}`).join(" ");
+  const line = (vals: number[]) => {
+    const pts = vals.slice(-60);
+    const step = w / Math.max(1, pts.length - 1);
+    return pts.map((v, i) => `${(i * step).toFixed(1)},${(h - (Math.min(100, Math.max(0, v)) / 100) * h).toFixed(1)}`).join(" ");
+  };
   return (
     <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" aria-hidden>
-      <polyline points={d} fill="none" stroke="#8AB4FF" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+      {second && second.length > 1 && <polyline points={line(second)} fill="none" stroke="#57C994" strokeWidth="1.2" opacity="0.8" vectorEffect="non-scaling-stroke" />}
+      <polyline points={line(values)} fill="none" stroke="#8AB4FF" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
     </svg>
   );
 }

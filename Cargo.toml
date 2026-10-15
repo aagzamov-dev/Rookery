@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/rook-core", "crates/rook-tauri"]
+members = ["crates/rookery-core", "crates/rookery-tauri"]
 
 [workspace.package]
 version = "0.1.0"

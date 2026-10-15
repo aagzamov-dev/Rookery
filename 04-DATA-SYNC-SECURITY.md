@@ -6,14 +6,14 @@
 
 ### 1.1 App data folder (one folder = full backup)
 ```
-%APPDATA%/Rook/  (Win)   ~/Library/Application Support/Rook/ (mac)
-├─ rook.db            # SQLite: hosts, groups, identities(meta), snippets, snapshots, settings
+%APPDATA%/Rookery/  (Win)   ~/Library/Application Support/Rookery/ (mac)
+├─ rookery.db            # SQLite: hosts, groups, identities(meta), snippets, snapshots, settings
 ├─ vault.bin          # encrypted secrets blob (passwords, keys, passphrases, tokens)
 ├─ keys/              # private keys stored by reference (optional, may also live in vault)
 ├─ logs/              # session logs (optional)
 └─ cache/             # temp downloads for "edit locally" (cleared on start)
 ```
-Secrets are **never** in `rook.db`; it holds only references (`secret_id`).
+Secrets are **never** in `rookery.db`; it holds only references (`secret_id`).
 
 ### 1.2 SQLite schema v1 (essential tables)
 ```sql
@@ -48,7 +48,7 @@ Migrations with `rusqlite_migration`; schema version stored in `settings`.
 
 ### 2.2 Fast unlock (PIN / biometrics)
 - The PIN never encrypts the vault. On PIN setup: `PK = argon2id(pin, salt2)`; store `wrap(PK, VK)` **in the OS keychain** (Windows Credential Manager / macOS Keychain / Android Keystore), never on disk.
-- Unlock with PIN: read keychain entry → unwrap `VK`. A copied `vault.bin` + `rook.db` is useless without the master password because the PIN-wrapped key only exists in the keychain of that machine/user.
+- Unlock with PIN: read keychain entry → unwrap `VK`. A copied `vault.bin` + `rookery.db` is useless without the master password because the PIN-wrapped key only exists in the keychain of that machine/user.
 - Biometrics: keychain item protected by Windows Hello / Touch ID; unlock = OS prompt → `VK`.
 - `VK` lives only in memory, zeroized on lock.
 
@@ -83,6 +83,7 @@ collect:   basic | basic_docker | everything     (basic = metrics; +docker = doc
 desktop:   bool    mobile: bool    wifi_only: bool (mobile)
 ```
 Effective = first non-inherit walking host → group (→ parent groups) → global.
+Global defaults: mode `auto`, 5 min, basic + docker. `auto` only means "follow the group's Auto-sync switch", and every switch starts **off**, so nothing syncs on its own until the user turns a group on. Hosts without a group have their own switch ("Ungrouped" tab).
 
 ### 4.2 Dashboard switches vs settings
 - Group tab **Auto-sync switch** = `groups.auto_sync_enabled` (a master switch for that group). When ON, hosts whose effective mode is `auto` are scheduled; `manual` hosts are not; `never` hosts are never touched. When OFF, nothing in the group is scheduled.
@@ -113,9 +114,9 @@ S(){ head -1 /proc/stat; cat /proc/net/dev; }; S; echo ---; sleep 1; S; echo ---
 
 ## 5. Backup: export / import
 
-### 5.1 File `.rookbackup`
+### 5.1 File `.rookerybackup`
 ```
-magic "ROOKBK1" | json header { version, created_at, app_version, kdf:{salt,m,t,p}, nonce } | ciphertext
+magic "RKRYBK1" | json header { version, created_at, app_version, kdf:{salt,m,t,p}, nonce } | ciphertext
 plaintext = JSON { db: { groups, hosts, identities, snippets, workflows, settings, known_hosts }, secrets: { id: base64 } , keys: {...} }
 ```
 Encrypted with a key derived from a **backup password** (default: the master password; user may set a different one). Snapshots and logs are not included (optional flag).
@@ -134,7 +135,7 @@ Encrypted with a key derived from a **backup password** (default: the master pas
 ## 6. Google Drive (manual, user's own account)
 - OAuth 2.0 **PKCE**, loopback redirect (`tauri-plugin-oauth`), scope `https://www.googleapis.com/auth/drive.appdata` only (hidden app folder; no sensitive-scope review).
 - Refresh token stored as a vault secret / keychain. Access token in memory.
-- Backup = upload `.rookbackup` to appDataFolder as `rook-<timestamp>.rookbackup`; keep last 10 (configurable). Restore = list files → pick → download → import (asks backup password).
+- Backup = upload `.rookerybackup` to appDataFolder as `rookery-<timestamp>.rookerybackup`; keep last 10 (configurable). Restore = list files → pick → download → import (asks backup password).
 - Never automatic unless the user enables "Backup after changes (debounced 10 min)". No background network otherwise.
 
 ---

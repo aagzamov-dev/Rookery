@@ -1,6 +1,6 @@
 # 01 — Architecture & Lazy-Load Model
 
-Working name: **Rook** (placeholder). Local-first server manager: terminal + SFTP + Docker + monitoring, for Windows, macOS, later Android.
+Working name: **Rookery** (placeholder). Local-first server manager: terminal + SFTP + Docker + monitoring, for Windows, macOS, later Android.
 
 Design reference: https://claude.ai/artifact/B6ZbSxMVvfykQtpF5ojndo
 
@@ -35,7 +35,7 @@ Design reference: https://claude.ai/artifact/B6ZbSxMVvfykQtpF5ojndo
 | SSH / SFTP | **russh** + **russh-sftp** (Rust) | Pure Rust, no OpenSSL |
 | Local shell | **portable-pty** | PowerShell / zsh / WSL tabs |
 | Docker | Over SSH: `docker … --format '{{json .}}'` (default) · optional socket forward + **bollard** later | No Docker port needed |
-| Storage | **SQLite** via `rusqlite` (bundled) | One file: `rook.db` |
+| Storage | **SQLite** via `rusqlite` (bundled) | One file: `rookery.db` |
 | Crypto | **argon2**, **chacha20poly1305** (XChaCha20-Poly1305), **zeroize** | Vault + export |
 | OS keychain | **keyring** crate | Stores vault key wrapped by PIN/biometrics |
 | Biometrics | **robius-authentication** | Windows Hello / Touch ID / Android fingerprint |
@@ -48,9 +48,9 @@ Design reference: https://claude.ai/artifact/B6ZbSxMVvfykQtpF5ojndo
 ## 3. Repository layout
 
 ```
-rook/
+rookery/
 ├─ crates/
-│  ├─ rook-core/            # Pure Rust library. NO Tauri dependency. Reused by mobile.
+│  ├─ rookery-core/            # Pure Rust library. NO Tauri dependency. Reused by mobile.
 │  │  ├─ vault/             # master password, PIN wrap, encrypt/decrypt, keychain
 │  │  ├─ db/                # SQLite schema, migrations, repositories
 │  │  ├─ ssh/               # ConnectionManager, Session, channels, keep-alive, reconnect
@@ -59,9 +59,9 @@ rook/
 │  │  ├─ collectors/        # metrics (one batched script), docker, services, processes, logs
 │  │  ├─ refresh/           # RefreshEngine: inheritance, scheduler, concurrency, backoff, cache
 │  │  ├─ snippets/          # snippets, variables, workflows, scope resolution
-│  │  ├─ backup/            # export/import (.rookbackup), Drive client, importers
+│  │  ├─ backup/            # export/import (.rookerybackup), Drive client, importers
 │  │  └─ model/             # shared types (serde) used by IPC
-│  └─ rook-tauri/           # Tauri app: commands + events, thin glue over rook-core
+│  └─ rookery-tauri/           # Tauri app: commands + events, thin glue over rookery-core
 ├─ apps/
 │  └─ desktop/              # React app (Vite)
 │     ├─ src/app/           # shell: title bar, rail, host list, tab bar, lock
@@ -73,7 +73,7 @@ rook/
 └─ docs/                    # these md files
 ```
 
-Rule: **all logic lives in `rook-core`**. The React app only renders and sends intents. This is what makes Android cheap later.
+Rule: **all logic lives in `rookery-core`**. The React app only renders and sends intents. This is what makes Android cheap later.
 
 ---
 
@@ -85,8 +85,8 @@ Rule: **all logic lives in `rook-core`**. The React app only renders and sends i
 │          ▲ events                            │ commands        │
 └──────────┼───────────────────────────────────┼─────────────────┘
            │ Tauri IPC (typed)                 ▼
-┌──────────┴──────────── rook-tauri (commands/events) ──────────┐
-│                 rook-core                                      │
+┌──────────┴──────────── rookery-tauri (commands/events) ──────────┐
+│                 rookery-core                                      │
 │  Vault ─ Db ─ ConnectionManager ─ Collectors ─ RefreshEngine   │
 │                       │ one SSH connection per server          │
 │                       ├─ channel: PTY (terminal 1)             │
@@ -194,7 +194,7 @@ When a view is re-shown and its data is younger than `freshFor` (default: docker
 
 ---
 
-## 6. IPC contract (rook-tauri)
+## 6. IPC contract (rookery-tauri)
 
 Commands (request/response):
 ```
@@ -218,7 +218,7 @@ metrics:update · docker.list:update · docker.stats:update · docker.events:upd
 sync:progress {job_id, server_id, state:'queued'|'running'|'ok'|'failed'|'skipped'|'locked', snapshot?}
 transfer:progress {id, bytes, total}
 ```
-All payloads are `serde` types from `rook-core/model`, exported to TS with `ts-rs` or `specta`.
+All payloads are `serde` types from `rookery-core/model`, exported to TS with `ts-rs` or `specta`.
 
 ---
 
@@ -237,6 +237,6 @@ All payloads are `serde` types from `rook-core/model`, exported to TS with `ts-r
 
 ## 8. Testing strategy (minimum)
 
-- `rook-core`: unit tests for parsers (metrics script output, `docker ps` JSON, systemctl), refresh inheritance resolution, scheduler/backoff, vault round-trip, backup export/import.
+- `rookery-core`: unit tests for parsers (metrics script output, `docker ps` JSON, systemctl), refresh inheritance resolution, scheduler/backoff, vault round-trip, backup export/import.
 - Integration: a Docker image running `sshd` + `docker` (dind) used in CI to test connect, exec, SFTP, collectors.
 - Frontend: tests for the visibility→subscription diff (pure function) — this is the most important behaviour in the app.

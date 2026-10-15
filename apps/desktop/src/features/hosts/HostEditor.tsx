@@ -5,7 +5,11 @@ import type { EnvLabel } from "../../ipc/bindings/EnvLabel";
 import type { Host } from "../../ipc/bindings/Host";
 import { emptyHost, emptyIdentity, useHosts } from "../../stores/hosts";
 import { useTabs } from "../../stores/tabs";
+import { closeTab } from "../../app/tabActions";
 import { Button, Field, Modal, Select, TextInput } from "../../ui/primitives";
+import { useKeys } from "../../stores/keys";
+import { RefreshFields } from "./RefreshFields";
+import { BUILTIN_THEMES } from "../server-tab/terminal/themes";
 
 export interface HostDraft {
   host?: Host;
@@ -23,7 +27,6 @@ export function HostEditor({ draft, onClose }: { draft: HostDraft; onClose: () =
   const deleteHost = useHosts((s) => s.deleteHost);
   const saveIdentity = useHosts((s) => s.saveIdentity);
   const openServer = useTabs((s) => s.openServer);
-  const closeTab = useTabs((s) => s.close);
 
   const initial = useMemo<Host>(() => {
     if (draft.host) return draft.host;
@@ -57,6 +60,9 @@ export function HostEditor({ draft, onClose }: { draft: HostDraft; onClose: () =
   const [secret, setSecret] = useState("");
   const [keyPath, setKeyPath] = useState("~/.ssh/id_ed25519");
   const [passphrase, setPassphrase] = useState("");
+  const [sudo, setSudo] = useState("");
+  const customThemes = useKeys((s) => s.customThemes);
+  const themeNames = [...Object.keys(BUILTIN_THEMES), ...Object.keys(customThemes)];
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -80,10 +86,14 @@ export function HostEditor({ draft, onClose }: { draft: HostDraft; onClose: () =
           password: auth === "password" && secret ? secret : undefined,
           key: auth === "key_in_vault" && secret ? secret : undefined,
           passphrase: auth !== "password" && passphrase ? passphrase : undefined,
+          sudo: sudo || undefined,
         });
         identityId = saved.id;
-      } else if (selected && secret) {
-        await saveIdentity(selected, selected.auth === "password" ? { password: secret } : { passphrase: secret });
+      } else if (selected && (secret || sudo)) {
+        await saveIdentity(selected, {
+          ...(secret ? (selected.auth === "password" ? { password: secret } : { passphrase: secret }) : {}),
+          ...(sudo ? { sudo } : {}),
+        });
       }
       const saved = await saveHost({
         ...h,
@@ -104,7 +114,8 @@ export function HostEditor({ draft, onClose }: { draft: HostDraft; onClose: () =
   const remove = async () => {
     if (!draft.host) return;
     if (!confirm(`Delete ${draft.host.name}? Its saved login stays in Identities.`)) return;
-    closeTab(`server:${draft.host.id}`);
+    const tab = useTabs.getState().tabs.find((t) => t.id === `server:${draft.host!.id}`);
+    if (tab) closeTab(tab);
     await deleteHost(draft.host.id);
     onClose();
   };
@@ -234,9 +245,27 @@ export function HostEditor({ draft, onClose }: { draft: HostDraft; onClose: () =
             <TextInput type="password" value={secret} onChange={(e) => setSecret(e.target.value)} placeholder="unchanged" />
           </Field>
         )}
+        {identSel !== INHERIT && (
+          <Field
+            label={selected?.has_sudo ? "sudo password (saved — type to change)" : "sudo password (optional)"}
+            hint="Lets the terminal offer “Fill sudo password” at a [sudo] prompt. Typed into the server directly — never shown."
+          >
+            <TextInput type="password" value={sudo} onChange={(e) => setSudo(e.target.value)} placeholder={selected?.has_sudo ? "unchanged" : ""} />
+          </Field>
+        )}
       </section>
 
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-3 gap-3">
+        <Field label="Terminal theme" hint="e.g. a red theme for PROD">
+          <Select value={h.theme ?? ""} onChange={(e) => set("theme", e.target.value || null)}>
+            <option value="">Default (Settings)</option>
+            {themeNames.map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </Select>
+        </Field>
         <Field label="Start folder">
           <TextInput mono value={h.start_folder ?? ""} onChange={(e) => set("start_folder", e.target.value || null)} placeholder="/var/www/shop" />
         </Field>
@@ -257,6 +286,7 @@ export function HostEditor({ draft, onClose }: { draft: HostDraft; onClose: () =
           <TextInput mono className="h-7 w-16" value={h.keepalive_s} onChange={(e) => set("keepalive_s", Number(e.target.value.replace(/\D/g, "")) || 30)} />s
         </label>
       </div>
+      <RefreshFields value={h.refresh} onChange={(v) => set("refresh", v)} parentGroupId={h.group_id} />
       {err && <div className="rounded-lg border border-[#5A2D33] bg-[#33232A] px-3 py-2 text-prod-fg">{err}</div>}
     </Modal>
   );

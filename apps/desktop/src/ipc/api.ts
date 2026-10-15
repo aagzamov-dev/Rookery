@@ -1,12 +1,23 @@
-// Typed wrappers for Tauri commands (crates/rook-tauri/src/commands.rs).
+// Typed wrappers for Tauri commands (crates/rookery-tauri/src/commands.rs).
 // Tauri converts snake_case Rust argument names to camelCase on the JS side.
 import { invoke } from "@tauri-apps/api/core";
 import type { EffectiveRefresh } from "./bindings/EffectiveRefresh";
+import type { RefreshSetting } from "./bindings/RefreshSetting";
+import type { Snapshot } from "./bindings/Snapshot";
+import type { SyncScope } from "./bindings/SyncScope";
+import type { SyncSettings } from "./bindings/SyncSettings";
+import type { SyncStatus } from "./bindings/SyncStatus";
 import type { Group } from "./bindings/Group";
 import type { Host } from "./bindings/Host";
 import type { Identity } from "./bindings/Identity";
-import type { MetricsSample } from "./bindings/MetricsSample";
+import type { FileEntry } from "./bindings/FileEntry";
+import type { KnownHost } from "./bindings/KnownHost";
+import type { LocalShell } from "./bindings/LocalShell";
+import type { Process } from "./bindings/Process";
+import type { Service } from "./bindings/Service";
 import type { SessionInfo } from "./bindings/SessionInfo";
+import type { SubParams } from "./bindings/SubParams";
+import type { Snippet } from "./bindings/Snippet";
 import type { TermOpen } from "./bindings/TermOpen";
 import type { VaultStatus } from "./bindings/VaultStatus";
 
@@ -67,7 +78,42 @@ export const api = {
   identityDelete: (id: string) => invoke<void>("identity_delete", { id }),
   refreshEffective: (hostId: string) => invoke<EffectiveRefresh>("refresh_effective", { hostId }),
 
+  // dashboard sync
+  snapshotsList: () => invoke<Snapshot[]>("snapshots_list"),
+  syncStatus: () => invoke<SyncStatus>("sync_status"),
+  syncRun: (scope: SyncScope) => invoke<string>("sync_run", { scope }),
+  syncCancel: (jobId: string) => invoke<void>("sync_cancel", { jobId }),
+  syncSettingsSet: (settings: SyncSettings) => invoke<SyncSettings>("sync_settings_set", { settings }),
+  refreshGlobalSet: (setting: RefreshSetting) => invoke<RefreshSetting>("refresh_global_set", { setting }),
+  syncSetAuto: (groupIds: string[], on: boolean) => invoke<void>("sync_set_auto", { groupIds, on }),
+  syncWindowVisible: (visible: boolean) => invoke<void>("sync_window_visible", { visible }),
+
+  // clipboard
+  clipboardWrite: (text: string) => invoke<void>("clipboard_write", { text }),
+  clipboardRead: () => invoke<string>("clipboard_read"),
+
+  // known hosts
+  knownHostsList: () => invoke<KnownHost[]>("known_hosts_list"),
+  knownHostForget: (hostId: string) => invoke<void>("known_host_forget", { hostId }),
+
+  // local terminals
+  localShells: () => invoke<LocalShell[]>("local_shells"),
+  localTermOpen: (shellId: string, cols: number, rows: number) => invoke<string>("local_term_open", { shellId, cols, rows }),
+  localTermWrite: (termId: string, data: string) => invoke<void>("local_term_write", { termId, data }),
+  localTermResize: (termId: string, cols: number, rows: number) => invoke<void>("local_term_resize", { termId, cols, rows }),
+  localTermClose: (termId: string) => invoke<void>("local_term_close", { termId }),
+
+  // processes, sudo
+  processesList: (hostId: string) => invoke<Process[]>("processes_list", { hostId }),
+  processKill: (hostId: string, pid: number, force: boolean) => invoke<void>("process_kill", { hostId, pid, force }),
+  termSudoFill: (termId: string) => invoke<void>("term_sudo_fill", { termId }),
+
+  // import / export (paths come from file dialogs)
+  fileReadText: (path: string) => invoke<string>("file_read_text", { path }),
+  fileWriteText: (path: string, content: string) => invoke<void>("file_write_text", { path, content }),
+
   // sessions
+  frontendReady: () => invoke<void>("frontend_ready"),
   sessionAttach: (hostId: string) => invoke<string>("session_attach", { hostId }),
   sessionDetach: (attachId: string) => invoke<void>("session_detach", { attachId }),
   sessionInfo: (hostId: string) => invoke<SessionInfo>("session_info", { hostId }),
@@ -80,12 +126,43 @@ export const api = {
   termClose: (termId: string) => invoke<void>("term_close", { termId }),
 
   // subscriptions
-  subscribe: (hostId: string, source: string, intervalMs?: number) =>
-    invoke<{ sub_id: string; cached: MetricsSample | null }>("subscribe", {
+  subscribe: (hostId: string, source: string, params?: Partial<SubParams>) =>
+    invoke<{ sub_id: string; cached: unknown }>("subscribe", {
       hostId,
       source,
-      intervalMs: intervalMs ?? null,
+      params: params ? { interval_ms: null, container: null, path: null, since: null, ...params } : null,
     }),
   unsubscribe: (subId: string) => invoke<void>("unsubscribe", { subId }),
+
+  // files (SFTP)
+  sftpHome: (hostId: string) => invoke<string>("sftp_home", { hostId }),
+  sftpList: (hostId: string, path: string) => invoke<FileEntry[]>("sftp_list", { hostId, path }),
+  sftpMkdir: (hostId: string, path: string) => invoke<void>("sftp_mkdir", { hostId, path }),
+  sftpRename: (hostId: string, from: string, to: string) => invoke<void>("sftp_rename", { hostId, from, to }),
+  sftpDelete: (hostId: string, path: string, isDir: boolean, recursive: boolean) =>
+    invoke<void>("sftp_delete", { hostId, path, isDir, recursive }),
+  sftpUpload: (hostId: string, localPaths: string[], remoteDir: string) =>
+    invoke<string[]>("sftp_upload", { hostId, localPaths, remoteDir }),
+  sftpDownload: (hostId: string, remote: string, local: string) => invoke<string>("sftp_download", { hostId, remote, local }),
+  sftpClose: (hostId: string) => invoke<void>("sftp_close", { hostId }),
+  transferCancel: (id: string) => invoke<void>("transfer_cancel", { id }),
+  editOpen: (hostId: string, remote: string) => invoke<string>("edit_open", { hostId, remote }),
+  editUpload: (hostId: string, remote: string, force: boolean) => invoke<void>("edit_upload", { hostId, remote, force }),
+  editStop: (hostId: string, remote: string) => invoke<void>("edit_stop", { hostId, remote }),
+
+  // docker, services, shell
+  dockerAction: (hostId: string, container: string, action: "start" | "stop" | "restart" | "kill" | "remove") =>
+    invoke<void>("docker_action", { hostId, container, action }),
+  servicesList: (hostId: string) => invoke<Service[]>("services_list", { hostId }),
+  shellIntegrationInstall: (hostId: string) => invoke<number>("shell_integration_install", { hostId }),
+
+  // snippets
+  snippetsList: () => invoke<Snippet[]>("snippets_list"),
+  snippetSave: (snippet: Snippet) => invoke<Snippet>("snippet_save", { snippet }),
+  snippetDelete: (id: string) => invoke<void>("snippet_delete", { id }),
+
+  // UI settings (only `ui.*` keys)
+  settingGet: <T>(key: string) => invoke<T | null>("setting_get", { key }),
+  settingSet: (key: string, value: unknown) => invoke<void>("setting_set", { key, value }),
   debugActiveSubscriptions: () => invoke<[string, string, number][]>("debug_active_subscriptions"),
 };

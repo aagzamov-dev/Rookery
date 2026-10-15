@@ -16,16 +16,29 @@ import {
   SlidersHorizontal,
   X,
   Zap,
+  Keyboard,
+  TerminalSquare,
 } from "lucide-react";
 import { useHosts } from "../stores/hosts";
-import { pageTabId, serverTabId, useTabs, type PageKind, type Tab } from "../stores/tabs";
+import { pageTabId, serverTabId, useTabs, type PageKind } from "../stores/tabs";
 import { useSessions } from "../stores/sessions";
 import { useUi } from "../stores/ui";
 import { useVault } from "../stores/vault";
+import { useKeys } from "../stores/keys";
+import { useSnippets } from "../stores/snippets";
+import { useSync } from "../stores/sync";
 import { useSubscriptionEngine } from "../subscriptions/useEngine";
+import { installKeyDispatcher, shellHooks } from "../keys/dispatcher";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { api } from "../ipc/api";
+import { useFiles } from "../stores/files";
 import { useAutoLock } from "./useAutoLock";
-import { terminalRegistry } from "../features/server-tab/terminal/registry";
+import { closeTab } from "./tabActions";
 import { ServerTab } from "../features/server-tab/ServerTab";
+import { CommandPalette } from "../features/palette/CommandPalette";
+import { DialogHost } from "../ui/DialogHost";
+import { LocalTab, useLoadLocalShells, useLocalShells } from "../features/local/LocalTab";
+import { restoreSession, useSessionPersistence } from "./session";
 import { HostEditor, type HostDraft } from "../features/hosts/HostEditor";
 import { GroupEditor } from "../features/hosts/GroupEditor";
 import { PageTab } from "../features/pages/Pages";
@@ -33,24 +46,40 @@ import { EnvTag, IconButton, StatusDot } from "../ui/primitives";
 import type { Group } from "../ipc/bindings/Group";
 import type { Host } from "../ipc/bindings/Host";
 
-export function closeTab(tab: Tab) {
-  useTabs.getState().close(tab.id);
-  if (tab.kind === "server") {
-    terminalRegistry.disposeHost(tab.hostId);
-    void useSessions.getState().detach(tab.hostId);
-  }
-}
-
 export function Shell() {
   useSubscriptionEngine();
   useAutoLock();
-  useTabShortcuts();
+
+  useEffect(() => {
+    void useKeys.getState().load().then(() => restoreSession());
+    void useSnippets.getState().load();
+    void useSync.getState().load();
+    return installKeyDispatcher();
+  }, []);
+
+  // Auto-sync pauses a minute after the window is minimised / hidden (Rust keeps the clock).
+  useEffect(() => {
+    const report = () => void api.syncWindowVisible(!document.hidden).catch(() => {});
+    report();
+    document.addEventListener("visibilitychange", report);
+    return () => document.removeEventListener("visibilitychange", report);
+  }, []);
+  useSessionPersistence();
+  useLoadLocalShells();
 
   const hostListOpen = useUi((s) => s.hostListOpen);
   const tabs = useTabs((s) => s.tabs);
   const activeTabId = useTabs((s) => s.activeTabId);
   const [hostEditor, setHostEditor] = useState<HostDraft | null>(null);
   const [groupEditor, setGroupEditor] = useState<Group | "new" | null>(null);
+
+  useEffect(() => {
+    shellHooks.newHost = () => setHostEditor({});
+    shellHooks.editHost = (host) => setHostEditor({ host });
+    shellHooks.editGroup = (group) => setGroupEditor(group);
+    shellHooks.focusQuickConnect = () => document.querySelector<HTMLInputElement>('input[aria-label="Quick connect"]')?.focus();
+    shellHooks.uploadFiles = (hostId) => void uploadToCurrentFolder(hostId);
+  }, []);
 
   return (
     <div className="flex h-full flex-col">
@@ -72,6 +101,8 @@ export function Shell() {
             {tabs.map((t) =>
               t.kind === "server" ? (
                 <ServerTab key={t.id} hostId={t.hostId} active={t.id === activeTabId} onEditHost={(h) => setHostEditor({ host: h })} />
+              ) : t.kind === "local" ? (
+                <LocalTab key={t.id} tabId={t.id} shellId={t.shellId} active={t.id === activeTabId} />
               ) : (
                 <PageTab key={t.id} page={t.page} active={t.id === activeTabId} onEditHost={(h) => setHostEditor({ host: h })} />
               ),
@@ -81,33 +112,19 @@ export function Shell() {
       </div>
       {hostEditor && <HostEditor draft={hostEditor} onClose={() => setHostEditor(null)} />}
       {groupEditor && <GroupEditor group={groupEditor === "new" ? null : groupEditor} onClose={() => setGroupEditor(null)} />}
+      <CommandPalette onNewHost={() => setHostEditor({})} />
+      <DialogHost />
     </div>
   );
 }
 
-function useTabShortcuts() {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const mod = e.ctrlKey || e.metaKey;
-      if (!mod) return;
-      const { tabs, activeTabId, activate } = useTabs.getState();
-      if (e.key === "Tab" && tabs.length > 1) {
-        e.preventDefault();
-        const i = tabs.findIndex((t) => t.id === activeTabId);
-        const next = tabs[(i + (e.shiftKey ? -1 : 1) + tabs.length) % tabs.length];
-        activate(next.id);
-      } else if (e.shiftKey && e.key.toLowerCase() === "w") {
-        // Ctrl+Shift+W closes the tab (plain Ctrl+W belongs to the terminal / shells).
-        const tab = tabs.find((t) => t.id === activeTabId);
-        if (tab) {
-          e.preventDefault();
-          closeTab(tab);
-        }
-      }
-    };
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
-  }, []);
+/** Upload shortcut: pick files, send them into the folder the Files view is showing. */
+async function uploadToCurrentFolder(hostId: string) {
+  const dir = useFiles.getState().byHost[hostId]?.path;
+  if (!dir) return;
+  const picked = await openDialog({ multiple: true, title: `Upload to ${dir}` });
+  const list = Array.isArray(picked) ? picked : picked ? [picked] : [];
+  if (list.length) await api.sftpUpload(hostId, list, dir).catch(() => {});
 }
 
 // --------------------------------------------------------------------------- title bar
@@ -127,7 +144,7 @@ function TitleBar({ onQuickConnect }: { onQuickConnect: (d: HostDraft) => void }
         <span aria-hidden className="grid h-[22px] w-[22px] place-items-center rounded-md bg-accent font-mono text-[11px] font-bold text-bg">
           &gt;_
         </span>
-        Rook
+        Rookery
       </div>
       <label className="mx-auto flex h-[30px] w-full max-w-[560px] items-center gap-2 rounded-lg border border-line bg-bg px-2.5 text-muted">
         <Search size={14} />
@@ -176,6 +193,7 @@ function IconRail() {
       {page("snippets", "Snippets", <Zap size={18} />)}
       {page("tunnels", "Tunnels", <ArrowLeftRight size={18} />)}
       {page("hosts", "Hosts & identities", <KeyRound size={18} />)}
+      {page("shortcuts", "Keyboard shortcuts", <Keyboard size={18} />)}
       <span className="flex-1" />
       {item("Lock (Ctrl+L)", <Lock size={18} />, () => void lock(), false)}
       {page("settings", "Settings", <SlidersHorizontal size={18} />)}
@@ -312,6 +330,7 @@ const pageMeta: Record<PageKind, { label: string; icon: ReactNode }> = {
   tunnels: { label: "Tunnels", icon: <ArrowLeftRight size={13} /> },
   hosts: { label: "Hosts & identities", icon: <KeyRound size={13} /> },
   settings: { label: "Settings", icon: <SlidersHorizontal size={13} /> },
+  shortcuts: { label: "Shortcuts", icon: <Keyboard size={13} /> },
 };
 
 function TabBar() {
@@ -320,7 +339,12 @@ function TabBar() {
   const activate = useTabs((s) => s.activate);
   const hosts = useHosts((s) => s.hosts);
   const sessions = useSessions((s) => s.byHost);
-  if (tabs.length === 0) return <div className="h-10 border-b border-line bg-panel" />;
+  if (tabs.length === 0)
+    return (
+      <div className="flex h-10 border-b border-line bg-panel">
+        <NewTabButton />
+      </div>
+    );
   return (
     <div role="tablist" aria-label="Open tabs" className="flex h-10 flex-none items-stretch overflow-x-auto border-b border-line bg-panel">
       {tabs.map((t) => {
@@ -348,6 +372,11 @@ function TabBar() {
                 {host?.name ?? "deleted host"}
                 {host && <EnvTag env={host.env_label} />}
               </>
+            ) : t.kind === "local" ? (
+              <>
+                <TerminalSquare size={13} className="text-muted" />
+                {t.title}
+              </>
             ) : (
               <>
                 {pageMeta[t.page].icon}
@@ -367,6 +396,44 @@ function TabBar() {
           </div>
         );
       })}
+      <NewTabButton />
+    </div>
+  );
+}
+
+/** "+" at the end of the tab bar: open a local terminal (PowerShell, cmd, WSL, Git Bash, zsh…). */
+function NewTabButton() {
+  const shells = useLocalShells((s) => s.shells);
+  const openLocal = useTabs((s) => s.openLocal);
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative flex items-center">
+      <button aria-label="New local terminal" title="New local terminal" onClick={() => setOpen(!open)} className="grid h-full w-10 place-items-center text-muted hover:text-text">
+        <Plus size={14} />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div role="menu" className="absolute top-full left-0 z-50 mt-1 flex min-w-[220px] flex-col rounded-lg border border-line bg-panel p-1 shadow-xl">
+            <span className="px-2.5 pt-1.5 pb-1 text-[11px] tracking-wider text-muted uppercase">Local terminal</span>
+            {(shells ?? []).map((s) => (
+              <button
+                key={s.id}
+                role="menuitem"
+                onClick={() => {
+                  setOpen(false);
+                  openLocal(s.id, s.label);
+                }}
+                className="flex h-8 items-center gap-2 rounded-md px-2.5 text-left hover:bg-accent-bg"
+              >
+                <TerminalSquare size={13} className="text-muted" /> {s.label}
+              </button>
+            ))}
+            {shells && shells.length === 0 && <span className="px-2.5 py-2 text-xs text-muted">No local shells found</span>}
+            {!shells && <span className="px-2.5 py-2 text-xs text-muted">Looking for shells…</span>}
+          </div>
+        </>
+      )}
     </div>
   );
 }
