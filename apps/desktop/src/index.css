@@ -1,0 +1,79 @@
+@import "tailwindcss";
+@import "@xterm/xterm/css/xterm.css";
+
+/* Design tokens from the canvas (https://claude.ai/artifact/B6ZbSxMVvfykQtpF5ojndo) */
+@theme {
+  --color-bg: #1b2230;
+  --color-panel: #222a3a;
+  --color-panel2: #2a3345;
+  --color-line: #364056;
+  --color-text: #e6eaf2;
+  --color-muted: #a3adc2;
+  --color-accent: #8ab4ff;
+  --color-accent-bg: #2b3f66;
+  --color-accent-line: #4d6699;
+  --color-ok: #57c994;
+  --color-warn: #f2ba45;
+  --color-bad: #ff7a7a;
+  --color-term: #171d29;
+  --color-prod-bg: #4a2329;
+  --color-prod-fg: #ffa8a8;
+
+  --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #45506a transparent;
+}
+
+button {
+  cursor: pointer;
+}
+button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+.xterm {
+  padding: 10px 12px;
+  height: 100%;
+}
+.xterm-viewport {
+  background-color: var(--color-term) !important;
+}
+
+@keyframes shake {
+  10%, 90% { transform: translateX(-2px); }
+  20%, 80% { transform: translateX(4px); }
+  30%, 50%, 70% { transform: translateX(-6px); }
+  40%, 60% { transform: translateX(6px); }
+}
+.shake {
+  animation: shake 0.4s;
+}

@@ -1,0 +1,21 @@
+# Rust
+/target
+**/*.rs.bk
+
+# Node
+node_modules
+apps/desktop/dist
+apps/desktop/.vite
+
+# Tauri
+crates/rook-tauri/gen/schemas
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+.idea
+
+# Local data
+*.log

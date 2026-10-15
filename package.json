@@ -1,0 +1,18 @@
+{
+  "name": "rook",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": ["apps/desktop"],
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "icons": "tauri icon app-icon.svg -o crates/rook-tauri/icons",
+    "bindings": "cargo test -p rook-core export_bindings",
+    "test": "cargo test --workspace && npm --workspace apps/desktop run test",
+    "typecheck": "npm --workspace apps/desktop run typecheck"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.5.0"
+  }
+}
