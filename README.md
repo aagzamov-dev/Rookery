@@ -140,7 +140,7 @@ npm run build        # installer in target/release/bundle
 ```
 
 - **Screenshots:** the images above are the real UI with made-up data. Run `npm --workspace apps/desktop run dev` and open `http://localhost:1420/demo.html?scene=dashboard` (scenes: `terminal`, `docker`, `backup`, `hosts`, `shortcuts`, `snippets`).
-- **Releasing:** push a tag `vX.Y.Z` and GitHub Actions builds Windows and macOS and publishes a signed release. See [06-AUTO-UPDATE.md](06-AUTO-UPDATE.md) §4.
+- **Releasing:** push a tag `vX.Y.Z` and GitHub Actions builds Windows and macOS and publishes a signed release. See [06-AUTO-UPDATE.md](docs/06-AUTO-UPDATE.md) §4.
 
 ```
 crates/rookery-core    Rust core: vault, SQLite, SSH, SFTP, collectors, sync, backup, importers (no UI deps)
@@ -150,11 +150,12 @@ apps/desktop           React + TypeScript UI (Vite, Tailwind, zustand, xterm.js)
 
 ## Project docs
 
-[Architecture](01-ARCHITECTURE.md) · [Roadmap](02-ROADMAP.md) · [Desktop features](03-DESKTOP-FEATURES.md) · [Data, sync & security](04-DATA-SYNC-SECURITY.md) · [Mobile & tablet](05-MOBILE-TABLET.md) · [Auto-update](06-AUTO-UPDATE.md) · [Changelog](CHANGELOG.md)
+[Start here](docs/00-START-HERE.md) · [Architecture](docs/01-ARCHITECTURE.md) · [Roadmap](docs/02-ROADMAP.md) · [Desktop features](docs/03-DESKTOP-FEATURES.md) · [Data, sync & security](docs/04-DATA-SYNC-SECURITY.md) · [Mobile & tablet](docs/05-MOBILE-TABLET.md) · [Auto-update](docs/06-AUTO-UPDATE.md) · [SQL connections (next)](docs/07-SQL-CONNECTIONS.md) · [Changelog](docs/CHANGELOG.md)
 
 ## Roadmap
 
-- **Next:** tunnels (port forwarding with on/off switches), jump hosts, SSH agent login, SSH key generator.
+- **v0.7 — SQL connections:** browse databases, tables and columns, run SQL with production safety (read-only by default, Commit / Rollback), in a server tab or in database tabs of their own (local MySQL / PostgreSQL too). Spec: [docs/07-SQL-CONNECTIONS.md](docs/07-SQL-CONNECTIONS.md).
+- **Then:** tunnels (port forwarding with on/off switches), jump hosts, SSH agent login, SSH key generator.
 - **v1.0:** Android (then iOS), with the same core and a phone layout for checking servers and quick actions.
 
 ## License

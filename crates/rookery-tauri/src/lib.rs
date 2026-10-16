@@ -29,7 +29,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init());
-    // Desktop only: self-update (signed, see 06-AUTO-UPDATE.md), relaunch, global show/hide hotkey.
+    // Desktop only: self-update (signed, see docs/06-AUTO-UPDATE.md), relaunch, global show/hide hotkey.
     #[cfg(desktop)]
     let builder = builder
         .plugin(tauri_plugin_updater::Builder::new().build())

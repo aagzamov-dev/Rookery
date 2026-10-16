@@ -1,5 +1,5 @@
 # Release: push a tag like `v0.6.0` → Windows + macOS builds, signed update files,
-# and a published GitHub Release with `latest.json` that installed apps read (06-AUTO-UPDATE.md).
+# and a published GitHub Release with `latest.json` that installed apps read (docs/06-AUTO-UPDATE.md).
 #
 # Needs two repository secrets (Settings → Secrets and variables → Actions):
 #   TAURI_SIGNING_PRIVATE_KEY           contents of ~/.tauri/rookery-updater.key
@@ -20,15 +20,15 @@ jobs:
       id: ${{ steps.release.outputs.result }}
     steps:
       - uses: actions/checkout@v4
-      - name: Release notes (.github/release-notes.md + CHANGELOG.md)
+      - name: Release notes (.github/release-notes.md + docs/CHANGELOG.md)
         run: |
           tag="${GITHUB_REF_NAME}"
           version="${tag#v}"
           awk -v v="$version" '
             /^## / { if (found) exit; if (index($0, v)) { found = 1; next } }
             found { print }
-          ' CHANGELOG.md > changes.md
-          [ -s changes.md ] || echo "See CHANGELOG.md." > changes.md
+          ' docs/CHANGELOG.md > changes.md
+          [ -s changes.md ] || echo "See docs/CHANGELOG.md." > changes.md
           awk -v version="$version" -v tag="$tag" '
             /\{\{CHANGES\}\}/ { while ((getline line < "changes.md") > 0) print line; next }
             { gsub(/\{\{VERSION\}\}/, version); gsub(/\{\{TAG\}\}/, tag); print }

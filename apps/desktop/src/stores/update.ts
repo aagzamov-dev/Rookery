@@ -1,4 +1,4 @@
-// Self-update (06-AUTO-UPDATE.md): read latest.json from GitHub Releases, verify the
+// Self-update (docs/06-AUTO-UPDATE.md): read latest.json from GitHub Releases, verify the
 // signature (done by the plugin with the public key in tauri.conf.json), install, restart.
 import { create } from "zustand";
 import { getVersion } from "@tauri-apps/api/app";

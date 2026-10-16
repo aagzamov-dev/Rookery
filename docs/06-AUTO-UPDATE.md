@@ -71,7 +71,7 @@ Fixed URL the app checks: `https://github.com/<org>/rookery/releases/latest/down
 
 ### CI release pipeline
 - [ ] GitHub Actions workflow with `tauri-action`. On tag `v*`: build Windows (NSIS) + macOS (universal or arm64 + x64), sign updater artifacts, create a GitHub Release with installers, `.sig` files and the generated `latest.json`.
-- [ ] Release notes from the tag message / CHANGELOG.md.
+- [x] Release notes from docs/CHANGELOG.md through .github/release-notes.md.
 - [ ] Optional: Windows code-signing cert + Apple notarization secrets (removes OS warnings).
 
 ### App UI
@@ -102,7 +102,7 @@ One-time setup:
 
 Each release:
 1. Bump the version in `Cargo.toml` (workspace), `crates/rookery-tauri/tauri.conf.json`, `package.json` and `apps/desktop/package.json`.
-2. Add a `## x.y.z` section to `CHANGELOG.md`; it becomes the release notes and the app's "What's new".
+2. Add a `## x.y.z` section to `docs/CHANGELOG.md`; it becomes the release notes and the app's "What's new".
 3. Run:
    ```
    git commit -am "Release x.y.z" && git tag vx.y.z && git push && git push --tags

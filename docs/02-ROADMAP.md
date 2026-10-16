@@ -6,7 +6,7 @@ Priorities:
 - **P2** — nice to have.
 - **P3** — later / maybe.
 
-Each feature points to the file where it is specified: `[A]` 01-ARCHITECTURE, `[D]` 03-DESKTOP-FEATURES, `[S]` 04-DATA-SYNC-SECURITY, `[M]` 05-MOBILE-TABLET, `[U]` 06-AUTO-UPDATE.
+Each feature points to the file where it is specified: `[A]` 01-ARCHITECTURE, `[D]` 03-DESKTOP-FEATURES, `[S]` 04-DATA-SYNC-SECURITY, `[M]` 05-MOBILE-TABLET, `[U]` 06-AUTO-UPDATE, `[Q]` 07-SQL-CONNECTIONS. New contributors / chats: read [00-START-HERE.md](00-START-HERE.md) first.
 
 ---
 
@@ -121,6 +121,21 @@ Done when: 20 hosts in the list cause **zero** connections; opening/closing/swit
 | ✅ P2 | System-wide show/hide hotkey (Quake-style). Window blur skipped: the solid Slate Blue theme would hide it | [D] §3.11 |
 | ✅ P2 | Onboarding: first-run welcome (add / import / join another device) | [D] §12 |
 | ✅ P1 | Importers: MobaXterm, PuTTY, `~/.ssh/config` (moved up from v0.5) | [S] §7 |
+
+---
+
+## v0.7 — SQL connections (next)
+
+| P | Feature | Spec |
+|---|---|---|
+| P0 | Engine: PostgreSQL + MySQL/MariaDB (streaming results, cancel, timeout, read-only, transactions) | [Q] §4 |
+| P0 | Database view inside a server tab (through the server's SSH session) | [Q] §2.1, §4.1 |
+| P0 | Database tabs: saved connections in the sidebar, direct / through a server / SSL, quick-connect URLs | [Q] §2, §3 |
+| P0 | Schema tree, SQL editor (CodeMirror, completion), results grid, CSV, history | [Q] §2.2, §5 |
+| P0 | PROD safety: read-only by default, Allow changes (15 min), Commit / Rollback, risky-statement confirm, row cap | [Q] §6 |
+| P1 | Docker "Open in SQL", Laravel .env import, Find databases on this PC | [Q] §2.4 |
+| P1 | Connections in backup & device sync (passwords encrypted) | [Q] §3.2 |
+| P2 | Edit cells in the grid (v0.8) | [Q] §1 |
 
 ---
 
