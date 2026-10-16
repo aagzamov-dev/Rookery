@@ -101,7 +101,7 @@ docs/                   all documentation (this file, specs, CHANGELOG, screensh
   - PowerShell strips inner quotes in `cargo add --target 'cfg(...)'`: edit Cargo.toml by hand.
 - **Releases:**
   1. Bump the version in `Cargo.toml` (workspace), `crates/rookery-tauri/tauri.conf.json`, `package.json`, `apps/desktop/package.json`.
-  2. Add a `docs/CHANGELOG.md` `## x.y.z` section.
+  2. Add a `docs/CHANGELOG.md` `## x.y.z` section, and update the version in the README download links.
   3. Commit, then `git tag vx.y.z` and push the tag. **Only the tag releases**; pushing `main` never does.
 
   Details: [06-AUTO-UPDATE.md](06-AUTO-UPDATE.md) §4. Pushing `main` only runs CI. Never create or push a release tag unless the user asks.

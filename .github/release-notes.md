@@ -18,10 +18,11 @@
 ## First install
 
 - **Windows:** the installer is per-user (no admin rights). Rookery isn't code-signed yet, so SmartScreen may say "Windows protected your PC": click **More info → Run anyway**.
-- **macOS:** open the `.dmg` and drag Rookery to Applications. Rookery isn't notarized yet; if macOS says the app is "damaged" or from an "unidentified developer", run this once in Terminal:
+- **macOS:** open the `.dmg` and drag Rookery to Applications. Rookery isn't signed by Apple yet, so macOS blocks it the first time ("damaged" or "unidentified developer"). Run this once in Terminal, then open Rookery:
   ```
-  xattr -cr /Applications/Rookery.app
+  xattr -dr com.apple.quarantine "/Applications/Rookery.app"
   ```
+  It removes the "downloaded from the internet" mark that makes macOS block unsigned apps. Updates afterwards install normally.
 - **Coming from MobaXterm, PuTTY or `~/.ssh/config`?** The welcome screen imports your servers.
 - **Using Rookery on another computer?** Open **Backup & sync** and choose the same sync folder and password.
 

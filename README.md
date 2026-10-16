@@ -11,7 +11,8 @@
 
 <p align="center">
   <a href="https://github.com/aagzamov-dev/Rookery/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/aagzamov-dev/Rookery?color=8AB4FF&label=download" /></a>
-  <img alt="Windows and macOS" src="https://img.shields.io/badge/Windows%20%7C%20macOS-1B2230?logo=tauri" />
+  <a href="https://github.com/aagzamov-dev/Rookery/releases/download/v0.8.0/Rookery_0.8.0_x64-setup.exe"><img alt="Download for Windows" src="https://img.shields.io/badge/Windows-download-1B2230?logo=windows" /></a>
+  <a href="https://github.com/aagzamov-dev/Rookery/releases/download/v0.8.0/Rookery_0.8.0_universal.dmg"><img alt="Download for macOS" src="https://img.shields.io/badge/macOS-download-1B2230?logo=apple" /></a>
   <img alt="MIT license" src="https://img.shields.io/badge/license-MIT-57C994" />
 </p>
 
@@ -123,10 +124,16 @@ Also included:
 
 **[⬇ Latest release](https://github.com/aagzamov-dev/Rookery/releases/latest)**
 
-| | File | First start |
+| | Download | First start |
 |---|---|---|
-| **Windows 10 / 11** | `Rookery_x.y.z_x64-setup.exe` | Installs for your user only (no admin). SmartScreen may warn once because the app isn't code-signed yet: **More info → Run anyway**. |
-| **macOS** (Apple Silicon & Intel) | `Rookery_x.y.z_universal.dmg` | Drag to Applications. The app isn't notarized yet, so run `xattr -cr /Applications/Rookery.app` once if macOS says it's "damaged". |
+| **Windows 10 / 11** | [Rookery_0.8.0_x64-setup.exe](https://github.com/aagzamov-dev/Rookery/releases/download/v0.8.0/Rookery_0.8.0_x64-setup.exe) | Installs for your user only (no admin). SmartScreen may warn once because the app isn't code-signed yet: **More info → Run anyway**. |
+| **macOS** (Apple Silicon & Intel) | [Rookery_0.8.0_universal.dmg](https://github.com/aagzamov-dev/Rookery/releases/download/v0.8.0/Rookery_0.8.0_universal.dmg) | Drag to Applications, then run the command below once (the app isn't signed by Apple yet, so macOS says it's "damaged"). |
+
+**macOS, first start:** run this once in Terminal, then open Rookery. Updates afterwards install normally.
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Rookery.app"
+```
 
 After that, Rookery updates itself (Settings › About). Updates are verified with Rookery's signature before they install.
 

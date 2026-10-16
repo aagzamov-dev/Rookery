@@ -102,15 +102,16 @@ One-time setup:
 
 Each release:
 1. Bump the version in `Cargo.toml` (workspace), `crates/rookery-tauri/tauri.conf.json`, `package.json` and `apps/desktop/package.json`.
-2. Add a `## x.y.z` section to `docs/CHANGELOG.md`; it becomes the release notes and the app's "What's new" (together with any versions since the last published release, so a skipped one is not lost).
-3. Commit, then tag and push the tag:
+2. Update the two download links in `README.md` (top badges and the Download table: the version is in the file names).
+3. Add a `## x.y.z` section to `docs/CHANGELOG.md`; it becomes the release notes and the app's "What's new" (together with any versions since the last published release, so a skipped one is not lost).
+4. Commit, then tag and push the tag:
    ```
    git commit -am "Release x.y.z" && git tag vx.y.z && git push && git push --tags
    ```
    Only the tag starts a release; pushing `main` alone runs CI only. The tag must match the version in `tauri.conf.json` (otherwise the run fails), and a version that is already published is skipped. Runs never overlap, and a draft left by a failed run is replaced when you push the tag again (`git push --force origin vx.y.z` after moving it).
-4. About 20 minutes later, Releases has the Windows `.exe`, the macOS `.dmg` / `.app.tar.gz`, the `.sig` files and `latest.json`. Installed apps offer the update on their next start (or via "Check for updates").
+5. About 20 minutes later, Releases has the Windows `.exe`, the macOS `.dmg` / `.app.tar.gz`, the `.sig` files and `latest.json`. Installed apps offer the update on their next start (or via "Check for updates").
 
-macOS without Apple notarization: the first download shows "damaged / unidentified developer". Run `xattr -cr /Applications/Rookery.app` once; updates afterwards install normally.
+macOS without Apple notarization: the first download shows "damaged / unidentified developer". Run `xattr -dr com.apple.quarantine "/Applications/Rookery.app"` once (it removes the "downloaded from the internet" mark); updates afterwards install normally, because the updater downloads them itself.
 
 Windows without a code-signing certificate: SmartScreen warns on the first install (More info → Run anyway). Updates install silently.
 
