@@ -32,6 +32,7 @@ parking_lot.workspace = true
 
 # Desktop only: self-update, relaunch, the global show/hide hotkey
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
-tauri-plugin-global-shortcut = "2"
-tauri-plugin-process = "2"
-tauri-plugin-updater = "2"
+tauri-plugin-global-shortcut = "2.4"
+tauri-plugin-process = "2.4"
+# No `zip` feature: every zip 2.x/4.x release is yanked, and we ship the raw NSIS .exe (no zipped update bundles). macOS uses tar/flate2 unconditionally.
+tauri-plugin-updater = { version = "2.14", default-features = false, features = ["rustls-tls", "system-proxy"] }

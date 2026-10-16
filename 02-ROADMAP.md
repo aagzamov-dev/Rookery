@@ -100,7 +100,7 @@ Done when: 20 hosts in the list cause **zero** connections; opening/closing/swit
 | ✅ P0 | Device sync (PC ↔ laptop) through a cloud-synced folder (Google Drive / OneDrive / Dropbox): one file per device, newest wins, deletions travel, auto sync | [S] §5.3 |
 | P2 | Built-in Google Drive (OAuth) — only if the sync folder is not enough | [S] §6 |
 | ✅ P0 | Sync status chip in the title bar ("Synced 2 min ago", "Synced · 3 added") | [D] §1.1 |
-| P1 | Import from `~/.ssh/config`, MobaXterm `.mxtsessions`, PuTTY registry | [S] §7 |
+| ✅ P1 | Import from `~/.ssh/config`, MobaXterm `.mxtsessions`, PuTTY registry (built in v0.6) | [S] §7 |
 | P1 | Port-forwarding manager (Tunnels page) with on/off switches | [D] §10 |
 | P1 | Jump host / bastion | [S] §1, [D] §7 |
 | P1 | SSH key generator + "copy key to server" | [D] §7.4 |
@@ -108,17 +108,19 @@ Done when: 20 hosts in the list cause **zero** connections; opening/closing/swit
 
 ---
 
-## v0.6 — Polish & release
+## v0.6 — Polish & release — **built**
 
 | P | Feature | Spec |
 |---|---|---|
-| P0 | Code signing (Windows cert, Apple notarization), auto-update (signed updates via GitHub Releases + `latest.json`) | [A] §2, [U] |
-| P0 | Settings page (global refresh defaults, theme, fonts, shortcuts, auto-lock) | [D] §11 |
-| P1 | Session logging to file | [D] §3.9 |
-| P1 | Triggers (highlight ERROR/WARN; optional notify) | [D] §3.10 |
-| P1 | Bulk edit / move hosts; duplicate host | [D] §7.3 |
-| P2 | Hotkey (Quake-style) terminal window; window vibrancy | [D] §3.11 |
-| P2 | Onboarding: first-run import wizard | [D] §12 |
+| ✅ P0 | Auto-update: signed updates from GitHub Releases + `latest.json`, banner with notes, check on start (can be off), CI release workflow | [A] §2, [U] |
+| P2 | Paid code signing (Windows certificate, Apple notarization) — optional, removes the first-install warning | [U] §1.1 |
+| ✅ P0 | Settings page (refresh defaults, theme, fonts, shortcuts, auto-lock time, logs, triggers, hotkey, about) | [D] §11 |
+| ✅ P1 | Session logging to file (all servers or per server, retention) | [D] §3.9 |
+| ✅ P1 | Triggers (highlight ERROR/WARN or custom regex; optional notify) | [D] §3.10 |
+| ✅ P1 | Bulk edit / move hosts; duplicate host | [D] §7.3 |
+| ✅ P2 | System-wide show/hide hotkey (Quake-style). Window blur skipped: the solid Slate Blue theme would hide it | [D] §3.11 |
+| ✅ P2 | Onboarding: first-run welcome (add / import / join another device) | [D] §12 |
+| ✅ P1 | Importers: MobaXterm, PuTTY, `~/.ssh/config` (moved up from v0.5) | [S] §7 |
 
 ---
 

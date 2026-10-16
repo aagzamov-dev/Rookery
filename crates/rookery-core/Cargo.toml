@@ -37,7 +37,7 @@ russh-sftp = "2"
 
 # misc
 dirs = "6"
-time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
+time = { version = "0.3", features = ["serde", "formatting", "parsing", "local-offset", "macros"] }
 
 # Local terminal tabs (desktop only)
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]

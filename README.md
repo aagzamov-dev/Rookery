@@ -32,7 +32,7 @@ npm test               # Rust tests + frontend tests
 npm run build          # release bundle
 ```
 
-## What works today (v0.1 – v0.4)
+## What works today (v0.1 – v0.6)
 
 - Vault: master password (Argon2id + XChaCha20-Poly1305), 4–6 digit PIN stored wrapped in the OS keychain, auto-submit, attempt limits (5 → 30 s wait, 10 → disabled), auto-lock after 10 min idle.
 - Hosts, nested groups, reusable identities (password, key file, key in vault), identity inherited from group.
@@ -54,7 +54,13 @@ npm run build          # release bundle
 
 - Backup & sync (v0.5): one sync password (same on every device); a sync folder inside Google Drive / OneDrive / Dropbox keeps PC and laptop merged (newest edit wins, deletions sync, passwords included, encrypted); backup file with Save / Show in folder / Copy file (paste into Telegram) and Import with Merge or Replace.
 
-Not yet (v0.5): importers (~/.ssh/config, MobaXterm, PuTTY), tunnels, jump hosts, SSH agent login, key generator.
+- v0.6: auto-update from GitHub Releases (signed), import from MobaXterm / PuTTY / ~/.ssh/config with a first-run welcome, bulk edit / duplicate servers, terminal triggers (ERROR / WARN highlighting), session logs, system-wide show/hide hotkey, auto-lock time. See [CHANGELOG.md](CHANGELOG.md).
+
+Not yet: tunnels, jump hosts, SSH agent login, key generator (v0.5 leftovers); Android (v1.0).
+
+## Releasing
+
+Push a tag `vX.Y.Z`. GitHub Actions builds Windows + macOS, signs the update files and publishes a Release that installed apps update from. One-time secrets and the steps are in [06-AUTO-UPDATE.md](06-AUTO-UPDATE.md) §4.
 
 ## Where data lives
 

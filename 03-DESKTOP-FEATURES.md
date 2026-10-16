@@ -89,14 +89,20 @@ Hosts · Dashboard · Snippets · Tunnels · Hosts & identities · Keyboard shor
 ### 3.8 Sudo helper
 - When the PTY output ends with `[sudo] password for <user>:` and the identity has a sudo password, show a small inline "Fill from vault" button (never auto-send).
 
-### 3.9 Session logging
-- Per server/global option: write raw output to `logs/<server>/<date>.log` with rotation.
+### 3.9 Session logging — built (v0.6)
+- Settings › Session logs ("all SSH sessions") or the server editor's "Log sessions".
+- Each session is saved to `%APPDATA%\Rookery\logs\<server>\<YYYY-MM-DD_HH-MM-SS>[_container].log`: plain text, escape codes removed, redrawn lines (progress bars) collapsed, `[HH:MM:SS]` per line. Only output is saved, never input.
+- "Keep logs for" 7 / 14 / 30 / 90 / 365 days or forever; cleaned on start. "Open logs folder" button.
 
-### 3.10 Triggers
-- Regex → style (ERROR red, WARN amber, custom). Optional desktop notification. Evaluated on the frontend on new lines only.
+### 3.10 Triggers — built (v0.6)
+- Settings › Terminal triggers: list of regex patterns with a colour (red / yellow / green / blue / purple), match case, notify, on/off. Defaults: ERROR | FATAL | CRITICAL | PANIC | Exception | Traceback | failed (red), WARN | WARNING | DEPRECATED (yellow).
+- A match gets a faint band behind the line (xterm decoration, tinted toward the theme background) and a mark in the scrollbar. The output stream is never rewritten.
+- Only completed lines of the normal screen are scanned, so vim / htop are untouched. A scrollback marker keeps the position when old lines are trimmed.
+- Notify: a desktop notification when you're in another tab or app, at most once per 30 s per trigger.
 
-### 3.11 Extras (P2)
-- Quake-style drop-down window via global shortcut; window vibrancy (Mica/Acrylic/macOS).
+### 3.11 Extras
+- Built: a system-wide hotkey (Settings › System-wide hotkey). Pressed in any app, it brings Rookery to the front and focuses the terminal, or opens a local shell if nothing is open. Pressed again, it minimises Rookery.
+- Skipped: window vibrancy (it doesn't show through the solid Slate Blue theme).
 
 ---
 
@@ -206,8 +212,11 @@ Hosts · Dashboard · Snippets · Tunnels · Hosts & identities · Keyboard shor
 - When the tab opens: start view, start folder, terminal theme, auto-reconnect, keep-alive, log to file.
 - Buttons: Test connection (opens and closes a session; shows latency, fingerprint, auth method), Open tab, Duplicate, Delete.
 
-### 7.3 Bulk edit / move
-- Select N hosts → change group, identity, tags, refresh setting, environment label in one dialog.
+### 7.3 Bulk edit / move — built (v0.6)
+- The Hosts table has checkboxes, select-all and a filter.
+- With servers selected: Move to group, Set login, Environment, Add tag, Delete (confirm).
+- Duplicate: a table row button, or right-click a server in the host list (Open / Open terminal / Edit / Duplicate). The copy opens in the editor.
+- Import… (MobaXterm / PuTTY / ~/.ssh/config) opens a preview with checkboxes; servers already added are unticked. Folders become groups. Logins are shared per user + key file. Passwords are never imported.
 
 ### 7.4 Identities (right)
 - Name, auth (password / key file / key stored in vault / agent), passphrase, sudo password, "used by N servers". Generate ed25519 key + "Copy public key to server" (runs `ssh-copy-id` equivalent over the existing session).
@@ -262,5 +271,9 @@ Hosts · Dashboard · Snippets · Tunnels · Hosts & identities · Keyboard shor
 - Backup: export/import, Google Drive connect/backup/restore, scheduled local backup.
 - Shortcuts: all app hotkeys editable.
 
-## 12. Onboarding (P2)
-- First run: create master password → set PIN → optional import (ssh config / MobaXterm / PuTTY) → optional Drive connect.
+## 12. Onboarding — built (v0.6)
+- After the vault and PIN are set up, with no servers yet, a welcome dialog offers:
+  - Add a server
+  - Import my servers (MobaXterm / PuTTY / ~/.ssh/config)
+  - I use Rookery on another computer (opens Backup & sync)
+- It is shown once (`ui.onboarded`).

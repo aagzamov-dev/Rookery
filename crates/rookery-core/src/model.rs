@@ -243,6 +243,9 @@ pub struct TermOpen {
     pub cwd: Option<String>,
     /// If set, the terminal runs `docker exec -it <container> sh|bash`.
     pub container: Option<String>,
+    /// Write the output to a session log file (logs/<host>/<time>.log).
+    #[serde(default)]
+    pub log: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, Default)]

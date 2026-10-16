@@ -11,6 +11,7 @@ import { SettingsPage } from "../settings/SettingsPage";
 import { ShortcutsPage } from "../shortcuts/ShortcutsPage";
 import { DashboardPage } from "../dashboard/DashboardPage";
 import { BackupPage } from "../backup/BackupPage";
+import { HostsTable } from "../hosts/HostsTable";
 
 /** Page tabs. None of them touch the network on open. */
 export function PageTab({ page, active, onEditHost }: { page: PageKind; active: boolean; onEditHost: (h: Host) => void }) {
@@ -45,19 +46,7 @@ function HostsPage({ onEditHost }: { onEditHost: (h: Host) => void }) {
   const identities = useHosts((s) => s.identities);
   return (
     <div className="flex flex-wrap gap-6 p-6">
-      <section className="flex min-w-[320px] flex-[2] flex-col gap-2">
-        <h1 className="m-0 mb-2 text-lg font-semibold">Hosts</h1>
-        {hosts.map((h) => (
-          <button key={h.id} onClick={() => onEditHost(h)} className="flex items-center gap-3 rounded-lg border border-line bg-panel px-3 py-2.5 text-left hover:bg-panel2">
-            <span className="font-medium">{h.name}</span>
-            <span className="font-mono text-xs text-muted">
-              {h.address}:{h.port}
-            </span>
-            <span className="ml-auto text-xs text-muted">{identities.find((i) => i.id === h.identity_id)?.name ?? "inherits login"}</span>
-          </button>
-        ))}
-        {hosts.length === 0 && <p className="text-muted">No hosts yet.</p>}
-      </section>
+      <HostsTable onEditHost={onEditHost} />
       <Section title="Identities" icon={<KeyRound size={16} />}>
         {identities.map((i) => (
           <div key={i.id} className="flex flex-col gap-1 rounded-lg border border-line bg-panel2 p-3">

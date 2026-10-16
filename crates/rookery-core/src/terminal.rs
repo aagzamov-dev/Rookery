@@ -9,7 +9,9 @@ use parking_lot::Mutex;
 use russh::ChannelMsg;
 use tokio::sync::{broadcast, mpsc};
 
+use crate::db::Db;
 use crate::model::TermOpen;
+use crate::sessionlog::SessionLog;
 use crate::ssh::ConnectionManager;
 use crate::{new_id, CoreEvent, Error, Result};
 
@@ -28,11 +30,13 @@ pub struct Terminals {
     conns: Arc<ConnectionManager>,
     events: broadcast::Sender<CoreEvent>,
     map: Arc<Mutex<HashMap<String, TermHandle>>>,
+    db: Arc<Db>,
+    logs_dir: std::path::PathBuf,
 }
 
 impl Terminals {
-    pub fn new(conns: Arc<ConnectionManager>, events: broadcast::Sender<CoreEvent>) -> Self {
-        Self { conns, events, map: Default::default() }
+    pub fn new(conns: Arc<ConnectionManager>, events: broadcast::Sender<CoreEvent>, db: Arc<Db>, logs_dir: std::path::PathBuf) -> Self {
+        Self { conns, events, map: Default::default(), db, logs_dir }
     }
 
     pub async fn open(&self, req: TermOpen) -> Result<String> {
@@ -58,6 +62,19 @@ impl Terminals {
             ch.request_shell(true).await?;
         }
 
+        let mut log = if req.log {
+            let host = self.db.get_host(&req.host_id)?;
+            match SessionLog::create(&self.logs_dir, &host.name, &host.address, req.container.as_deref()) {
+                Ok(l) => Some(l),
+                Err(e) => {
+                    tracing::warn!(host = %host.name, "session log not started: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         let term_id = new_id();
         let (tx, mut rx) = mpsc::unbounded_channel();
         self.map.lock().insert(term_id.clone(), TermHandle { host_id: req.host_id.clone(), tx });
@@ -69,6 +86,7 @@ impl Terminals {
             let _lease = lease; // keeps the session alive for the terminal's lifetime
             let mut code = None;
             let mut reason = None;
+            let mut flushed = std::time::Instant::now();
             loop {
                 tokio::select! {
                     cmd = rx.recv() => match cmd {
@@ -90,6 +108,13 @@ impl Terminals {
                     msg = ch.wait() => match msg {
                         Some(ChannelMsg::Data { ref data }) | Some(ChannelMsg::ExtendedData { ref data, .. }) => {
                             let _ = events.send(CoreEvent::TermData { term_id: id.clone(), data: B64.encode(&data[..]) });
+                            if let Some(l) = log.as_mut() {
+                                l.push(&data[..]);
+                                if flushed.elapsed() > std::time::Duration::from_secs(2) {
+                                    l.flush();
+                                    flushed = std::time::Instant::now();
+                                }
+                            }
                         }
                         Some(ChannelMsg::ExitStatus { exit_status }) => code = Some(exit_status),
                         Some(ChannelMsg::Close) => break,
@@ -102,6 +127,9 @@ impl Terminals {
                 }
             }
             map.lock().remove(&id);
+            if let Some(l) = log.take() {
+                l.finish(reason.as_deref().unwrap_or("exited"));
+            }
             let _ = events.send(CoreEvent::TermExit { term_id: id, code, reason });
         });
 

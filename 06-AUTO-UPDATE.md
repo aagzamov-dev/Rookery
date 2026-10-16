@@ -1,6 +1,10 @@
 # 06 — Auto-update (TODO, planned for v0.6)
 
-Status: **not started**. Today updates are manual: run the newer `Rookery_x.y.z_x64-setup.exe` over the old one. Data in `%APPDATA%\Rookery` is kept, and the DB migrates itself on first start.
+Status: **built in v0.6.0**. To start publishing, add the two repository secrets (§4), then push a tag.
+- App side: `tauri-plugin-updater` (signed), the banner, and Settings › About.
+- CI: `.github/workflows/release.yml` (tag `v*` → Windows NSIS + macOS universal → published Release with `latest.json`) and `ci.yml` (tests on every push).
+
+Until a release exists, updates are manual: run the newer `Rookery_x.y.z_x64-setup.exe` over the old one. Data in `%APPDATA%\Rookery` is kept.
 
 Goal: one click, "Update 0.2.0 available → Update → restart". The update is verified with our signature, user data is untouched, and nothing personal is sent.
 
@@ -87,6 +91,27 @@ Fixed URL the app checks: `https://github.com/<org>/rookery/releases/latest/down
 - [ ] Manual: offline start → no error popup.
 
 ---
+
+## 4. How to release (after the one-time setup)
+
+One-time setup:
+1. GitHub → repo **Settings › Secrets and variables › Actions › New repository secret**:
+   - `TAURI_SIGNING_PRIVATE_KEY` = the contents of `%USERPROFILE%\.tauri\rookery-updater.key`
+   - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` = the contents of `%USERPROFILE%\.tauri\rookery-updater.key.password`
+2. Keep both files in your password manager too. Without them, installed apps can't be updated.
+
+Each release:
+1. Bump the version in `Cargo.toml` (workspace), `crates/rookery-tauri/tauri.conf.json`, `package.json` and `apps/desktop/package.json`.
+2. Add a `## x.y.z` section to `CHANGELOG.md`; it becomes the release notes and the app's "What's new".
+3. Run:
+   ```
+   git commit -am "Release x.y.z" && git tag vx.y.z && git push && git push --tags
+   ```
+4. About 20 minutes later, Releases has the Windows `.exe`, the macOS `.dmg` / `.app.tar.gz`, the `.sig` files and `latest.json`. Installed apps offer the update on their next start (or via "Check for updates").
+
+macOS without Apple notarization: the first download shows "damaged / unidentified developer". Run `xattr -cr /Applications/Rookery.app` once; updates afterwards install normally.
+
+Windows without a code-signing certificate: SmartScreen warns on the first install (More info → Run anyway). Updates install silently.
 
 ## 3. Rules
 

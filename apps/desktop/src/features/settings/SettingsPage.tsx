@@ -10,6 +10,7 @@ import { INTERVALS, useSync, type AttentionThresholds } from "../../stores/sync"
 import type { Collect } from "../../ipc/bindings/Collect";
 import type { RefreshMode } from "../../ipc/bindings/RefreshMode";
 import { COLLECT_LABEL, MODE_LABEL } from "../hosts/RefreshFields";
+import { About, GlobalHotkey, SessionLogs, Security, Triggers } from "./SettingsMore";
 import { Button, Select, TextInput } from "../../ui/primitives";
 import { BUILTIN_THEMES, FONT_CHOICES, fontLabel, parseItermColors, resolveTheme } from "../server-tab/terminal/themes";
 
@@ -25,8 +26,13 @@ export function SettingsPage() {
       <Appearance />
       <TerminalClipboard />
       <Notifications />
+      <Triggers />
       <Startup />
+      <Security />
+      <SessionLogs />
+      <GlobalHotkey />
       <DashboardSync />
+      <About />
     </div>
   );
 }
@@ -54,7 +60,9 @@ function Toggle<K extends keyof TerminalPrefs>({ k, label, hint }: { k: K; label
   );
 }
 
-function AppToggle<K extends keyof AppPrefs>({ k, label, hint }: { k: K; label: string; hint?: string }) {
+type BoolAppPref = { [P in keyof AppPrefs]: AppPrefs[P] extends boolean ? P : never }[keyof AppPrefs];
+
+function AppToggle<K extends BoolAppPref>({ k, label, hint }: { k: K; label: string; hint?: string }) {
   const value = useKeys((s) => s.app[k]);
   const set = useKeys((s) => s.setApp);
   return (

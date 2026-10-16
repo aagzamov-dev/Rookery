@@ -15,7 +15,7 @@ jobs:
         with:
           node-version: 20
           cache: npm
-      - run: rustup show
+      - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - run: npm ci
       - run: npm run typecheck

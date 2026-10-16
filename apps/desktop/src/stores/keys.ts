@@ -25,7 +25,27 @@ export interface TerminalPrefs {
   /** Desktop notification when a command that ran longer than `notifyAfterSec` finishes in the background. */
   notifyLongCommands: boolean;
   notifyAfterSec: number;
+  /** Highlight lines matching a trigger (ERROR, WARN…); the output itself is never changed. */
+  highlightTriggers: boolean;
+  triggers: Trigger[];
 }
+
+/** Terminal trigger: lines matching `pattern` (regex) get a coloured band and a scrollbar mark. */
+export interface Trigger {
+  id: string;
+  pattern: string;
+  color: TriggerColor;
+  /** Desktop notification when it matches while you are in another tab or app. */
+  notify: boolean;
+  enabled: boolean;
+  caseSensitive: boolean;
+}
+export type TriggerColor = "red" | "yellow" | "green" | "blue" | "purple";
+
+export const DEFAULT_TRIGGERS: Trigger[] = [
+  { id: "errors", pattern: String.raw`\b(ERROR|FATAL|CRITICAL|PANIC|Exception|Traceback|failed)\b`, color: "red", notify: false, enabled: true, caseSensitive: true },
+  { id: "warnings", pattern: String.raw`\b(WARN|WARNING|DEPRECATED)\b`, color: "yellow", notify: false, enabled: true, caseSensitive: true },
+];
 
 export const DEFAULT_TERMINAL_PREFS: TerminalPrefs = {
   ctrlCCopies: !isMac,
@@ -40,6 +60,8 @@ export const DEFAULT_TERMINAL_PREFS: TerminalPrefs = {
   cursorBlink: true,
   notifyLongCommands: true,
   notifyAfterSec: 20,
+  highlightTriggers: true,
+  triggers: DEFAULT_TRIGGERS,
 };
 
 export interface AppPrefs {
@@ -47,9 +69,24 @@ export interface AppPrefs {
   restoreTabs: boolean;
   /** Connect restored server tabs right away instead of waiting for a click. */
   autoConnectRestored: boolean;
+  /** Lock after this many minutes without input; 0 = never. */
+  autoLockMin: number;
+  /** Write every SSH session to a log file (a host can also turn it on just for itself). */
+  logSessions: boolean;
+  /** Delete session logs older than this many days; 0 = keep forever. */
+  logRetentionDays: number;
+  /** System-wide shortcut that brings Rookery to the front / minimises it; null = off. */
+  globalHotkey: string | null;
 }
 
-export const DEFAULT_APP_PREFS: AppPrefs = { restoreTabs: true, autoConnectRestored: false };
+export const DEFAULT_APP_PREFS: AppPrefs = {
+  restoreTabs: true,
+  autoConnectRestored: false,
+  autoLockMin: 10,
+  logSessions: false,
+  logRetentionDays: 30,
+  globalHotkey: null,
+};
 
 /** A key that types text into the active terminal (macros like MobaXterm). `\n`, `\t`, `\e`, `\xNN` are decoded. */
 export interface CustomKey {

@@ -15,9 +15,11 @@ pub mod collectors;
 pub mod db;
 pub mod error;
 pub mod events;
+pub mod importers;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod local;
 pub mod model;
+pub mod sessionlog;
 pub mod sftp;
 pub mod ssh;
 pub mod subscriptions;
@@ -72,7 +74,7 @@ impl Core {
             vault.clone(),
             events.clone(),
         ));
-        let terminals = Arc::new(terminal::Terminals::new(connections.clone(), events.clone()));
+        let terminals = Arc::new(terminal::Terminals::new(connections.clone(), events.clone(), db.clone(), data_dir.join("logs")));
         let subscriptions = Arc::new(subscriptions::Subscriptions::new(
             connections.clone(),
             events.clone(),

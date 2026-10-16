@@ -8,4 +8,8 @@ cwd: string | null,
 /**
  * If set, the terminal runs `docker exec -it <container> sh|bash`.
  */
-container: string | null, };
+container: string | null, 
+/**
+ * Write the output to a session log file (logs/<host>/<time>.log).
+ */
+log: boolean, };

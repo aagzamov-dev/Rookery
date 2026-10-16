@@ -26,10 +26,12 @@ export const shellHooks: {
   uploadFiles: (hostId: string) => void;
   editHost: (host: Host) => void;
   editGroup: (group: Group) => void;
+  openImport: () => void;
 } = {
   newHost: () => {},
   editHost: () => {},
   editGroup: () => {},
+  openImport: () => {},
   focusQuickConnect: () => {},
   uploadFiles: () => {},
 };
@@ -45,7 +47,7 @@ const VIEW_OF: Partial<Record<ActionId, View>> = {
 };
 
 /** The terminal a terminal-action applies to: the focused one, else the active tab's. */
-function activeTerminalKey(termKey: string | null): string | null {
+export function activeTerminalKey(termKey: string | null): string | null {
   if (termKey) return termKey;
   const { tabs, activeTabId, views } = useTabs.getState();
   const t = tabs.find((x) => x.id === activeTabId);

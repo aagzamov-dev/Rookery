@@ -1,0 +1,22 @@
+# Changelog
+
+The release workflow copies the section for a tag (e.g. `## 0.6.0`) into the GitHub Release notes, which the in-app updater shows under "What's new".
+
+## 0.6.0
+
+- **Auto-update**: Rookery checks GitHub once a day when it starts (can be turned off in Settings › About). When there is an update it shows the release notes and an Update button, verifies the signature, installs and restarts. Your data is kept.
+- **Backup & sync**:
+  - one sync password, the same on each device;
+  - a sync folder inside Google Drive / OneDrive / Dropbox keeps PC and laptop merged: newest edit wins, deletions sync, logins come along encrypted;
+  - backup file with Save, Show in folder, Copy file (paste it into Telegram), and Import with Merge or Replace.
+- **Import servers** from MobaXterm sessions, PuTTY and `~/.ssh/config`. A first-run welcome screen offers this, a new server, or joining your other computer.
+- **Hosts page**: select many servers to move them to a group, change the login or environment, add a tag or delete them. Duplicate a server from the table or from the host list's right-click menu.
+- **Terminal triggers**: lines with ERROR / WARN (or your own patterns) get a faint coloured band and a scrollbar mark, with an optional notification.
+- **Session logs**: save SSH sessions to plain-text files with a time on each line, for all servers or per server; old logs are deleted automatically.
+- **System-wide hotkey**: bring Rookery to the front from any app, press again to minimise.
+- **Security**: choose the auto-lock time (or never).
+- **Dashboard** (from 0.4): group tabs, Sync and auto-sync per group, needs-attention list.
+
+## 0.1.0 – 0.4.0
+
+The first builds: vault with PIN, hosts and groups, iTerm-style terminal, snippets and the command palette, shortcuts page, SFTP files, Docker, services, logs, processes, and the dashboard.

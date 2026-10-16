@@ -19,7 +19,10 @@ import {
   Keyboard,
   TerminalSquare,
   FolderSync,
+  Copy,
 } from "lucide-react";
+import { useContextMenu, type MenuItem } from "../ui/ContextMenu";
+import { duplicateHost } from "../features/hosts/HostsTable";
 import { useHosts } from "../stores/hosts";
 import { pageTabId, serverTabId, useTabs, type PageKind } from "../stores/tabs";
 import { useSessions } from "../stores/sessions";
@@ -29,6 +32,11 @@ import { useKeys } from "../stores/keys";
 import { useSnippets } from "../stores/snippets";
 import { ago, useSync } from "../stores/sync";
 import { summaryText, useBackup } from "../stores/backup";
+import { useUpdate } from "../stores/update";
+import { UpdateBanner } from "./UpdateBanner";
+import { Welcome } from "./Welcome";
+import { ImportDialog } from "../features/hosts/ImportDialog";
+import { useAppPrefsEffects } from "./useAppPrefsEffects";
 import { useSubscriptionEngine } from "../subscriptions/useEngine";
 import { installKeyDispatcher, shellHooks } from "../keys/dispatcher";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -57,6 +65,7 @@ export function Shell() {
     void useSnippets.getState().load();
     void useSync.getState().load();
     void useBackup.getState().load();
+    void useUpdate.getState().init().catch(() => {});
     return installKeyDispatcher();
   }, []);
 
@@ -68,6 +77,7 @@ export function Shell() {
     return () => document.removeEventListener("visibilitychange", report);
   }, []);
   useSessionPersistence();
+  useAppPrefsEffects();
   useLoadLocalShells();
 
   const hostListOpen = useUi((s) => s.hostListOpen);
@@ -75,11 +85,13 @@ export function Shell() {
   const activeTabId = useTabs((s) => s.activeTabId);
   const [hostEditor, setHostEditor] = useState<HostDraft | null>(null);
   const [groupEditor, setGroupEditor] = useState<Group | "new" | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
 
   useEffect(() => {
     shellHooks.newHost = () => setHostEditor({});
     shellHooks.editHost = (host) => setHostEditor({ host });
     shellHooks.editGroup = (group) => setGroupEditor(group);
+    shellHooks.openImport = () => setImportOpen(true);
     shellHooks.focusQuickConnect = () => document.querySelector<HTMLInputElement>('input[aria-label="Quick connect"]')?.focus();
     shellHooks.uploadFiles = (hostId) => void uploadToCurrentFolder(hostId);
   }, []);
@@ -87,6 +99,7 @@ export function Shell() {
   return (
     <div className="flex h-full flex-col">
       <TitleBar onQuickConnect={(d) => setHostEditor(d)} />
+      <UpdateBanner />
       <div className="flex min-h-0 flex-1">
         <IconRail />
         {hostListOpen && (
@@ -115,6 +128,8 @@ export function Shell() {
       </div>
       {hostEditor && <HostEditor draft={hostEditor} onClose={() => setHostEditor(null)} />}
       {groupEditor && <GroupEditor group={groupEditor === "new" ? null : groupEditor} onClose={() => setGroupEditor(null)} />}
+      {importOpen && <ImportDialog onClose={() => setImportOpen(false)} />}
+      <Welcome onNewHost={() => setHostEditor({})} onImport={() => setImportOpen(true)} />
       <CommandPalette onNewHost={() => setHostEditor({})} />
       <DialogHost />
     </div>
@@ -352,8 +367,24 @@ function HostRow({ host, depth, onEdit }: { host: Host; depth: number; onEdit: (
   const isOpen = useTabs((s) => s.tabs.some((t) => t.id === serverTabId(host.id)));
   const isActive = useTabs((s) => s.activeTabId === serverTabId(host.id));
   const state = useSessions((s) => (isOpen ? s.byHost[host.id]?.state : undefined));
+  const menu = useContextMenu();
+  const items: MenuItem[] = [
+    { label: "Open", onClick: () => openServer(host.id, host.start_view, host.start_folder) },
+    { label: "Open terminal", onClick: () => openServer(host.id, "terminal", host.start_folder) },
+    { kind: "separator" },
+    { label: "Edit…", icon: <Pencil size={13} />, onClick: onEdit },
+    {
+      label: "Duplicate",
+      icon: <Copy size={13} />,
+      onClick: () => void useHosts.getState().saveHost(duplicateHost(host)).then((copy) => shellHooks.editHost(copy)).catch(() => {}),
+    },
+  ];
   return (
-    <div className={clsx("group/h flex h-[30px] items-center gap-2 rounded-md pr-1", isActive ? "bg-accent-bg" : "hover:bg-panel2")} style={{ paddingLeft: 8 + depth * 12 }}>
+    <div
+      onContextMenu={menu.open(items)}
+      className={clsx("group/h flex h-[30px] items-center gap-2 rounded-md pr-1", isActive ? "bg-accent-bg" : "hover:bg-panel2")}
+      style={{ paddingLeft: 8 + depth * 12 }}
+    >
       <button
         onClick={() => openServer(host.id, host.start_view, host.start_folder)}
         onDoubleClick={() => openServer(host.id, "terminal", host.start_folder)}
@@ -366,6 +397,7 @@ function HostRow({ host, depth, onEdit }: { host: Host; depth: number; onEdit: (
       <button aria-label={`Edit ${host.name}`} onClick={onEdit} className="hidden h-6 w-6 place-items-center rounded text-muted hover:text-text group-hover/h:grid">
         <Pencil size={12} />
       </button>
+      {menu.node}
     </div>
   );
 }
@@ -498,9 +530,14 @@ function EmptyState({ onNewHost }: { onNewHost: () => void }) {
           {hasHosts ? "It opens as a tab with its terminal. Nothing connects until you open it." : "Hosts, logins and keys stay on this computer, encrypted."}
         </p>
         {!hasHosts && (
-          <button onClick={onNewHost} className="h-9 rounded-lg bg-accent px-4 font-semibold text-bg">
-            Add host
-          </button>
+          <div className="flex gap-2">
+            <button onClick={onNewHost} className="h-9 rounded-lg bg-accent px-4 font-semibold text-bg">
+              Add host
+            </button>
+            <button onClick={() => shellHooks.openImport()} className="h-9 rounded-lg border border-line px-4 hover:bg-panel2">
+              Import…
+            </button>
+          </div>
         )}
       </div>
     </div>

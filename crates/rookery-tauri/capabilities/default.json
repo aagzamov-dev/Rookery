@@ -24,6 +24,9 @@
         },
         {
           "path": "$DATA/Rookery/logs/**"
+        },
+        {
+          "path": "$DATA/Rookery/logs"
         }
       ]
     },
@@ -32,6 +35,14 @@
       "allow": [
         {
           "path": "**"
+        }
+      ]
+    },
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        {
+          "url": "https://github.com/aagzamov-dev/server-managment/*"
         }
       ]
     }

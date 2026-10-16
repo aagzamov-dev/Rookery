@@ -281,6 +281,10 @@ export function HostEditor({ draft, onClose }: { draft: HostDraft; onClose: () =
           <input type="checkbox" checked={h.auto_reconnect} onChange={(e) => set("auto_reconnect", e.target.checked)} className="accent-accent" />
           Auto-reconnect
         </label>
+        <label className="flex items-center gap-2" title="Save this server's terminal output to Settings › Session logs">
+          <input type="checkbox" checked={h.log_session} onChange={(e) => set("log_session", e.target.checked)} className="accent-accent" />
+          Log sessions
+        </label>
         <label className="flex items-center gap-2">
           Keep-alive
           <TextInput mono className="h-7 w-16" value={h.keepalive_s} onChange={(e) => set("keepalive_s", Number(e.target.value.replace(/\D/g, "")) || 30)} />s

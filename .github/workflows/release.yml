@@ -70,7 +70,7 @@ jobs:
       - name: Rust toolchain (from rust-toolchain.toml)
         shell: bash
         run: |
-          rustup show
+          rustup toolchain install
           if [ "${{ matrix.os }}" = "macos-latest" ]; then rustup target add aarch64-apple-darwin x86_64-apple-darwin; fi
       - uses: Swatinem/rust-cache@v2
         with:

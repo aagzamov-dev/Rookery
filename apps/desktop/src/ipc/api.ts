@@ -5,6 +5,7 @@ import type { BackupInfo } from "./bindings/BackupInfo";
 import type { BackupStatus } from "./bindings/BackupStatus";
 import type { EffectiveRefresh } from "./bindings/EffectiveRefresh";
 import type { ImportMode } from "./bindings/ImportMode";
+import type { ImportedHost } from "./bindings/ImportedHost";
 import type { MergeSummary } from "./bindings/MergeSummary";
 import type { RefreshSetting } from "./bindings/RefreshSetting";
 import type { Snapshot } from "./bindings/Snapshot";
@@ -102,6 +103,15 @@ export const api = {
   backupInspect: (path: string, password: string | null) => invoke<BackupInfo>("backup_inspect", { path, password }),
   backupImport: (path: string, password: string | null, mode: ImportMode) => invoke<MergeSummary>("backup_import", { path, password, mode }),
   fileCopyToClipboard: (path: string) => invoke<void>("file_copy_to_clipboard", { path }),
+
+  // session logs, global hotkey
+  logsDir: () => invoke<string>("logs_dir"),
+  logsCleanup: (days: number) => invoke<number>("logs_cleanup", { days }),
+  globalHotkeySet: (chord: string | null) => invoke<void>("global_hotkey_set", { chord }),
+
+  // importers: ~/.ssh/config, MobaXterm, PuTTY
+  importPreview: (source: "ssh_config" | "mobaxterm" | "putty", path: string | null) => invoke<ImportedHost[]>("import_preview", { source, path }),
+  importApply: (hosts: ImportedHost[], group: string | null) => invoke<number>("import_apply", { hosts, group }),
 
   // clipboard
   clipboardWrite: (text: string) => invoke<void>("clipboard_write", { text }),

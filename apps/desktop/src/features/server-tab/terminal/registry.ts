@@ -1,7 +1,7 @@
 // xterm instances live here, outside React, so switching tabs/views never
 // destroys a terminal or its scrollback (docs/01-ARCHITECTURE.md §5.2).
 // Handles SSH terminals and local terminal tabs the same way.
-import { Terminal, type ITheme } from "@xterm/xterm";
+import { Terminal, type IMarker, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon, type ISearchOptions } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
@@ -16,6 +16,7 @@ import { useHosts } from "../../../stores/hosts";
 import { useKeys } from "../../../stores/keys";
 import { useTermUi } from "../../../stores/termui";
 import { resolveTheme } from "./themes";
+import { compileTriggers, scanTerminal } from "./triggers";
 
 export const SCROLLBACK = 10_000;
 
@@ -52,6 +53,10 @@ interface Entry {
   cmdText: string | null;
   /** Shell integration v2 reports exit codes (OSC 133;D). */
   has133: boolean;
+  /** Triggers: where scanning continues (a marker survives scrollback trimming). */
+  scanMarker: IMarker | null;
+  /** Trigger id → last notification time (one per 30 s). */
+  trigNotified: Record<string, number>;
 }
 
 const decodeB64 = (b64: string) => {
@@ -167,6 +172,7 @@ class TerminalRegistry {
       cursorStyle: prefs.cursorStyle,
       scrollback: SCROLLBACK,
       allowProposedApi: true,
+      overviewRulerWidth: 8, // trigger marks in the scrollbar
       theme,
       rightClickSelectsWord: false,
     });
@@ -203,6 +209,8 @@ class TerminalRegistry {
       cmdStart: null,
       cmdText: null,
       has133: false,
+      scanMarker: null,
+      trigNotified: {},
     };
     this.queued.delete(key);
 
@@ -353,6 +361,7 @@ class TerminalRegistry {
             rows: e.term.rows,
             cwd: e.opts.cwd ?? null,
             container: e.opts.container ?? null,
+            log: !!useHosts.getState().hostById(e.hostId)?.log_session || useKeys.getState().app.logSessions,
           });
       if (!this.byKey.has(e.key)) {
         if (e.local) void api.localTermClose(termId);
@@ -380,12 +389,34 @@ class TerminalRegistry {
     const e = this.byTermId.get(termId);
     if (!e) return;
     const bytes = decodeB64(b64);
-    e.term.write(bytes);
+    e.term.write(bytes, () => this.runTriggers(e));
     if (!e.local) {
       // "[sudo] password for deploy:" → offer to fill it from the vault.
       const tail = this.utf8.decode(bytes.length > 400 ? bytes.subarray(bytes.length - 400) : bytes);
       if (SUDO_PROMPT.test(tail)) useTermUi.getState().setSudo(e.key, true);
       else if (tail.trim()) useTermUi.getState().setSudo(e.key, false);
+    }
+  }
+
+  /** Highlight new lines that match a trigger; notify when you are elsewhere. */
+  private runTriggers(e: Entry) {
+    const prefs = useKeys.getState().terminal;
+    if (!prefs.highlightTriggers) return;
+    const triggers = compileTriggers(prefs.triggers);
+    if (!triggers.length) return;
+    const buf = e.term.buffer.active;
+    const from = e.scanMarker && !e.scanMarker.isDisposed ? e.scanMarker.line : buf.baseY;
+    const next = scanTerminal(e.term, from, triggers, (c, line) => {
+      if (!c.t.notify || (document.hasFocus() && e.visible)) return;
+      const now = Date.now();
+      if (now - (e.trigNotified[c.t.id] ?? 0) < 30_000) return;
+      e.trigNotified[c.t.id] = now;
+      const where = e.local ? "this computer" : (useHosts.getState().hostById(e.hostId)?.name ?? "server");
+      void notify(`Trigger on ${where}`, line.trim().slice(0, 180));
+    });
+    if (!e.scanMarker || e.scanMarker.isDisposed || e.scanMarker.line !== next) {
+      e.scanMarker?.dispose();
+      e.scanMarker = e.term.registerMarker(next - (buf.baseY + buf.cursorY)) ?? null;
     }
   }
 

@@ -461,6 +461,148 @@ pub async fn file_copy_to_clipboard(path: String) -> Result<()> {
     .await
 }
 
+// --------------------------------------------------------------- importers
+
+/// Read servers from `ssh_config` (path or ~/.ssh/config), `mobaxterm` (a .mxtsessions /
+/// MobaXterm.ini file) or `putty` (Windows registry). Nothing is saved yet.
+#[tauri::command]
+pub async fn import_preview(
+    s: State<'_, AppState>,
+    source: String,
+    path: Option<String>,
+) -> Result<Vec<rookery_core::importers::ImportedHost>> {
+    use rookery_core::importers as imp;
+    let db = s.core.db.clone();
+    blocking(move || {
+        let mut list = match source.as_str() {
+            "ssh_config" => {
+                let p = path
+                    .map(std::path::PathBuf::from)
+                    .or_else(|| dirs_home().map(|h| h.join(".ssh").join("config")))
+                    .ok_or_else(|| Error::Other("no home folder".into()))?;
+                let text = std::fs::read_to_string(&p).map_err(|_| Error::NotFound(format!("{} not found", p.display())))?;
+                imp::parse_ssh_config(&text)
+            }
+            "mobaxterm" => {
+                let p = path.ok_or_else(|| Error::Other("choose the MobaXterm sessions file".into()))?;
+                let bytes = std::fs::read(&p)?;
+                imp::parse_mobaxterm(&String::from_utf8_lossy(&bytes))
+            }
+            "putty" => imp::read_putty()?,
+            other => return Err(Error::Other(format!("unknown import source {other}"))),
+        };
+        imp::mark_existing(&db, &mut list)?;
+        Ok(list)
+    })
+    .await
+}
+
+fn dirs_home() -> Option<std::path::PathBuf> {
+    std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(std::path::PathBuf::from)
+}
+
+#[tauri::command]
+pub fn import_apply(s: State<'_, AppState>, hosts: Vec<rookery_core::importers::ImportedHost>, group: Option<String>) -> Result<u32> {
+    rookery_core::importers::apply(&s.core.db, &hosts, group.as_deref())
+}
+
+// ------------------------------------------------------------ session logs
+
+#[tauri::command]
+pub fn logs_dir(s: State<'_, AppState>) -> String {
+    s.core.data_dir.join("logs").to_string_lossy().into_owned()
+}
+
+/// Delete session logs older than `days` (0 = keep all). Returns how many were removed.
+#[tauri::command]
+pub async fn logs_cleanup(s: State<'_, AppState>, days: u32) -> Result<u32> {
+    let dir = s.core.data_dir.join("logs");
+    blocking(move || Ok(rookery_core::sessionlog::cleanup(&dir, days))).await
+}
+
+// --------------------------------------------------------- global hotkey
+
+/// Our chord ("Ctrl+Alt+T", "Ctrl+`", "Meta+Shift+Space") → a system-wide shortcut.
+#[cfg(desktop)]
+fn to_shortcut(chord: &str) -> Result<tauri_plugin_global_shortcut::Shortcut> {
+    use std::str::FromStr;
+    use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut};
+    let parts: Vec<&str> = chord.split('+').collect();
+    let (key, mods) = parts.split_last().ok_or_else(|| Error::Other("empty shortcut".into()))?;
+    let mut m = Modifiers::empty();
+    for p in mods {
+        m |= match *p {
+            "Ctrl" => Modifiers::CONTROL,
+            "Alt" => Modifiers::ALT,
+            "Shift" => Modifiers::SHIFT,
+            "Meta" => Modifiers::SUPER,
+            other => return Err(Error::Other(format!("unknown modifier {other}"))),
+        };
+    }
+    if m.is_empty() && !key.starts_with('F') {
+        return Err(Error::Other("a system-wide shortcut needs Ctrl, Alt, Shift or ⌘".into()));
+    }
+    let name = match *key {
+        k if k.len() == 1 && k.chars().all(|c| c.is_ascii_alphabetic()) => format!("Key{k}"),
+        k if k.len() == 1 && k.chars().all(|c| c.is_ascii_digit()) => format!("Digit{k}"),
+        "`" => "Backquote".into(),
+        "-" => "Minus".into(),
+        "=" => "Equal".into(),
+        "," => "Comma".into(),
+        "." => "Period".into(),
+        "/" => "Slash".into(),
+        "\\" => "Backslash".into(),
+        "[" => "BracketLeft".into(),
+        "]" => "BracketRight".into(),
+        ";" => "Semicolon".into(),
+        "'" => "Quote".into(),
+        "Up" => "ArrowUp".into(),
+        "Down" => "ArrowDown".into(),
+        "Left" => "ArrowLeft".into(),
+        "Right" => "ArrowRight".into(),
+        other => other.to_string(),
+    };
+    let code = Code::from_str(&name).map_err(|_| Error::Other(format!("{key} cannot be a system-wide shortcut")))?;
+    Ok(Shortcut::new(Some(m), code))
+}
+
+/// Quake-style hotkey: press anywhere to bring Rookery to the front, press again to minimise it.
+/// `chord` None = off. Replaces the previous hotkey.
+#[tauri::command]
+pub fn global_hotkey_set(app: tauri::AppHandle, chord: Option<String>) -> Result<()> {
+    #[cfg(desktop)]
+    {
+        use tauri::{Emitter, Manager};
+        use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+        let gs = app.global_shortcut();
+        gs.unregister_all().map_err(|e| Error::Other(e.to_string()))?;
+        let Some(chord) = chord.filter(|c| !c.trim().is_empty()) else { return Ok(()) };
+        let shortcut = to_shortcut(&chord)?;
+        gs.on_shortcut(shortcut, |app, _shortcut, event| {
+            if event.state() != ShortcutState::Pressed {
+                return;
+            }
+            let Some(w) = app.get_webview_window("main") else { return };
+            let front = w.is_visible().unwrap_or(false) && w.is_focused().unwrap_or(false) && !w.is_minimized().unwrap_or(false);
+            if front {
+                let _ = w.minimize();
+            } else {
+                let _ = w.show();
+                let _ = w.unminimize();
+                let _ = w.set_focus();
+                let _ = app.emit("rookery://hotkey", ());
+            }
+        })
+        .map_err(|e| Error::Other(format!("{chord} is taken by another app or Windows ({e})")))?;
+        Ok(())
+    }
+    #[cfg(not(desktop))]
+    {
+        let _ = (app, chord);
+        Err(Error::Other("not available on this platform".into()))
+    }
+}
+
 // ---------------------------------------------------------------- snippets
 
 #[tauri::command]
