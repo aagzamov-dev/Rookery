@@ -31,8 +31,12 @@ export const useSnippets = create<SnippetsState>((set, get) => ({
 const bySort = (a: Snippet, b: Snippet) =>
   (a.pack ?? "").localeCompare(b.pack ?? "") || a.sort - b.sort || a.name.localeCompare(b.name);
 
+/** SQL snippets only go into the SQL editor; terminals never run them. */
+export const isSqlSnippet = (s: Snippet) => s.kind === "sql";
+
 /** Does this snippet show on this host? Group scope includes child groups. */
 export function appliesTo(s: Snippet, host: Host | undefined, groups: Group[]): boolean {
+  if (isSqlSnippet(s)) return false;
   if (s.scope === "all") return true;
   if (!host) return false;
   switch (s.scope) {
@@ -67,6 +71,7 @@ export function emptySnippet(): Snippet {
     pack: null,
     steps: [],
     continue_on_error: false,
+    kind: "shell",
     sort: 0,
     created_at: 0,
     updated_at: 0,
@@ -75,7 +80,7 @@ export function emptySnippet(): Snippet {
 
 /** Container-scoped snippets: pattern with `*` against the container name or compose service. */
 export function appliesToContainer(s: Snippet, c: { name: string; service: string | null }): boolean {
-  if (s.scope !== "container") return false;
+  if (s.scope !== "container" || isSqlSnippet(s)) return false;
   const pat = (s.scope_value ?? "*").trim() || "*";
   const re = new RegExp(`^${pat.split("*").map((x) => x.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`, "i");
   return re.test(c.name) || (!!c.service && re.test(c.service));

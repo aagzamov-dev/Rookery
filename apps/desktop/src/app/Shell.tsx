@@ -19,6 +19,7 @@ import {
   Keyboard,
   TerminalSquare,
   FolderSync,
+  ScanSearch,
   Copy,
   Database,
 } from "lucide-react";
@@ -43,7 +44,9 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { api } from "../ipc/api";
 import { useFiles } from "../stores/files";
 import { useAutoLock } from "./useAutoLock";
-import { closeTab, lockApp } from "./tabActions";
+import { closeTab, lockApp, settleEditor } from "./tabActions";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { dirtyDocs } from "../stores/editor";
 import { ServerTab } from "../features/server-tab/ServerTab";
 import { CommandPalette } from "../features/palette/CommandPalette";
 import { DialogHost } from "../ui/DialogHost";
@@ -53,7 +56,9 @@ import { HostEditor, type HostDraft } from "../features/hosts/HostEditor";
 import { GroupEditor } from "../features/hosts/GroupEditor";
 import { PageTab } from "../features/pages/Pages";
 import { DbTab, isDbUrl, openDbUrl } from "../features/sql/DbTab";
-import { DbList } from "../features/sql/DbList";
+import { DbConnections } from "../features/sql/DbList";
+import { useConnDialog } from "../features/sql/connDialog";
+import { FindLocalDialog } from "../features/sql/FindLocal";
 import { ConnDialogHost } from "../features/sql/connDialog";
 import { useSql } from "../stores/sql";
 import { EnvTag, IconButton, StatusDot } from "../ui/primitives";
@@ -72,6 +77,24 @@ export function Shell() {
     void useSql.getState().loadConns().catch(() => {});
     void useUpdate.getState().init().catch(() => {});
     return installKeyDispatcher();
+  }, []);
+
+  // Closing the window with unsaved files in the Editor asks first (docs/08 §4).
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let closing = false;
+    void getCurrentWindow()
+      .onCloseRequested(async (e) => {
+        if (closing || dirtyDocs().length === 0) return;
+        e.preventDefault();
+        if (await settleEditor(null, "closing Rookery")) {
+          closing = true;
+          await getCurrentWindow().destroy();
+        }
+      })
+      .then((u) => (unlisten = u))
+      .catch(() => {});
+    return () => unlisten?.();
   }, []);
 
   // Auto-sync pauses a minute after the window is minimised / hidden (Rust keeps the clock).
@@ -293,7 +316,10 @@ function HostList({
   const hosts = useHosts((s) => s.hosts);
   const groups = useHosts((s) => s.groups);
   const toggle = useUi((s) => s.toggleHostList);
+  const mode = useUi((s) => s.sidebar);
+  const setMode = useUi((s) => s.setSidebar);
   const [filter, setFilter] = useState("");
+  const [finding, setFinding] = useState(false);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
   const f = filter.trim().toLowerCase();
@@ -343,21 +369,58 @@ function HostList({
   return (
     <nav aria-label="Hosts" className="flex w-[252px] flex-none flex-col gap-3 border-r border-line bg-panel px-2.5 py-3">
       <div className="flex items-center gap-1 px-1">
-        <span className="text-xs font-semibold tracking-wider text-muted uppercase">Hosts</span>
-        <IconButton label="New group" className="ml-auto h-[26px] w-[26px]" onClick={onNewGroup}>
-          <FolderPlus size={14} />
-        </IconButton>
-        <IconButton label="New host" className="h-[26px] w-[26px] border border-line bg-panel2 text-text" onClick={() => onNewHost(null)}>
-          <Plus size={14} />
-        </IconButton>
+        <div role="tablist" aria-label="Sidebar list" className="flex rounded-[7px] border border-line bg-bg p-0.5">
+          {(["ssh", "sql"] as const).map((m) => (
+            <button
+              key={m}
+              role="tab"
+              aria-selected={mode === m}
+              onClick={() => setMode(m)}
+              title={m === "ssh" ? "Servers (SSH)" : "Databases (SQL)"}
+              className={clsx("h-[22px] rounded-[5px] px-2.5 text-[11px] font-semibold tracking-wider", mode === m ? "bg-accent-bg text-text" : "text-muted hover:text-text")}
+            >
+              {m.toUpperCase()}
+            </button>
+          ))}
+        </div>
+        {mode === "ssh" ? (
+          <>
+            <IconButton label="New group" className="ml-auto h-[26px] w-[26px]" onClick={onNewGroup}>
+              <FolderPlus size={14} />
+            </IconButton>
+            <IconButton label="New host" className="h-[26px] w-[26px] border border-line bg-panel2 text-text" onClick={() => onNewHost(null)}>
+              <Plus size={14} />
+            </IconButton>
+          </>
+        ) : (
+          <>
+            <IconButton label="Find databases on this PC" className="ml-auto h-[26px] w-[26px]" onClick={() => setFinding(true)}>
+              <ScanSearch size={14} />
+            </IconButton>
+            <IconButton label="New database connection" className="h-[26px] w-[26px] border border-line bg-panel2 text-text" onClick={() => useConnDialog.getState().open({})}>
+              <Plus size={14} />
+            </IconButton>
+          </>
+        )}
         <IconButton label="Collapse host list" className="h-[26px] w-[26px]" onClick={toggle}>
           <ChevronsLeft size={14} />
         </IconButton>
       </div>
       <label className="flex h-[30px] items-center gap-2 rounded-[7px] border border-line bg-bg px-2.5 text-muted">
         <Search size={13} />
-        <input aria-label="Filter hosts" placeholder="Filter hosts or tags" value={filter} onChange={(e) => setFilter(e.target.value)} className="min-w-0 flex-1 bg-transparent text-xs text-text outline-none" />
+        <input
+          aria-label={mode === "ssh" ? "Filter hosts" : "Filter databases"}
+          placeholder={mode === "ssh" ? "Filter hosts or tags" : "Filter databases"}
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          className="min-w-0 flex-1 bg-transparent text-xs text-text outline-none"
+        />
       </label>
+      {mode === "sql" ? (
+        <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto">
+          <DbConnections filter={filter} onFind={() => setFinding(true)} />
+        </div>
+      ) : (
       <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto">
         {groups.filter((g) => !g.parent_id || !groups.some((p) => p.id === g.parent_id)).map((g) => renderGroup(g, 0))}
         {ungrouped.length > 0 && (
@@ -369,9 +432,12 @@ function HostList({
           </div>
         )}
         {hosts.length === 0 && <p className="px-2 text-xs leading-relaxed text-muted">No hosts yet. Add one with the + button.</p>}
-        <DbList filter={filter} />
       </div>
-      <span className="border-t border-line px-1.5 pt-2.5 text-[11px] leading-relaxed text-muted">Click a server to open it as a tab. Nothing connects until you do.</span>
+      )}
+      <span className="border-t border-line px-1.5 pt-2.5 text-[11px] leading-relaxed text-muted">
+        {mode === "ssh" ? "Click a server to open it as a tab. Nothing connects until you do." : "Click a database to open it as a tab. Nothing connects until you do."}
+      </span>
+      {finding && <FindLocalDialog onClose={() => setFinding(false)} />}
     </nav>
   );
 }

@@ -147,7 +147,25 @@ const MIGRATIONS: &[&str] = &[
         updated_at INTEGER NOT NULL
     );
     "#,
+    // v7: SQL snippets (kind) and query history (docs/07 §3.1). History is local only:
+    // never synced, never in a backup, no result data.
+    r#"
+    ALTER TABLE snippets ADD COLUMN kind TEXT NOT NULL DEFAULT 'shell';
+    CREATE TABLE sql_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        conn_key TEXT NOT NULL,
+        sql TEXT NOT NULL,
+        ran_at INTEGER NOT NULL,
+        ok INTEGER NOT NULL,
+        rows INTEGER,
+        elapsed_ms INTEGER
+    );
+    CREATE INDEX sql_history_conn ON sql_history(conn_key, ran_at DESC);
+    "#,
 ];
+
+/// Query history entries kept per connection.
+pub const SQL_HISTORY_KEEP: i64 = 200;
 
 pub struct Db {
     conn: Mutex<Connection>,
@@ -442,7 +460,51 @@ impl Db {
     }
 
     pub fn delete_db_connection(&self, id: &str) -> Result<()> {
-        self.delete_tracked("db_connections", "id", "db_connection", id)
+        self.delete_tracked("db_connections", "id", "db_connection", id)?;
+        self.clear_sql_history(id)
+    }
+
+    // ----------------------------------------------------------- SQL history
+
+    /// Add a run to a connection's history and keep only the newest [`SQL_HISTORY_KEEP`].
+    pub fn add_sql_history(&self, e: &SqlHistoryEntry) -> Result<()> {
+        let c = self.conn.lock();
+        c.execute(
+            "INSERT INTO sql_history (conn_key, sql, ran_at, ok, rows, elapsed_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![e.conn_key, e.sql, e.ran_at, e.ok as i64, e.rows, e.elapsed_ms],
+        )?;
+        c.execute(
+            "DELETE FROM sql_history WHERE conn_key = ?1 AND id NOT IN
+               (SELECT id FROM sql_history WHERE conn_key = ?1 ORDER BY ran_at DESC, id DESC LIMIT ?2)",
+            params![e.conn_key, SQL_HISTORY_KEEP],
+        )?;
+        Ok(())
+    }
+
+    /// Newest first.
+    pub fn list_sql_history(&self, conn_key: &str, limit: u32) -> Result<Vec<SqlHistoryEntry>> {
+        let c = self.conn.lock();
+        let mut st = c.prepare(
+            "SELECT id, conn_key, sql, ran_at, ok, rows, elapsed_ms FROM sql_history
+             WHERE conn_key = ?1 ORDER BY ran_at DESC, id DESC LIMIT ?2",
+        )?;
+        let rows = st.query_map(params![conn_key, i64::from(limit.min(SQL_HISTORY_KEEP as u32))], |r| {
+            Ok(SqlHistoryEntry {
+                id: r.get(0)?,
+                conn_key: r.get(1)?,
+                sql: r.get(2)?,
+                ran_at: r.get(3)?,
+                ok: r.get::<_, i64>(4)? != 0,
+                rows: r.get(5)?,
+                elapsed_ms: r.get(6)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    pub fn clear_sql_history(&self, conn_key: &str) -> Result<()> {
+        self.conn.lock().execute("DELETE FROM sql_history WHERE conn_key = ?1", params![conn_key])?;
+        Ok(())
     }
 
     // ----------------------------------------------------------- known hosts
@@ -574,6 +636,17 @@ impl Db {
 
     pub fn save_snippet(&self, mut s: Snippet) -> Result<Snippet> {
         s.name = s.name.trim().to_string();
+        if s.kind == SnippetKind::Sql {
+            // SQL snippets are only inserted into the SQL editor. "One server" with no server
+            // keeps them out of terminals on older app versions too (they don't know `kind`).
+            s.alias = None;
+            s.hotkey = None;
+            s.steps.clear();
+            s.vars.clear();
+            s.scope = SnippetScope::Host;
+            s.scope_value = None;
+            s.run_mode = RunMode::Paste;
+        }
         s.alias = s.alias.map(|a| a.trim().to_string()).filter(|a| !a.is_empty());
         s.hotkey = s.hotkey.map(|h| h.trim().to_string()).filter(|h| !h.is_empty());
         s.steps.retain(|x| !x.trim().is_empty());
@@ -610,13 +683,13 @@ impl Db {
     pub fn put_snippet(&self, s: &Snippet) -> Result<()> {
         self.conn.lock().execute(
             "INSERT INTO snippets (id, name, alias, command, vars_json, scope, scope_value, run_mode, hotkey,
-                                   ask_prod, pack, sort, created_at, updated_at, steps_json, continue_on_error)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+                                   ask_prod, pack, sort, created_at, updated_at, steps_json, continue_on_error, kind)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
              ON CONFLICT(id) DO UPDATE SET name=excluded.name, alias=excluded.alias, command=excluded.command,
                 vars_json=excluded.vars_json, scope=excluded.scope, scope_value=excluded.scope_value,
                 run_mode=excluded.run_mode, hotkey=excluded.hotkey, ask_prod=excluded.ask_prod,
                 pack=excluded.pack, sort=excluded.sort, updated_at=excluded.updated_at,
-                steps_json=excluded.steps_json, continue_on_error=excluded.continue_on_error",
+                steps_json=excluded.steps_json, continue_on_error=excluded.continue_on_error, kind=excluded.kind",
             params![
                 s.id,
                 s.name,
@@ -634,6 +707,7 @@ impl Db {
                 s.updated_at,
                 serde_json::to_string(&s.steps)?,
                 s.continue_on_error as i64,
+                enum_str(&s.kind)?,
             ],
         )?;
         Ok(())
@@ -887,7 +961,7 @@ const HOST_SELECT: &str = "SELECT id, group_id, name, address, port, env_label, 
     created_at, updated_at FROM hosts";
 
 /// Settings that stay on this device (open tabs, dashboard tab, sync / backup config, SQL editor text).
-pub const LOCAL_SETTING_KEYS: &[&str] = &["ui.session", "ui.dashboard.tab", "sync.settings", "ui.sql.drafts"];
+pub const LOCAL_SETTING_KEYS: &[&str] = &["ui.session", "ui.dashboard.tab", "sync.settings", "ui.sql.drafts", "ui.sql.tables"];
 
 pub fn is_local_setting(key: &str) -> bool {
     LOCAL_SETTING_KEYS.contains(&key) || key.starts_with("backup.")
@@ -914,7 +988,7 @@ fn row_snapshot(r: &Row) -> rusqlite::Result<Snapshot> {
 }
 
 const SNIPPET_SELECT: &str = "SELECT id, name, alias, command, vars_json, scope, scope_value, run_mode, hotkey,
-    ask_prod, pack, sort, created_at, updated_at, steps_json, continue_on_error FROM snippets";
+    ask_prod, pack, sort, created_at, updated_at, steps_json, continue_on_error, kind FROM snippets";
 
 fn row_snippet(r: &Row) -> rusqlite::Result<Snippet> {
     Ok(Snippet {
@@ -934,6 +1008,7 @@ fn row_snippet(r: &Row) -> rusqlite::Result<Snippet> {
         updated_at: r.get(13)?,
         steps: json_or_default(r.get(14)?),
         continue_on_error: r.get::<_, i64>(15)? != 0,
+        kind: enum_parse(r.get(16)?),
     })
 }
 
@@ -1133,7 +1208,57 @@ pub(crate) mod tests {
             updated_at: 0,
             steps: vec![],
             continue_on_error: false,
+            kind: SnippetKind::Shell,
         }
+    }
+
+    #[test]
+    fn sql_snippets_never_reach_terminals() {
+        let db = Db::open_in_memory().unwrap();
+        let mut s = snippet("Slow queries", Some("slow"));
+        s.kind = SnippetKind::Sql;
+        s.command = "select * from pg_stat_activity".into();
+        let saved = db.save_snippet(s).unwrap();
+        assert_eq!(saved.kind, SnippetKind::Sql);
+        assert_eq!((saved.alias.as_deref(), saved.hotkey.as_deref()), (None, None));
+        // "One server" without a server: shows nowhere in older app versions either
+        assert_eq!((saved.scope, saved.scope_value.as_deref()), (SnippetScope::Host, None));
+        assert!(saved.vars.is_empty());
+        assert_eq!(db.list_snippets().unwrap()[0].kind, SnippetKind::Sql);
+        // a backup from before v0.7.1 has no kind: shell
+        let old: Snippet = serde_json::from_str(r#"{"id":"a","name":"n","alias":null,"command":"ls","scope_value":null,"hotkey":null,"pack":null}"#).unwrap();
+        assert_eq!(old.kind, SnippetKind::Shell);
+    }
+
+    #[test]
+    fn sql_history_keeps_the_newest_200_per_connection() {
+        let db = Db::open_in_memory().unwrap();
+        let entry = |key: &str, i: i64| SqlHistoryEntry {
+            id: 0,
+            conn_key: key.into(),
+            sql: format!("select {i}"),
+            ran_at: 1_000 + i,
+            ok: i % 2 == 0,
+            rows: Some(1),
+            elapsed_ms: Some(3),
+        };
+        for i in 0..205 {
+            db.add_sql_history(&entry("c1", i)).unwrap();
+        }
+        db.add_sql_history(&entry("c2", 0)).unwrap();
+        let all = db.list_sql_history("c1", 500).unwrap();
+        assert_eq!(all.len(), 200);
+        assert_eq!(all[0].sql, "select 204", "newest first");
+        assert_eq!(all.last().unwrap().sql, "select 5", "the oldest 5 were pruned");
+        assert_eq!(db.list_sql_history("c1", 3).unwrap().len(), 3);
+        db.clear_sql_history("c1").unwrap();
+        assert!(db.list_sql_history("c1", 10).unwrap().is_empty());
+        assert_eq!(db.list_sql_history("c2", 10).unwrap().len(), 1, "other connections keep theirs");
+        // deleting a saved connection drops its history
+        let c = db.save_db_connection(db_conn("shop")).unwrap();
+        db.add_sql_history(&entry(&c.id, 1)).unwrap();
+        db.delete_db_connection(&c.id).unwrap();
+        assert!(db.list_sql_history(&c.id, 10).unwrap().is_empty());
     }
 
     #[test]

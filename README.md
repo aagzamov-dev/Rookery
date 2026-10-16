@@ -67,11 +67,31 @@ An iTerm-style terminal (xterm.js + WebGL): themes (10 built in, plus iTerm `.it
 ### Databases
 PostgreSQL, MySQL and MariaDB, for a quick look-and-fix next to the terminal (not a full database IDE).
 - **Where:** the **Database** view in a server tab (through its SSH session), or saved connections in the sidebar, each in its own tab: on this PC, direct with SSL, or through a server. Quick connect takes URLs like `postgres://user@host/db`.
-- **See it:** schema tree with tables, columns, keys and indexes; double-click a table for its first rows.
+- **Tables like HeidiSQL:** click a table and it opens as a tab next to **Query**.
+  - **Data:** paged rows; click a header to sort; quick search; filters (=, contains, <, >, is NULL…) or your own WHERE.
+  - **Right-click a cell** to filter by its value, or jump through a foreign key to the related row.
+  - **Columns** can be reordered, resized and hidden, remembered per table. There's also a row detail panel, an exact Count and CSV.
+  - **Structure:** columns, indexes, foreign keys both ways and the CREATE code.
 - **Run it:** CodeMirror editor with completion of your tables and columns. Ctrl+Enter runs the statement at the cursor, and Cancel really stops it on the server. The results grid stays fast with many rows; copy or export CSV.
+- **Shortcuts:** **Open in SQL** on a Docker database container, import a connection from a Laravel `.env`, and **Find databases on this PC** (XAMPP, Laragon, PostgreSQL, Docker). Query history per connection, and SQL snippets.
 - **Safe on PROD:** read-only enforced by the database server. **Allow changes** turns writes on for 15 minutes; every change waits in a transaction until you **Commit**. DELETE without WHERE, DROP and friends ask first, and on PROD you type the database name.
 
-<img src="docs/screenshots/sql.png" alt="Database tab: schema tree, SQL editor and a results grid, on a read-only PROD connection" width="100%" />
+<img src="docs/screenshots/sql-table.png" alt="A table opened like in HeidiSQL: sorted data, foreign-key marks and the row detail panel" width="100%" />
+
+| Structure | SQL editor |
+|---|---|
+| <img src="docs/screenshots/sql-structure.png" alt="Table structure: columns, indexes, foreign keys and CREATE code" /> | <img src="docs/screenshots/sql.png" alt="Database tab: schema tree, SQL editor and a results grid, on a read-only PROD connection" /> |
+
+### Editor
+Edit config files on the server (`.env`, `docker-compose.yml`, nginx…) without losing anyone's changes.
+- **Comfortable:** folders and tabs, pinned files, highlighting for the usual config and code formats, find / replace, multi-cursor, **Format** (Prettier, and a careful `.env` tidy-up), problems while typing (JSON, YAML, `.env` duplicates and quoting), **Hide values** for secrets.
+- **Never overwrites blindly:** saving checks the file is still the version you opened. If someone changed it, you get a three-way merge instead of a write. Coming back to the window checks for changes too.
+- **Careful writes:** your own files are replaced in one step, so a dropped connection never leaves half a file. Other people's files keep their owner and permissions. **Save with sudo** when needed. What was written is read back and checked, and line endings and BOM stay as they were.
+- **History:** the server's version before every save is kept on this PC. On PROD, every save shows the changes first.
+
+| Editor | Someone changed it meanwhile |
+|---|---|
+| <img src="docs/screenshots/editor.png" alt="Editor view: folder tree, pinned files, a .env file with problems underlined" /> | <img src="docs/screenshots/editor-merge.png" alt="Three-way merge: one conflict to choose, other changes combined" /> |
 
 ### Dashboard
 - **Every server at a glance:** CPU, RAM, disk, containers, "synced 2 min ago".
@@ -152,8 +172,8 @@ npm test             # Rust + frontend tests
 npm run build        # installer in target/release/bundle
 ```
 
-- **Screenshots:** the images above are the real UI with made-up data. Run `npm --workspace apps/desktop run dev` and open `http://localhost:1420/demo.html?scene=dashboard` (scenes: `terminal`, `docker`, `sql`, `sql-server`, `backup`, `hosts`, `shortcuts`, `snippets`).
-- **Releasing:** push a tag `vX.Y.Z` and GitHub Actions builds Windows and macOS and publishes a signed release. See [06-AUTO-UPDATE.md](docs/06-AUTO-UPDATE.md) §4.
+- **Screenshots:** the images above are the real UI with made-up data. Run `npm --workspace apps/desktop run dev` and open `http://localhost:1420/demo.html?scene=dashboard` (scenes: `terminal`, `docker`, `sql`, `sql-table`, `sql-structure`, `sql-server`, `backup`, `hosts`, `shortcuts`, `snippets`).
+- **Releasing:** raise the version (Cargo.toml, tauri.conf.json, both package.json), add its `docs/CHANGELOG.md` section, commit, then push a tag `vX.Y.Z`. GitHub Actions then builds Windows and macOS and publishes a signed release. Pushing `main` alone never releases. See [06-AUTO-UPDATE.md](docs/06-AUTO-UPDATE.md) §4.
 
 ```
 crates/rookery-core    Rust core: vault, SQLite, SSH, SFTP, collectors, SQL connections, sync, backup, importers (no UI deps)
@@ -167,8 +187,7 @@ apps/desktop           React + TypeScript UI (Vite, Tailwind, zustand, xterm.js)
 
 ## Roadmap
 
-- **v0.7.1 — SQL shortcuts:** "Open in SQL" from a Docker database container, import a connection from a Laravel `.env`, find the databases running on this PC, query history. Spec: [docs/07-SQL-CONNECTIONS.md](docs/07-SQL-CONNECTIONS.md) §10.
-- **Then:** tunnels (port forwarding with on/off switches), jump hosts, SSH agent login, SSH key generator.
+- **Next:** tunnels (port forwarding with on/off switches), jump hosts, SSH agent login, SSH key generator.
 - **v1.0:** Android (then iOS), with the same core and a phone layout for checking servers and quick actions.
 
 ## License

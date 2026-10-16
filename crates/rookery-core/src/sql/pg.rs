@@ -10,8 +10,9 @@ use tokio_postgres::{AsyncMessage, CancelToken, Client, SimpleQueryMessage};
 use tokio_postgres_rustls::MakeRustlsConnect;
 
 use super::schema::{self, TextRow, COL_SEP};
-use super::{ConnParams, Done, ResultColumn, SchemaTree, Sink, StmtError};
-use crate::model::SslMode;
+use super::table::{ident, literal, ColumnDetail, ForeignKey, TableDetail};
+use super::{ConnParams, Done, IndexInfo, ResultColumn, SchemaTree, Sink, StmtError};
+use crate::model::{DbEngine, SslMode};
 use crate::{Error, Result};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -125,6 +126,37 @@ pub fn stmt_err(e: tokio_postgres::Error) -> StmtError {
     }
 }
 
+/// `pg_constraint` action codes.
+fn pg_action(c: Option<&str>) -> Option<String> {
+    Some(
+        match c? {
+            "a" => "NO ACTION",
+            "r" => "RESTRICT",
+            "c" => "CASCADE",
+            "n" => "SET NULL",
+            "d" => "SET DEFAULT",
+            _ => return None,
+        }
+        .into(),
+    )
+}
+
+fn pg_fk(r: &TextRow) -> ForeignKey {
+    let s = |i: usize| r.get(i).cloned().flatten().unwrap_or_default();
+    let list = |i: usize| s(i).split(COL_SEP).filter(|c| !c.is_empty()).map(String::from).collect();
+    ForeignKey {
+        name: s(0),
+        from_schema: s(1),
+        from_table: s(2),
+        from_columns: list(3),
+        to_schema: s(4),
+        to_table: s(5),
+        to_columns: list(6),
+        on_update: pg_action(r.get(7).and_then(|v| v.as_deref())),
+        on_delete: pg_action(r.get(8).and_then(|v| v.as_deref())),
+    }
+}
+
 fn is_canceled(e: &tokio_postgres::Error) -> bool {
     e.code() == Some(&SqlState::QUERY_CANCELED)
 }
@@ -214,6 +246,168 @@ impl PgConn {
         }
         sink.end_open();
         Ok(done)
+    }
+
+    /// First value of the first row (counts).
+    pub async fn scalar(&self, sql: &str) -> Result<Option<String>> {
+        self.first_value(sql).await
+    }
+
+    /// Columns of one table, in order (name, type, null, default, extra, comment).
+    pub async fn columns(&self, schema: &str, table: &str) -> Result<Vec<ColumnDetail>> {
+        let (s, t) = (literal(DbEngine::Postgres, schema), literal(DbEngine::Postgres, table));
+        let base = |extra: &str| {
+            format!(
+                "SELECT a.attname, format_type(a.atttypid, a.atttypmod), NOT a.attnotnull, pg_get_expr(d.adbin, d.adrelid),
+                        {extra}, col_description(c.oid, a.attnum)
+                 FROM pg_attribute a
+                 JOIN pg_class c ON c.oid = a.attrelid
+                 JOIN pg_namespace n ON n.oid = c.relnamespace
+                 LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+                 WHERE n.nspname = {s} AND c.relname = {t} AND a.attnum > 0 AND NOT a.attisdropped
+                 ORDER BY a.attnum"
+            )
+        };
+        // identity (PG 10+) / generated (PG 12+) columns; older servers get the plain list.
+        let rows = match self
+            .rows(&base("CASE WHEN a.attidentity <> '' THEN 'identity' WHEN a.attgenerated <> '' THEN 'generated' END"))
+            .await
+        {
+            Ok(r) => r,
+            Err(_) => self.rows(&base("NULL")).await?,
+        };
+        Ok(rows
+            .into_iter()
+            .map(|r| ColumnDetail {
+                name: r[0].clone().unwrap_or_default(),
+                data_type: r[1].clone().unwrap_or_default(),
+                nullable: r[2].as_deref() == Some("t"),
+                default: r[3].clone(),
+                key: None,
+                extra: r[4].clone(),
+                comment: r[5].clone(),
+            })
+            .collect())
+    }
+
+    /// Everything the Structure tab shows. Several small catalog queries, all for one table.
+    pub async fn table_detail(&self, schema: &str, table: &str) -> Result<TableDetail> {
+        let (s, t) = (literal(DbEngine::Postgres, schema), literal(DbEngine::Postgres, table));
+        let rel = format!("(SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = {s} AND c.relname = {t})");
+        let info = self
+            .rows(&format!(
+                "SELECT c.relkind, c.reltuples::bigint, pg_total_relation_size(c.oid), obj_description(c.oid, 'pg_class')
+                 FROM pg_class c WHERE c.oid = {rel}"
+            ))
+            .await?;
+        let Some(info) = info.into_iter().next() else {
+            return Err(Error::NotFound(format!("table {schema}.{table}")));
+        };
+        let kind = match info[0].as_deref() {
+            Some("v") => "view",
+            Some("m") => "matview",
+            Some("p") => "partitioned",
+            Some("f") => "foreign",
+            _ => "table",
+        };
+        let mut columns = self.columns(schema, table).await?;
+        let index_rows = self
+            .rows(&format!(
+                "SELECT i.relname, ix.indisunique, ix.indisprimary,
+                        array_to_string(ARRAY(SELECT pg_get_indexdef(ix.indexrelid, k + 1, true)
+                                              FROM generate_subscripts(ix.indkey, 1) k ORDER BY k), chr({}))
+                 FROM pg_index ix JOIN pg_class i ON i.oid = ix.indexrelid
+                 WHERE ix.indrelid = {rel} ORDER BY ix.indisprimary DESC, i.relname",
+                COL_SEP as u32
+            ))
+            .await?;
+        let indexes: Vec<IndexInfo> = index_rows
+            .iter()
+            .map(|r| IndexInfo {
+                name: r[0].clone().unwrap_or_default(),
+                unique: r[1].as_deref() == Some("t") || r[2].as_deref() == Some("t"),
+                primary: r[2].as_deref() == Some("t"),
+                columns: r[3].clone().unwrap_or_default().split(COL_SEP).filter(|c| !c.is_empty()).map(String::from).collect(),
+            })
+            .collect();
+        schema::mark_column_keys(&mut columns, &indexes);
+
+        let fk_sql = |side: &str| {
+            format!(
+                "SELECT con.conname, n1.nspname, c1.relname,
+                        array_to_string(ARRAY(SELECT a.attname FROM unnest(con.conkey) WITH ORDINALITY k(n, o)
+                                              JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.n ORDER BY k.o), chr({sep})),
+                        n2.nspname, c2.relname,
+                        array_to_string(ARRAY(SELECT a.attname FROM unnest(con.confkey) WITH ORDINALITY k(n, o)
+                                              JOIN pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = k.n ORDER BY k.o), chr({sep})),
+                        con.confupdtype, con.confdeltype
+                 FROM pg_constraint con
+                 JOIN pg_class c1 ON c1.oid = con.conrelid JOIN pg_namespace n1 ON n1.oid = c1.relnamespace
+                 JOIN pg_class c2 ON c2.oid = con.confrelid JOIN pg_namespace n2 ON n2.oid = c2.relnamespace
+                 WHERE con.contype = 'f' AND con.{side} = {rel} ORDER BY con.conname",
+                sep = COL_SEP as u32
+            )
+        };
+        let foreign_keys = self.rows(&fk_sql("conrelid")).await?.iter().map(pg_fk).collect();
+        let referenced_by = self.rows(&fk_sql("confrelid")).await?.iter().map(pg_fk).collect();
+
+        // CREATE script from the catalog (Postgres has no SHOW CREATE TABLE).
+        let name = super::table::table_ref(DbEngine::Postgres, schema, table);
+        let create_sql = if kind == "view" || kind == "matview" {
+            let def = self.first_value(&format!("SELECT pg_get_viewdef({rel}, true)")).await?.unwrap_or_default();
+            Some(format!("CREATE {}VIEW {name} AS\n{}", if kind == "matview" { "MATERIALIZED " } else { "" }, def.trim_end()))
+        } else {
+            let cons = self
+                .rows(&format!("SELECT conname, pg_get_constraintdef(oid, true) FROM pg_constraint WHERE conrelid = {rel} ORDER BY contype DESC, conname"))
+                .await?;
+            let extra_idx = self
+                .rows(&format!(
+                    "SELECT pg_get_indexdef(ix.indexrelid) FROM pg_index ix
+                     WHERE ix.indrelid = {rel} AND NOT EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conindid = ix.indexrelid)"
+                ))
+                .await?;
+            let mut lines: Vec<String> = columns
+                .iter()
+                .map(|c| {
+                    format!(
+                        "  {} {}{}{}",
+                        ident(DbEngine::Postgres, &c.name),
+                        c.data_type,
+                        c.default.as_ref().map(|d| format!(" DEFAULT {d}")).unwrap_or_default(),
+                        if c.nullable { "" } else { " NOT NULL" }
+                    )
+                })
+                .collect();
+            for r in &cons {
+                lines.push(format!("  CONSTRAINT {} {}", ident(DbEngine::Postgres, r[0].as_deref().unwrap_or("")), r[1].as_deref().unwrap_or("")));
+            }
+            let mut out = format!("CREATE TABLE {name} (\n{}\n);", lines.join(",\n"));
+            for r in &extra_idx {
+                if let Some(d) = &r[0] {
+                    out.push_str(&format!("\n{d};"));
+                }
+            }
+            if let Some(c) = &info[3] {
+                out.push_str(&format!("\nCOMMENT ON TABLE {name} IS {};", literal(DbEngine::Postgres, c)));
+            }
+            Some(out)
+        };
+
+        Ok(TableDetail {
+            schema: schema.into(),
+            name: table.into(),
+            kind: kind.into(),
+            columns,
+            indexes,
+            foreign_keys,
+            referenced_by,
+            create_sql,
+            rows_est: info[1].as_deref().and_then(|v| v.parse::<i64>().ok()).filter(|v| *v >= 0),
+            size_bytes: info[2].as_deref().and_then(|v| v.parse().ok()),
+            engine: None,
+            collation: None,
+            comment: info[3].clone(),
+        })
     }
 
     pub async fn schema(&self, system: bool) -> Result<SchemaTree> {

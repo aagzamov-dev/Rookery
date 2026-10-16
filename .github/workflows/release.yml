@@ -1,6 +1,9 @@
-# Release: push a tag like `v0.6.0` → Windows + macOS builds, signed update files,
-# and a published GitHub Release with `latest.json` that installed apps read (docs/06-AUTO-UPDATE.md).
-#
+# Release (docs/06-AUTO-UPDATE.md): only pushing a tag `vX.Y.Z` releases. The tag must match
+# the version in crates/rookery-tauri/tauri.conf.json; it is built for Windows + macOS, its
+# update files are signed, and a GitHub Release with `latest.json` is published (installed
+# apps update from it). Pushes to main never release (they only run CI). A version that is
+# already released is skipped.
+#Good
 # Needs two repository secrets (Settings → Secrets and variables → Actions):
 #   TAURI_SIGNING_PRIVATE_KEY           contents of ~/.tauri/rookery-updater.key
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  contents of ~/.tauri/rookery-updater.key.password
@@ -13,37 +16,103 @@ on:
 permissions:
   contents: write
 
+# One release run at a time.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      version: ${{ steps.v.outputs.version }}
+      release: ${{ steps.v.outputs.release }}
+      since: ${{ steps.v.outputs.since }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require("fs");
+            const version = JSON.parse(fs.readFileSync("crates/rookery-tauri/tauri.conf.json", "utf8")).version;
+            const tag = `v${version}`;
+            if (context.ref !== `refs/tags/${tag}`) {
+              core.setFailed(`Tag ${context.ref.slice(10)} does not match the app version ${version} (tauri.conf.json).`);
+              return;
+            }
+            let published = false;
+            try {
+              const { data } = await github.rest.repos.getReleaseByTag({ owner: context.repo.owner, repo: context.repo.repo, tag });
+              published = !data.draft;
+            } catch (e) {
+              if (e.status !== 404) throw e;
+            }
+            if (published) core.notice(`${tag} is already released: nothing to do.`);
+            // The notes cover every version since the last published release (one may have been skipped).
+            let since = "";
+            try {
+              const { data } = await github.rest.repos.getLatestRelease({ owner: context.repo.owner, repo: context.repo.repo });
+              since = data.tag_name.replace(/^v/, "");
+            } catch (e) {
+              if (e.status !== 404) throw e;
+            }
+            core.setOutput("since", since);
+            core.setOutput("tag", tag);
+            core.setOutput("version", version);
+            core.setOutput("release", published ? "false" : "true");
+
   create-release:
+    needs: version
+    if: needs.version.outputs.release == 'true'
     runs-on: ubuntu-latest
     outputs:
       id: ${{ steps.release.outputs.result }}
     steps:
       - uses: actions/checkout@v4
       - name: Release notes (.github/release-notes.md + docs/CHANGELOG.md)
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
+          VERSION: ${{ needs.version.outputs.version }}
+          SINCE: ${{ needs.version.outputs.since }}
         run: |
-          tag="${GITHUB_REF_NAME}"
-          version="${tag#v}"
-          awk -v v="$version" '
-            /^## / { if (found) exit; if (index($0, v)) { found = 1; next } }
-            found { print }
+          # The section of this version, plus older ones down to the last release (as "### x.y.z").
+          awk -v v="$VERSION" -v since="$SINCE" '
+            /^## / {
+              h = substr($0, 4)
+              if (started && (h == since || since == "")) exit
+              if (!started) { if (h == v) started = 1; next }
+              print "### " h; next
+            }
+            started { print }
           ' docs/CHANGELOG.md > changes.md
           [ -s changes.md ] || echo "See docs/CHANGELOG.md." > changes.md
-          awk -v version="$version" -v tag="$tag" '
+          awk -v version="$VERSION" -v tag="$TAG" '
             /\{\{CHANGES\}\}/ { while ((getline line < "changes.md") > 0) print line; next }
             { gsub(/\{\{VERSION\}\}/, version); gsub(/\{\{TAG\}\}/, tag); print }
           ' .github/release-notes.md > notes.md
           cat notes.md
       - id: release
         uses: actions/github-script@v7
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
         with:
           script: |
             const fs = require("fs");
+            const tag = process.env.TAG;
+            const { owner, repo } = context.repo;
+            // A draft left by a failed run is replaced (it was never published).
+            const { data: list } = await github.rest.repos.listReleases({ owner, repo, per_page: 30 });
+            for (const r of list.filter((r) => r.draft && r.tag_name === tag)) {
+              await github.rest.repos.deleteRelease({ owner, repo, release_id: r.id });
+            }
             const { data } = await github.rest.repos.createRelease({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              tag_name: context.ref.replace("refs/tags/", ""),
-              name: `Rookery ${context.ref.replace("refs/tags/", "")}`,
+              owner,
+              repo,
+              tag_name: tag,
+              target_commitish: context.sha,
+              name: `Rookery ${tag}`,
               body: fs.readFileSync("notes.md", "utf8"),
               draft: true,
               prerelease: false,
@@ -51,7 +120,7 @@ jobs:
             return data.id;
 
   build:
-    needs: create-release
+    needs: [version, create-release]
     strategy:
       fail-fast: false
       matrix:
@@ -92,6 +161,7 @@ jobs:
       - uses: actions/github-script@v7
         with:
           script: |
+            // The release was a draft until both builds were attached.
             await github.rest.repos.updateRelease({
               owner: context.repo.owner,
               repo: context.repo.repo,

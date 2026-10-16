@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import clsx from "clsx";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import type { SQLNamespace } from "@codemirror/lang-sql";
-import { AlertTriangle, Download, Loader2, Lock, PanelLeft, Play, Square, Unlock } from "lucide-react";
+import { AlertTriangle, Bookmark, Download, History, Loader2, Lock, PanelLeft, Play, Square, Table2, Terminal, Unlock, X } from "lucide-react";
 import { api, asCoreError } from "../../ipc/api";
 import type { SchemaTree as Tree } from "../../ipc/bindings/SchemaTree";
 import { askConfirm } from "../../stores/dialogs";
@@ -16,8 +16,21 @@ import { toCsv } from "./csv";
 import { sqlRegistry } from "./registry";
 import { ResultsGrid } from "./ResultsGrid";
 import { SchemaTree } from "./SchemaTree";
+import { SidePanel, saveSqlSnippet, type SidePanelTab } from "./SidePanel";
 import { SqlEditor, type SqlEditorHandle } from "./SqlEditor";
 import { charToIndex, splitSql, type Dialect } from "./split";
+import { TableView, type OpenTable, type TableSub } from "./TableView";
+import type { ColumnFilter } from "../../ipc/bindings/ColumnFilter";
+
+/** A table opened as a tab inside the SQL tab. Unpinned = preview (the next single click replaces it). */
+interface OpenedTable {
+  key: string;
+  schema: string;
+  table: string;
+  pinned: boolean;
+  sub: TableSub;
+  filter?: { filter: ColumnFilter; nonce: number };
+}
 
 interface Props {
   /** Registry / draft key: `host:<id>` for a server view, the tab id for a database tab. */
@@ -105,6 +118,10 @@ export function SqlTab({ tabKey, sessionId, extra, label, env }: Props) {
   const [runId, setRunId] = useState<string | null>(null);
   const [tab, setTab] = useState<number | "messages">("messages");
   const [notice, setNotice] = useState<string | null>(null);
+  const [panel, setPanel] = useState<SidePanelTab | null>(null);
+  const [tables, setTables] = useState<OpenedTable[]>([]);
+  const [active, setActive] = useState<string>("query");
+  const queryActive = active === "query";
   const run = useSql((s) => (runId ? s.runs[runId] : undefined));
   const running = !!run && !run.finished;
   const sets = run?.sets ?? EMPTY;
@@ -267,6 +284,55 @@ export function SqlTab({ tabKey, sessionId, extra, label, env }: Props) {
     void exec("all", { text: sql });
   };
 
+  /** Click a table: open it as a tab (single click = preview, double click / jumps = kept). */
+  const openTable: OpenTable = (schema, table, opts = {}) => {
+    const key = `${schema}.${table}`;
+    const filter = opts.filter ? { filter: opts.filter, nonce: Date.now() } : undefined;
+    setTables((cur) => {
+      const at = cur.findIndex((t) => t.key === key);
+      if (at >= 0) return cur.map((t, i) => (i === at ? { ...t, pinned: t.pinned || !!opts.pin, ...(filter ? { filter, sub: "data" as TableSub } : {}) } : t));
+      const next: OpenedTable = { key, schema, table, pinned: !!opts.pin, sub: "data", filter };
+      const preview = cur.findIndex((t) => !t.pinned);
+      return preview >= 0 && !opts.pin ? cur.map((t, i) => (i === preview ? next : t)) : [...cur, next];
+    });
+    setActive(key);
+  };
+  const closeTable = (key: string) => {
+    setTables((cur) => {
+      const i = cur.findIndex((t) => t.key === key);
+      const rest = cur.filter((t) => t.key !== key);
+      if (active === key) setActive(rest[Math.min(i, rest.length - 1)]?.key ?? "query");
+      return rest;
+    });
+  };
+  const tableInfo = (schema: string, table: string) => tree?.schemas.find((x) => x.name === schema)?.tables.find((t) => t.name === table);
+
+  /** "Open in Query": add the SQL on a new line at the end of the editor and select it. */
+  const toQuery = (sql: string) => {
+    setActive("query");
+    requestAnimationFrame(() => {
+      const v = editor.current?.view();
+      if (!v) return;
+      const doc = v.state.doc.toString();
+      const sep = doc.trim() ? (doc.endsWith("\n") ? "\n" : "\n\n") : "";
+      const from = doc.trim() ? doc.length + sep.length : 0;
+      v.dispatch({
+        changes: doc.trim() ? { from: doc.length, insert: sep + sql } : { from: 0, to: doc.length, insert: sql },
+        selection: { anchor: from, head: from + sql.length },
+        scrollIntoView: true,
+      });
+      v.focus();
+    });
+  };
+
+  /** The selection, or the whole editor (Save as snippet). */
+  const editorText = () => {
+    const v = editor.current?.view();
+    if (!v) return "";
+    const sel = v.state.selection.main;
+    return sel.empty ? v.state.doc.toString() : v.state.sliceDoc(sel.from, sel.to);
+  };
+
   const exportCsv = async (set: SqlResultSet) => {
     const path = await saveDialog({ defaultPath: `result-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`, filters: [{ name: "CSV", extensions: ["csv"] }] });
     if (!path) return;
@@ -306,7 +372,7 @@ export function SqlTab({ tabKey, sessionId, extra, label, env }: Props) {
 
   if (!meta) return null;
   const totalMs = sets.reduce((a, s) => a + (s.elapsedMs ?? 0), 0);
-  const active = typeof tab === "number" ? sets[tab] : undefined;
+  const activeSet = typeof tab === "number" ? sets[tab] : undefined;
 
   return (
     <div className="absolute inset-0 flex flex-col bg-bg" data-sql-key={tabKey}>
@@ -315,15 +381,19 @@ export function SqlTab({ tabKey, sessionId, extra, label, env }: Props) {
         <IconButton label={showTree ? "Hide schema tree" : "Show schema tree"} onClick={() => setShowTree((x) => !x)}>
           <PanelLeft size={15} />
         </IconButton>
-        <Button variant="primary" className="h-7" disabled={running} onClick={() => void exec("current")} title="Run the statement at the cursor, or the selection (Ctrl+Enter)">
-          <Play size={13} /> Run
-        </Button>
-        <Button className="h-7" disabled={running} onClick={() => void exec("all")} title="Run everything (Ctrl+Shift+Enter)">
-          Run all
-        </Button>
-        <Button className="h-7" disabled={!running} onClick={cancel} title="Stop the query on the server (Ctrl+.)">
-          <Square size={12} /> Cancel
-        </Button>
+        {queryActive && (
+          <>
+            <Button variant="primary" className="h-7" disabled={running} onClick={() => void exec("current")} title="Run the statement at the cursor, or the selection (Ctrl+Enter)">
+              <Play size={13} /> Run
+            </Button>
+            <Button className="h-7" disabled={running} onClick={() => void exec("all")} title="Run everything (Ctrl+Shift+Enter)">
+              Run all
+            </Button>
+            <Button className="h-7" disabled={!running} onClick={cancel} title="Stop the query on the server (Ctrl+.)">
+              <Square size={12} /> Cancel
+            </Button>
+          </>
+        )}
         <span className="mx-1 h-5 w-px bg-line" />
         <span className="text-xs text-muted">DB</span>
         <Select className="h-7 max-w-[200px] text-xs" value={meta.database ?? ""} onChange={(e) => void switchDb(e.target.value)} disabled={!tree?.databases.length}>
@@ -343,7 +413,15 @@ export function SqlTab({ tabKey, sessionId, extra, label, env }: Props) {
         ) : (
           run && <span className="text-xs text-muted">{totalMs} ms</span>
         )}
-        <span className="ml-auto flex items-center gap-1.5">{extra}</span>
+        <span className="ml-auto flex items-center gap-1.5">
+          <Button className="h-7" onClick={() => void saveSqlSnippet(editorText())} title="Save the selection (or the whole editor) as an SQL snippet">
+            <Bookmark size={12} /> Save as snippet
+          </Button>
+          <Button className={clsx("h-7", panel && "border-accent-line bg-accent-bg")} onClick={() => setPanel((p) => (p ? null : "history"))} title="Query history and SQL snippets">
+            <History size={12} /> History
+          </Button>
+          {extra}
+        </span>
       </div>
 
       {meta.txOpen && (
@@ -374,6 +452,46 @@ export function SqlTab({ tabKey, sessionId, extra, label, env }: Props) {
         </div>
       )}
 
+      <div className="flex min-h-9 items-end gap-0.5 overflow-x-auto border-b border-line bg-panel px-2 pt-1" role="tablist" aria-label="Query and tables">
+        <button
+          role="tab"
+          aria-selected={queryActive}
+          onClick={() => setActive("query")}
+          className={clsx("flex h-8 flex-none items-center gap-1.5 rounded-t-md border border-b-0 px-3 text-[13px]", queryActive ? "border-line bg-bg text-text" : "border-transparent text-muted hover:text-text")}
+        >
+          <Terminal size={13} /> Query
+          {running && <Loader2 size={11} className="animate-spin text-accent" />}
+        </button>
+        {tables.map((t) => (
+          <div
+            key={t.key}
+            role="tab"
+            aria-selected={active === t.key}
+            onClick={() => setActive(t.key)}
+            onDoubleClick={() => setTables((cur) => cur.map((x) => (x.key === t.key ? { ...x, pinned: true } : x)))}
+            onAuxClick={(e) => e.button === 1 && closeTable(t.key)}
+            title={`${t.schema}.${t.table}${t.pinned ? "" : " · preview (double-click to keep it open)"}`}
+            className={clsx(
+              "group/t flex h-8 max-w-[220px] flex-none cursor-pointer items-center gap-1.5 rounded-t-md border border-b-0 pr-1 pl-3 text-[13px]",
+              active === t.key ? "border-line bg-bg text-text" : "border-transparent text-muted hover:text-text",
+            )}
+          >
+            <Table2 size={13} className="flex-none text-accent" />
+            <span className={clsx("truncate", !t.pinned && "italic")}>{t.table}</span>
+            <button
+              aria-label={`Close ${t.table}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                closeTable(t.key);
+              }}
+              className="grid h-5 w-5 flex-none place-items-center rounded text-muted opacity-60 hover:bg-panel2 hover:text-text group-hover/t:opacity-100"
+            >
+              <X size={11} />
+            </button>
+          </div>
+        ))}
+      </div>
+
       <div className="flex min-h-0 flex-1">
         {showTree && (
           <div className="w-[260px] flex-none">
@@ -387,10 +505,30 @@ export function SqlTab({ tabKey, sessionId, extra, label, env }: Props) {
               onRefresh={() => void loadTree()}
               onSql={fromTree}
               onCopy={(t) => void api.clipboardWrite(t)}
+              onOpen={openTable}
+              activeKey={queryActive ? null : active}
             />
           </div>
         )}
-        <div ref={body} className="flex min-w-0 flex-1 flex-col">
+        <div className="relative min-w-0 flex-1">
+        {tables.map((t) => (
+          <TableView
+            key={t.key}
+            sessionId={sessionId}
+            connKey={meta.connKey}
+            schema={t.schema}
+            table={t.table}
+            info={tableInfo(t.schema, t.table)}
+            sub={t.sub}
+            onSub={(sub) => setTables((cur) => cur.map((x) => (x.key === t.key ? { ...x, sub, pinned: true } : x)))}
+            visible={active === t.key}
+            fontFamily={fontFamily}
+            onOpenTable={openTable}
+            onQuery={toQuery}
+            initialFilter={t.filter}
+          />
+        ))}
+        <div ref={body} className="absolute inset-0 flex min-w-0 flex-col" style={{ display: queryActive ? "flex" : "none" }}>
           <div className="min-h-0" style={{ height: `${split * 100}%` }}>
             {draftsLoaded && (
               <SqlEditor
@@ -406,8 +544,23 @@ export function SqlTab({ tabKey, sessionId, extra, label, env }: Props) {
             )}
           </div>
           <div onPointerDown={startDrag} className="h-1.5 flex-none cursor-row-resize border-y border-line bg-panel hover:bg-accent-line" role="separator" aria-label="Resize editor" />
-          <ResultsArea dialect={dialect} run={run} sets={sets} tab={tab} setTab={setTab} active={active} meta={meta} fontFamily={fontFamily} onExport={exportCsv} onMore={(s) => run && void exec("all", { text: run.sql, rowLimit: s.rows.length + 500 })} />
+          <ResultsArea dialect={dialect} run={run} sets={sets} tab={tab} setTab={setTab} active={activeSet} meta={meta} fontFamily={fontFamily} onExport={exportCsv} onMore={(s) => run && void exec("all", { text: run.sql, rowLimit: s.rows.length + 500 })} />
         </div>
+        </div>
+        {panel && queryActive && (
+          <div className="w-[300px] flex-none">
+            <SidePanel
+              tab={panel}
+              onTab={setPanel}
+              onClose={() => setPanel(null)}
+              connKey={meta.connKey}
+              reloadToken={`${runId}:${finished ? 1 : 0}`}
+              onSql={fromTree}
+              editorText={editorText}
+              fontFamily={fontFamily}
+            />
+          </div>
+        )}
       </div>
     </div>
   );
@@ -444,7 +597,7 @@ function ResultsArea({
   if (!run) {
     return (
       <div className="grid min-h-0 flex-1 place-items-center bg-term px-6 text-center text-[13px] text-muted">
-        Connected to {meta.database ?? "the server"} ({meta.version}). Double-click a table or write SQL, then press Ctrl+Enter.
+        Connected to {meta.database ?? "the server"} ({meta.version}). Click a table to see its data and structure, or write SQL and press Ctrl+Enter.
       </div>
     );
   }

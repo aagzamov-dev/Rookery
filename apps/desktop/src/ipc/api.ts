@@ -27,11 +27,25 @@ import type { TermOpen } from "./bindings/TermOpen";
 import type { VaultStatus } from "./bindings/VaultStatus";
 import type { DbConnection } from "./bindings/DbConnection";
 import type { SchemaTree } from "./bindings/SchemaTree";
+import type { EnvSource } from "./bindings/EnvSource";
+import type { LocalDb } from "./bindings/LocalDb";
+import type { SqlHistoryEntry } from "./bindings/SqlHistoryEntry";
+import type { SqlPrefill } from "./bindings/SqlPrefill";
 import type { SqlOpened } from "./bindings/SqlOpened";
 import type { SqlRunOpts } from "./bindings/SqlRunOpts";
 import type { SqlTarget } from "./bindings/SqlTarget";
 import type { SqlTestResult } from "./bindings/SqlTestResult";
+import type { TableDetail } from "./bindings/TableDetail";
+import type { TableQuery } from "./bindings/TableQuery";
+import type { TableRowsStarted } from "./bindings/TableRowsStarted";
 import type { TxAction } from "./bindings/TxAction";
+import type { EditorBackup } from "./bindings/EditorBackup";
+import type { EditorFile } from "./bindings/EditorFile";
+import type { Eol } from "./bindings/Eol";
+import type { FileStamp } from "./bindings/FileStamp";
+import type { FileVersion } from "./bindings/FileVersion";
+import type { SaveMode } from "./bindings/SaveMode";
+import type { SaveOutcome } from "./bindings/SaveOutcome";
 
 export type CoreErrorKind =
   | "db" | "io" | "json"
@@ -168,6 +182,15 @@ export const api = {
 
   // files (SFTP)
   sftpHome: (hostId: string) => invoke<string>("sftp_home", { hostId }),
+
+  // editor (docs/08): content goes webview → Rust → server only; never logged
+  editorOpen: (hostId: string, path: string) => invoke<EditorFile>("editor_open", { hostId, path }),
+  editorStat: (hostId: string, path: string) => invoke<FileStamp>("editor_stat", { hostId, path }),
+  editorSave: (hostId: string, path: string, content: string, eol: Eol, bom: boolean, base: FileVersion, mode: SaveMode) =>
+    invoke<SaveOutcome>("editor_save", { hostId, path, content, eol, bom, base, mode }),
+  editorBackups: (hostId: string, path: string) => invoke<EditorBackup[]>("editor_backups", { hostId, path }),
+  editorBackupRead: (hostId: string, path: string, id: string) => invoke<string>("editor_backup_read", { hostId, path, id }),
+
   sftpList: (hostId: string, path: string) => invoke<FileEntry[]>("sftp_list", { hostId, path }),
   sftpMkdir: (hostId: string, path: string) => invoke<void>("sftp_mkdir", { hostId, path }),
   sftpRename: (hostId: string, from: string, to: string) => invoke<void>("sftp_rename", { hostId, from, to }),
@@ -196,18 +219,34 @@ export const api = {
   // SQL connections (passwords go to the vault in Rust and never come back)
   sqlConnsList: () => invoke<DbConnection[]>("sql_conns_list"),
   /** password: undefined = keep, "" = delete, value = set. */
-  sqlConnSave: (conn: DbConnection, password?: string) => invoke<DbConnection>("sql_conn_save", { conn, password: password ?? null }),
+  /** `passwordRef` (from `sqlEnvImport`) = use the password read from a .env. */
+  sqlConnSave: (conn: DbConnection, password?: string, passwordRef?: string) =>
+    invoke<DbConnection>("sql_conn_save", { conn, password: password ?? null, passwordRef: passwordRef ?? null }),
   sqlConnDelete: (id: string) => invoke<void>("sql_conn_delete", { id }),
-  sqlTest: (conn: DbConnection, password?: string) => invoke<SqlTestResult>("sql_test", { conn, password: password || null }),
+  sqlTest: (conn: DbConnection, password?: string, passwordRef?: string) =>
+    invoke<SqlTestResult>("sql_test", { conn, password: password || null, passwordRef: passwordRef ?? null }),
+  /** Find databases on this PC: probe of 127.0.0.1 + local `docker ps`. */
+  sqlDetectLocal: () => invoke<LocalDb[]>("sql_detect_local"),
+  /** Laravel .env → prefill; DB_PASSWORD stays in Rust (`password_ref`). */
+  sqlEnvImport: (source: EnvSource) => invoke<SqlPrefill>("sql_env_import", { source }),
   sqlOpen: (target: SqlTarget) => invoke<SqlOpened>("sql_open", { target }),
   sqlClose: (sessionId: string) => invoke<void>("sql_close", { sessionId }),
   sqlSchema: (sessionId: string, system = false) => invoke<SchemaTree>("sql_schema", { sessionId, system }),
   sqlUse: (sessionId: string, database: string) => invoke<void>("sql_use", { sessionId, database }),
+  // table browser (Structure / Data tabs); filters become SQL in Rust, safely quoted
+  sqlTableDetail: (sessionId: string, schema: string, table: string) => invoke<TableDetail>("sql_table_detail", { sessionId, schema, table }),
+  sqlTableRows: (sessionId: string, query: TableQuery) => invoke<TableRowsStarted>("sql_table_rows", { sessionId, query }),
+  sqlTableCount: (sessionId: string, query: TableQuery) => invoke<number>("sql_table_count", { sessionId, query }),
   /** Returns the query id; rows arrive as `sql_result` events. */
   sqlRun: (sessionId: string, sql: string, opts: SqlRunOpts = { row_limit: null }) => invoke<string>("sql_run", { sessionId, sql, opts }),
   sqlCancel: (queryId: string) => invoke<void>("sql_cancel", { queryId }),
   sqlTx: (sessionId: string, action: TxAction) => invoke<void>("sql_tx", { sessionId, action }),
   sqlAllowWrites: (sessionId: string, minutes: number) => invoke<void>("sql_allow_writes", { sessionId, minutes }),
+  /** Docker → Open in SQL: one `docker inspect` → prefill (never a password). */
+  sqlDockerInspect: (hostId: string, container: string) => invoke<SqlPrefill>("sql_docker_inspect", { hostId, container }),
+  /** Newest first; local only, SQL text without results. */
+  sqlHistory: (connKey: string, limit = 200) => invoke<SqlHistoryEntry[]>("sql_history", { connKey, limit }),
+  sqlHistoryClear: (connKey: string) => invoke<void>("sql_history_clear", { connKey }),
   // UI settings (only `ui.*` keys)
   settingGet: <T>(key: string) => invoke<T | null>("setting_get", { key }),
   settingSet: (key: string, value: unknown) => invoke<void>("setting_set", { key, value }),

@@ -20,7 +20,9 @@ import {
   Trash2,
   Upload,
   FileEdit,
+  FileCode2,
 } from "lucide-react";
+import { openInEditor } from "../editor/actions";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
@@ -134,7 +136,22 @@ export function FileBrowser({ hostId, visible, variant }: Props) {
         /* not a folder */
       }
     }
-    return editLocally(e);
+    return editInRookery(e, true);
+  };
+
+  /**
+   * Double-click / Enter on a file: the Editor view (safe save, merge, history). Files it can't
+   * edit (binary, not UTF-8, too big) open with this PC's program instead, as before.
+   */
+  const editInRookery = async (e: FileEntry, fallback = false) => {
+    setNote(null);
+    try {
+      await openInEditor(hostId, e.path);
+    } catch (x) {
+      const msg = asCoreError(x).message;
+      if (fallback && /binary|UTF-8|larger than/i.test(msg)) return editLocally(e);
+      setNote(`${msg} You can still use “Edit locally”.`);
+    }
   };
 
   const editLocally = async (e: FileEntry) => {
@@ -353,6 +370,9 @@ export function FileBrowser({ hostId, visible, variant }: Props) {
                   </RowBtn>
                 ) : (
                   <>
+                    <RowBtn label="Edit in Rookery" onClick={() => void editInRookery(e)}>
+                      <FileCode2 size={13} />
+                    </RowBtn>
                     <RowBtn label="Edit locally (saves upload back)" onClick={() => void editLocally(e)}>
                       <FileEdit size={13} />
                     </RowBtn>

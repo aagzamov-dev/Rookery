@@ -75,20 +75,31 @@ pub fn build(schemas: &[TextRow], tables: &[TextRow], columns: &[TextRow], index
 }
 
 /// PRI for primary-key columns, UNI for single-column unique indexes, MUL for the first column of others.
+fn key_of(name: &str, indexes: &[IndexInfo]) -> Option<String> {
+    let in_pk = indexes.iter().any(|i| i.primary && i.columns.iter().any(|c| c == name));
+    let uni = indexes.iter().any(|i| i.unique && i.columns.len() == 1 && i.columns[0] == name);
+    let mul = indexes.iter().any(|i| i.columns.first().map(String::as_str) == Some(name));
+    if in_pk {
+        Some("PRI".into())
+    } else if uni {
+        Some("UNI".into())
+    } else if mul {
+        Some("MUL".into())
+    } else {
+        None
+    }
+}
+
 fn mark_keys(t: &mut TableInfo) {
     for c in &mut t.columns {
-        let in_pk = t.indexes.iter().any(|i| i.primary && i.columns.contains(&c.name));
-        let uni = t.indexes.iter().any(|i| i.unique && i.columns.len() == 1 && i.columns[0] == c.name);
-        let mul = t.indexes.iter().any(|i| i.columns.first() == Some(&c.name));
-        c.key = if in_pk {
-            Some("PRI".into())
-        } else if uni {
-            Some("UNI".into())
-        } else if mul {
-            Some("MUL".into())
-        } else {
-            None
-        };
+        c.key = key_of(&c.name, &t.indexes);
+    }
+}
+
+/// Same marks for the Structure tab's columns.
+pub fn mark_column_keys(columns: &mut [super::table::ColumnDetail], indexes: &[IndexInfo]) {
+    for c in columns {
+        c.key = key_of(&c.name, indexes);
     }
 }
 

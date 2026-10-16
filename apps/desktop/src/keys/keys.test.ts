@@ -14,7 +14,7 @@ import { eventToChord, isValidChord, normalizeChord } from "./chord";
 import { resolveBindings, findChordUsers } from "../stores/keys";
 import { fillCommand, parseVarNames, syncVars } from "../features/snippets/vars";
 import { fuzzyScore } from "../features/palette/CommandPalette";
-import { appliesTo, emptySnippet } from "../stores/snippets";
+import { appliesTo, appliesToContainer, emptySnippet } from "../stores/snippets";
 import { emptyGroup, emptyHost } from "../stores/hosts";
 import { ACTIONS } from "./actions";
 import { PRESETS } from "./presets";
@@ -84,6 +84,13 @@ describe("snippet scope", () => {
     expect(appliesTo({ ...s, scope: "tag", scope_value: "docker" }, host, [])).toBe(false);
     expect(appliesTo({ ...s, scope: "group", scope_value: "g1" }, host, [parent, child])).toBe(true);
     expect(appliesTo({ ...s, scope: "host", scope_value: "h2" }, host, [])).toBe(false);
+  });
+  it("never offers SQL snippets to terminals or containers", () => {
+    const host = { ...emptyHost(null), id: "h1" };
+    const sql = { ...emptySnippet(), kind: "sql" as const, command: "select 1" };
+    expect(appliesTo({ ...sql, scope: "all" }, host, [])).toBe(false);
+    expect(appliesTo({ ...sql, scope: "host", scope_value: "h1" }, host, [])).toBe(false);
+    expect(appliesToContainer({ ...sql, scope: "container", scope_value: "*" }, { name: "db", service: null })).toBe(false);
   });
 });
 

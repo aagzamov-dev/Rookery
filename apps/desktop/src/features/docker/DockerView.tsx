@@ -1,11 +1,13 @@
 import { useMemo, useState } from "react";
 import clsx from "clsx";
-import { Box, Loader2, Play, RotateCw, ScrollText, Search, Square, SquareTerminal, Trash2, X, Zap } from "lucide-react";
+import { Box, Database, Loader2, Play, RotateCw, ScrollText, Search, Square, SquareTerminal, Trash2, X, Zap } from "lucide-react";
 import { api, asCoreError } from "../../ipc/api";
 import type { Container } from "../../ipc/bindings/Container";
 import { askConfirm } from "../../stores/dialogs";
 import { isProblem, statsFor, useDocker } from "../../stores/docker";
 import { useHosts } from "../../stores/hosts";
+import { useSql } from "../../stores/sql";
+import { isDatabaseImage } from "../sql/shortcuts";
 import { streamKey, useLogs } from "../../stores/logs";
 import { useTabs } from "../../stores/tabs";
 import { LogViewer } from "../logs/LogViewer";
@@ -27,7 +29,7 @@ export function DockerView({ hostId }: { hostId: string }) {
   const host = useHosts((s) => s.hosts.find((h) => h.id === hostId));
   const [q, setQ] = useState("");
   const [problems, setProblems] = useState(false);
-  const [busy, setBusy] = useState<Record<string, Act | undefined>>({});
+  const [busy, setBusy] = useState<Record<string, Act | "sql" | undefined>>({});
   const [err, setErr] = useState<string | null>(null);
 
   const containers = d?.containers ?? [];
@@ -70,6 +72,21 @@ export function DockerView({ hostId }: { hostId: string }) {
     setBusy((b) => ({ ...b, [c.id]: a }));
     try {
       await api.dockerAction(hostId, c.id, a);
+    } catch (e) {
+      setErr(`${c.name}: ${asCoreError(e).message}`);
+    } finally {
+      setBusy((b) => ({ ...b, [c.id]: undefined }));
+    }
+  };
+
+  /** One `docker inspect`, then the server's Database view opens prefilled (it asks for the password). */
+  const openInSql = async (c: Container) => {
+    setErr(null);
+    setBusy((b) => ({ ...b, [c.id]: "sql" }));
+    try {
+      const p = await api.sqlDockerInspect(hostId, c.name);
+      useSql.getState().setServerPrefill(hostId, p);
+      useTabs.getState().setView(hostId, "database");
     } catch (e) {
       setErr(`${c.name}: ${asCoreError(e).message}`);
     } finally {
@@ -125,7 +142,7 @@ export function DockerView({ hostId }: { hostId: string }) {
         {err && <div className="border-b border-[#5A2D33] bg-[#33232A] px-3.5 py-2 text-xs text-[#FFA8A8]">{err}</div>}
         <div className="min-h-0 flex-1 overflow-auto">
           <div className="min-w-[640px]">
-            <div className="grid grid-cols-[minmax(0,1.7fr)_minmax(0,1.3fr)_60px_120px_150px] gap-x-3 px-3.5 py-2 text-[11px] tracking-wider text-muted uppercase">
+            <div className="grid grid-cols-[minmax(0,1.7fr)_minmax(0,1.3fr)_60px_120px_182px] gap-x-3 px-3.5 py-2 text-[11px] tracking-wider text-muted uppercase">
               <span>Name</span>
               <span>Image</span>
               <span className="text-right">CPU</span>
@@ -148,7 +165,7 @@ export function DockerView({ hostId }: { hostId: string }) {
                       key={c.id}
                       onClick={() => select(hostId, c.id)}
                       className={clsx(
-                        "grid h-[42px] cursor-pointer grid-cols-[minmax(0,1.7fr)_minmax(0,1.3fr)_60px_120px_150px] items-center gap-x-3 border-b border-[#303A4E] px-3.5",
+                        "grid h-[42px] cursor-pointer grid-cols-[minmax(0,1.7fr)_minmax(0,1.3fr)_60px_120px_182px] items-center gap-x-3 border-b border-[#303A4E] px-3.5",
                         selected?.id === c.id ? "bg-[#26385A]" : "hover:bg-panel2",
                       )}
                     >
@@ -173,6 +190,11 @@ export function DockerView({ hostId }: { hostId: string }) {
                         <Btn label="Shell in container (opens a terminal in this tab)" onClick={() => shell(c)} disabled={!run}>
                           <SquareTerminal size={14} />
                         </Btn>
+                        {isDatabaseImage(c.image) && (
+                          <Btn label="Open in SQL (this server's Database view)" onClick={() => void openInSql(c)} disabled={!run || !!b}>
+                            {b === "sql" ? <Loader2 size={14} className="animate-spin" /> : <Database size={14} />}
+                          </Btn>
+                        )}
                         <Btn label="Restart" onClick={() => void act(c, "restart")} disabled={!!b}>
                           {b === "restart" ? <Loader2 size={14} className="animate-spin" /> : <RotateCw size={14} />}
                         </Btn>

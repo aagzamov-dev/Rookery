@@ -94,3 +94,55 @@ export const SQL_CONNS = [
   conn("c-analytics", "analytics", "postgres", "staging", { address: "analytics.db.example.com", ssl_mode: "require", database: "events" }),
   conn("c-local", "laragon mysql", "mysql", "dev", { has_password: false }),
 ];
+
+// ------------------------------------------------------- table browser demo
+
+export const ORDER_COLUMNS = [
+  { name: "id", type_name: "longlong", numeric: true },
+  { name: "customer_id", type_name: "longlong", numeric: true },
+  { name: "status", type_name: "string", numeric: false },
+  { name: "total", type_name: "newdecimal", numeric: true },
+  { name: "paid_at", type_name: "timestamp", numeric: false },
+  { name: "created_at", type_name: "timestamp", numeric: false },
+];
+
+const statuses = ["paid", "shipped", "paid", "new", "refunded", "shipped", "paid"];
+export function orderRows(): (string | null)[][] {
+  return Array.from({ length: 201 }, (_, i) => {
+    const day = 13 - Math.floor(i / 40);
+    const t = (h: number) => `2026-10-${String(day).padStart(2, "0")} ${String(8 + (h % 12)).padStart(2, "0")}:${String((i * 13) % 60).padStart(2, "0")}:${String((i * 7) % 60).padStart(2, "0")}`;
+    const status = statuses[i % statuses.length];
+    return [String(92311 - i), String(1800 + ((i * 37) % 900)), status, (19 + ((i * 7.31) % 480)).toFixed(2), status === "new" ? null : t(i + 1), t(i)];
+  });
+}
+
+export const ORDER_DETAIL = {
+  schema: "shop",
+  name: "orders",
+  kind: "table",
+  columns: [
+    { name: "id", data_type: "bigint unsigned", nullable: false, default: null, key: "PRI", extra: "auto_increment", comment: null },
+    { name: "customer_id", data_type: "bigint unsigned", nullable: false, default: null, key: "MUL", extra: null, comment: null },
+    { name: "status", data_type: "enum('new','paid','shipped','refunded')", nullable: false, default: "new", key: null, extra: null, comment: "Payment / delivery state" },
+    { name: "total", data_type: "decimal(10,2)", nullable: true, default: null, key: null, extra: null, comment: null },
+    { name: "paid_at", data_type: "timestamp", nullable: true, default: null, key: null, extra: null, comment: null },
+    { name: "created_at", data_type: "timestamp", nullable: false, default: "CURRENT_TIMESTAMP", key: null, extra: "DEFAULT_GENERATED", comment: null },
+  ],
+  indexes: [
+    { name: "PRIMARY", columns: ["id"], unique: true, primary: true },
+    { name: "orders_customer_id_index", columns: ["customer_id"], unique: false, primary: false },
+  ],
+  foreign_keys: [
+    { name: "orders_customer_id_foreign", from_schema: "shop", from_table: "orders", from_columns: ["customer_id"], to_schema: "shop", to_table: "customers", to_columns: ["id"], on_update: "NO ACTION", on_delete: "CASCADE" },
+  ],
+  referenced_by: [
+    { name: "order_items_order_id_foreign", from_schema: "shop", from_table: "order_items", from_columns: ["order_id"], to_schema: "shop", to_table: "orders", to_columns: ["id"], on_update: "NO ACTION", on_delete: "CASCADE" },
+  ],
+  create_sql:
+    "CREATE TABLE `orders` (\n  `id` bigint unsigned NOT NULL AUTO_INCREMENT,\n  `customer_id` bigint unsigned NOT NULL,\n  `status` enum('new','paid','shipped','refunded') NOT NULL DEFAULT 'new' COMMENT 'Payment / delivery state',\n  `total` decimal(10,2) DEFAULT NULL,\n  `paid_at` timestamp NULL DEFAULT NULL,\n  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  PRIMARY KEY (`id`),\n  KEY `orders_customer_id_index` (`customer_id`),\n  CONSTRAINT `orders_customer_id_foreign` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`) ON DELETE CASCADE\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+  rows_est: 92311,
+  size_bytes: 14_680_064,
+  engine: "InnoDB",
+  collation: "utf8mb4_unicode_ci",
+  comment: null,
+};

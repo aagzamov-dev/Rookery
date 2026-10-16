@@ -1,6 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { charToIndex, splitSql, statementAt } from "./split";
 import { classifySql, kindOf } from "./classify";
+import { isDatabaseImage } from "./shortcuts";
+
+describe("isDatabaseImage", () => {
+  it("knows database images and skips exporters", () => {
+    expect(isDatabaseImage("postgres:16-alpine")).toBe(true);
+    expect(isDatabaseImage("bitnami/postgresql:16")).toBe(true);
+    expect(isDatabaseImage("docker.io/library/mariadb:11.4")).toBe(true);
+    expect(isDatabaseImage("mysql@sha256:abc")).toBe(true);
+    expect(isDatabaseImage("prom/mysqld-exporter")).toBe(false);
+    expect(isDatabaseImage("redis:7")).toBe(false);
+    expect(isDatabaseImage("dpage/pgadmin4")).toBe(false);
+  });
+});
 
 const texts = (sql: string, d: "postgres" | "mysql" = "postgres") => splitSql(sql, d).statements.map((s) => s.text);
 

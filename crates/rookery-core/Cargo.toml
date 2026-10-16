@@ -47,6 +47,7 @@ mysql_async = { version = "0.37", default-features = false, features = ["default
 
 # misc
 dirs = "6"
+sha2 = "0.10"
 time = { version = "0.3", features = ["serde", "formatting", "parsing", "local-offset", "macros"] }
 
 # Local terminal tabs (desktop only)

@@ -1,4 +1,5 @@
 use rookery_core::model::*;
+use rookery_core::sql::detect::{EnvSource, LocalDb, SqlPrefill};
 use rookery_core::sql::{SchemaTree, SqlOpened, SqlRunOpts, SqlTarget, SqlTestResult, TxAction};
 use rookery_core::{new_id, CoreEvent, Error, Result};
 use serde::Serialize;
@@ -634,9 +635,18 @@ pub fn sql_conns_list(s: State<'_, AppState>) -> Result<Vec<DbConnection>> {
     Ok(list)
 }
 
+/// `password_ref` (from `sql_env_import`): use the password read from a `.env` instead.
+fn env_password(s: &AppState, password: Option<String>, password_ref: Option<String>) -> Result<Option<String>> {
+    match password_ref.filter(|r| !r.is_empty()) {
+        Some(r) => Ok(Some(s.core.sql.stashed_password(&r)?.to_string())),
+        None => Ok(password),
+    }
+}
+
 /// Password: `None` = keep as is, `Some("")` = delete, `Some(value)` = set. It is never returned.
 #[tauri::command]
-pub fn sql_conn_save(s: State<'_, AppState>, conn: DbConnection, password: Option<String>) -> Result<DbConnection> {
+pub fn sql_conn_save(s: State<'_, AppState>, conn: DbConnection, password: Option<String>, password_ref: Option<String>) -> Result<DbConnection> {
+    let password = env_password(&s, password, password_ref)?;
     if password.as_deref().is_some_and(|p| !p.is_empty()) && !s.core.vault.lock().is_unlocked() {
         return Err(Error::VaultLocked);
     }
@@ -659,7 +669,8 @@ pub fn sql_conn_delete(s: State<'_, AppState>, id: String) -> Result<()> {
 
 /// "Test connection": connect once and close. `password` None = the saved one.
 #[tauri::command]
-pub async fn sql_test(s: State<'_, AppState>, conn: DbConnection, password: Option<String>) -> Result<SqlTestResult> {
+pub async fn sql_test(s: State<'_, AppState>, conn: DbConnection, password: Option<String>, password_ref: Option<String>) -> Result<SqlTestResult> {
+    let password = env_password(&s, password, password_ref)?;
     s.core.sql.test(&conn, password).await
 }
 
@@ -677,6 +688,24 @@ pub async fn sql_close(s: State<'_, AppState>, session_id: String) -> Result<()>
 #[tauri::command]
 pub async fn sql_schema(s: State<'_, AppState>, session_id: String, system: bool) -> Result<SchemaTree> {
     s.core.sql.schema(&session_id, system).await
+}
+
+/// Table browser: Structure tab.
+#[tauri::command]
+pub async fn sql_table_detail(s: State<'_, AppState>, session_id: String, schema: String, table: String) -> Result<rookery_core::sql::table::TableDetail> {
+    s.core.sql.table_detail(&session_id, &schema, &table).await
+}
+
+/// Table browser: one page of rows (filters / sort / search become SQL in Rust, safely quoted).
+#[tauri::command]
+pub async fn sql_table_rows(s: State<'_, AppState>, session_id: String, query: rookery_core::sql::table::TableQuery) -> Result<rookery_core::sql::table::TableRowsStarted> {
+    s.core.sql.table_rows(&session_id, query).await
+}
+
+/// Table browser: exact row count with the same filters.
+#[tauri::command]
+pub async fn sql_table_count(s: State<'_, AppState>, session_id: String, query: rookery_core::sql::table::TableQuery) -> Result<u64> {
+    s.core.sql.table_count(&session_id, query).await
 }
 
 #[tauri::command]
@@ -699,6 +728,40 @@ pub async fn sql_cancel(s: State<'_, AppState>, query_id: String) -> Result<()> 
 #[tauri::command]
 pub async fn sql_tx(s: State<'_, AppState>, session_id: String, action: TxAction) -> Result<()> {
     s.core.sql.tx(&session_id, action).await
+}
+
+/// Docker → "Open in SQL": one `docker inspect` on the server → prefill (never a password).
+#[tauri::command]
+pub async fn sql_docker_inspect(s: State<'_, AppState>, host_id: String, container: String) -> Result<SqlPrefill> {
+    rookery_core::sql::detect::docker_inspect(&s.core.connections, &host_id, &container).await
+}
+
+/// "Find databases on this PC": TCP probe of 127.0.0.1 + local `docker ps`.
+#[tauri::command]
+pub async fn sql_detect_local() -> Result<Vec<LocalDb>> {
+    Ok(rookery_core::sql::detect::detect_local().await)
+}
+
+/// Laravel `.env` → prefill. `DB_PASSWORD` stays in Rust; the UI gets `password_ref` to use it.
+#[tauri::command]
+pub async fn sql_env_import(s: State<'_, AppState>, source: EnvSource) -> Result<SqlPrefill> {
+    let env = rookery_core::sql::detect::read_env(&s.core.sftp, &source).await?;
+    let mut prefill = env.prefill;
+    prefill.password_ref = env.password.map(|p| s.core.sql.stash_password(p));
+    Ok(prefill)
+}
+
+/// Query history of one connection, newest first (local only; text, never results).
+#[tauri::command]
+pub async fn sql_history(s: State<'_, AppState>, conn_key: String, limit: Option<u32>) -> Result<Vec<SqlHistoryEntry>> {
+    let db = s.core.db.clone();
+    blocking(move || db.list_sql_history(&conn_key, limit.unwrap_or(200))).await
+}
+
+#[tauri::command]
+pub async fn sql_history_clear(s: State<'_, AppState>, conn_key: String) -> Result<()> {
+    let db = s.core.db.clone();
+    blocking(move || db.clear_sql_history(&conn_key)).await
 }
 
 /// "Allow changes for N minutes" on a read-only (PROD) connection; 0 = read-only again now.
@@ -852,4 +915,45 @@ pub fn clipboard_read(app: tauri::AppHandle) -> Result<String> {
 #[tauri::command]
 pub async fn debug_active_subscriptions(s: State<'_, AppState>) -> Result<Vec<(String, String, u32)>> {
     Ok(s.core.subscriptions.active().await)
+}
+
+// ------------------------------------------------------------------ editor (docs/08-EDITOR.md)
+
+use rookery_core::editor::{EditorBackup, EditorFile, Eol, FileStamp, FileVersion, SaveMode, SaveOutcome};
+
+#[tauri::command]
+pub async fn editor_open(s: State<'_, AppState>, host_id: String, path: String) -> Result<EditorFile> {
+    s.core.editor.open(&host_id, &path).await
+}
+
+/// The cheap "did it change on the server?" check (size and time only).
+#[tauri::command]
+pub async fn editor_stat(s: State<'_, AppState>, host_id: String, path: String) -> Result<FileStamp> {
+    s.core.editor.stat(&host_id, &path).await
+}
+
+/// Writes only if the file is still `base` (or `mode` = overwrite, from the merge view).
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn editor_save(
+    s: State<'_, AppState>,
+    host_id: String,
+    path: String,
+    content: String,
+    eol: Eol,
+    bom: bool,
+    base: FileVersion,
+    mode: SaveMode,
+) -> Result<SaveOutcome> {
+    s.core.editor.save(&host_id, &path, &content, eol, bom, &base, mode).await
+}
+
+#[tauri::command]
+pub fn editor_backups(s: State<'_, AppState>, host_id: String, path: String) -> Result<Vec<EditorBackup>> {
+    s.core.editor.backups(&host_id, &path)
+}
+
+#[tauri::command]
+pub fn editor_backup_read(s: State<'_, AppState>, host_id: String, path: String, id: String) -> Result<String> {
+    s.core.editor.backup_read(&host_id, &path, &id)
 }

@@ -4487,7 +4487,7 @@ dependencies = [
 
 [[package]]
 name = "rookery-core"
-version = "0.6.0"
+version = "0.8.0"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -4508,6 +4508,7 @@ dependencies = [
  "rustls-native-certs",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.21",
  "time",
@@ -4523,7 +4524,7 @@ dependencies = [
 
 [[package]]
 name = "rookery-tauri"
-version = "0.6.0"
+version = "0.8.0"
 dependencies = [
  "parking_lot",
  "rookery-core",

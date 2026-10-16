@@ -1,6 +1,6 @@
 # 00 — Start here (for every new chat / contributor)
 
-Read this file fully before changing anything. Then read the spec for the feature you're working on (the current one is [07-SQL-CONNECTIONS.md](07-SQL-CONNECTIONS.md), §10 lists what is built and what is left).
+Read this file fully before changing anything. Then read the spec for the feature you're working on (the current one is [08-EDITOR.md](08-EDITOR.md), §9 lists what is left; the SQL spec is [07-SQL-CONNECTIONS.md](07-SQL-CONNECTIONS.md), §10).
 
 ## 1. What Rookery is
 - **What:** a local-first desktop SSH server manager for Windows and macOS (Android later), meant as a lighter MobaXterm / Termius.
@@ -8,13 +8,13 @@ Read this file fully before changing anything. Then read the spec for the featur
 - **Pages:** Dashboard, Snippets, Hosts & identities, Shortcuts, Backup & sync, Settings.
 - **Storage:** everything lives on the user's computer. Secrets are in an encrypted vault, unlocked with a 4-digit PIN. There is no account.
 - **Repository:** https://github.com/aagzamov-dev/Rookery (public, MIT). Default branch `main`.
-- **Status:** v0.1 – v0.7 built (see [02-ROADMAP.md](02-ROADMAP.md), [CHANGELOG.md](CHANGELOG.md)). v0.7 = the SQL connections core. Next: **v0.7.1 SQL shortcuts** (Docker "Open in SQL", Laravel `.env`, find local databases, query history).
+- **Status:** v0.1 – v0.8 built (see [02-ROADMAP.md](02-ROADMAP.md), [CHANGELOG.md](CHANGELOG.md)). v0.7 = SQL connections and tables, v0.8 = the Editor (safe editing of server files: version check, three-way merge, backups, sudo save) and "Remember password" in the Database view. Next: see the open rows in 02-ROADMAP.
 
 ## 2. Repository layout
 ```
 crates/rookery-core     Rust core, NO Tauri dependency (reused by mobile later)
   src/lib.rs            Core struct: db, vault, connections, terminals, subscriptions, sftp, sync, backup, local
-  src/db.rs             SQLite (rusqlite + rusqlite_migration). MIGRATIONS is append-only (currently v1–v6)
+  src/db.rs             SQLite (rusqlite + rusqlite_migration). MIGRATIONS is append-only (currently v1–v7)
   src/vault.rs          Argon2id + XChaCha20-Poly1305 vault; PIN wrapped in OS keychain (service "app.rookery")
   src/ssh.rs            ConnectionManager: one russh session per host, leases, 30 s grace close, auto-reconnect
   src/terminal.rs       PTY channels; src/sessionlog.rs session log files
@@ -24,7 +24,8 @@ crates/rookery-core     Rust core, NO Tauri dependency (reused by mobile later)
   src/sync.rs           Dashboard sync engine (snapshots, scheduler)
   src/backup.rs         encrypted backup files + device sync folder + merge (newest wins, tombstones)
   src/importers.rs      MobaXterm / PuTTY / ~/.ssh/config
-  src/sql/              SQL connections: manager (sessions, read-only, tx), pg.rs, mysql.rs, lex.rs (split / classify / guard)
+  src/sql/              SQL connections: manager (sessions, read-only, tx, history), pg.rs, mysql.rs, lex.rs (split / classify / guard),
+                        detect.rs (Docker inspect, Laravel .env, find local databases)
   src/forward.rs        loopback port forward through an SSH session (SQL "through a server", later Tunnels)
   src/model.rs          shared types, exported to TS with ts-rs
 crates/rookery-tauri    Tauri 2 shell: src/commands.rs (all commands), src/lib.rs (plugins, event forwarder),
@@ -101,9 +102,9 @@ docs/                   all documentation (this file, specs, CHANGELOG, screensh
 - **Releases:**
   1. Bump the version in `Cargo.toml` (workspace), `crates/rookery-tauri/tauri.conf.json`, `package.json`, `apps/desktop/package.json`.
   2. Add a `docs/CHANGELOG.md` `## x.y.z` section.
-  3. Commit, then `git tag vX.Y.Z && git push && git push --tags`.
+  3. Commit, then `git tag vx.y.z` and push the tag. **Only the tag releases**; pushing `main` never does.
 
-  Details: [06-AUTO-UPDATE.md](06-AUTO-UPDATE.md) §4. Pushing `main` only runs CI; it never releases.
+  Details: [06-AUTO-UPDATE.md](06-AUTO-UPDATE.md) §4. Pushing `main` only runs CI. Never create or push a release tag unless the user asks.
 
 ## 6. UI style
 - **Palette** "Slate Blue" (Tailwind v4 `@theme` in `apps/desktop/src/index.css`):

@@ -1,6 +1,5 @@
-import { useState } from "react";
 import clsx from "clsx";
-import { ChevronDown, ChevronRight, Copy, Lock, Pencil, Plus, Trash2 } from "lucide-react";
+import { Copy, Lock, Pencil, ScanSearch, Trash2 } from "lucide-react";
 import type { DbConnection } from "../../ipc/bindings/DbConnection";
 import { askConfirm } from "../../stores/dialogs";
 import { useSql } from "../../stores/sql";
@@ -15,32 +14,28 @@ export function openConn(c: DbConnection, newTab = false) {
   useTabs.getState().openDb({ kind: "saved", id: c.id }, c.name, newTab);
 }
 
-/** Sidebar section under the hosts: saved database connections. Nothing connects until opened. */
-export function DbList({ filter }: { filter: string }) {
+/** The SQL side of the sidebar: saved database connections. Nothing connects until opened. */
+export function DbConnections({ filter, onFind }: { filter: string; onFind: () => void }) {
   const conns = useSql((s) => s.conns);
-  const [collapsed, setCollapsed] = useState(false);
   const f = filter.trim().toLowerCase();
   const visible = f ? conns.filter((c) => c.name.toLowerCase().includes(f) || c.address.toLowerCase().includes(f) || (c.database ?? "").toLowerCase().includes(f)) : conns;
-  if (f && visible.length === 0) return null;
-
   return (
     <div className="flex flex-col gap-px">
-      <div className="group/g flex h-[26px] items-center gap-1.5 pr-1 pl-1.5 text-[11px] font-semibold tracking-wider text-muted uppercase">
-        <button aria-label={collapsed ? "Expand databases" : "Collapse databases"} onClick={() => setCollapsed(!collapsed)} className="grid h-5 w-5 place-items-center">
-          {collapsed && !f ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
-        </button>
-        <span className="flex-1 truncate">Databases</span>
-        <button aria-label="New database connection" title="New database connection" onClick={() => useConnDialog.getState().open({})} className="grid h-5 w-5 place-items-center rounded hover:text-text">
-          <Plus size={12} />
-        </button>
-        <span className="w-4 text-right font-medium">{conns.length || ""}</span>
-      </div>
-      {(!collapsed || f) &&
-        visible.map((c) => <DbRow key={c.id} conn={c} />)}
-      {!collapsed && conns.length === 0 && (
-        <button onClick={() => useConnDialog.getState().open({})} className="px-3 py-1 text-left text-xs text-muted hover:text-text">
-          + Add a database (PostgreSQL, MySQL, MariaDB)
-        </button>
+      {visible.map((c) => (
+        <DbRow key={c.id} conn={c} />
+      ))}
+      {f && visible.length === 0 && <p className="px-2 text-xs text-muted">Nothing matches.</p>}
+      {conns.length === 0 && (
+        <div className="flex flex-col gap-1 px-1">
+          <p className="m-0 px-1 pb-1 text-xs leading-relaxed text-muted">No databases yet.</p>
+          <button onClick={() => useConnDialog.getState().open({})} className="rounded-md px-2 py-1.5 text-left text-xs text-text hover:bg-panel2">
+            + Add a database (PostgreSQL, MySQL, MariaDB)
+          </button>
+          <button onClick={onFind} className="rounded-md px-2 py-1.5 text-left text-xs text-text hover:bg-panel2">
+            <ScanSearch size={12} className="mr-1.5 inline" />
+            Find databases on this PC
+          </button>
+        </div>
       )}
     </div>
   );
@@ -76,7 +71,7 @@ function DbRow({ conn }: { conn: DbConnection }) {
     },
   ];
   return (
-    <div onContextMenu={menu.open(items)} className={clsx("group/h flex h-[30px] items-center gap-2 rounded-md pr-1 pl-5", isActive ? "bg-accent-bg" : "hover:bg-panel2")}>
+    <div onContextMenu={menu.open(items)} className={clsx("group/h flex h-[30px] items-center gap-2 rounded-md pr-1 pl-2", isActive ? "bg-accent-bg" : "hover:bg-panel2")}>
       <button onClick={() => openConn(conn)} onDoubleClick={() => openConn(conn, true)} title={`${conn.username}@${conn.address}:${conn.port}${conn.database ? `/${conn.database}` : ""}`} className="flex min-w-0 flex-1 items-center gap-2 text-left">
         <span aria-hidden className="text-[13px] leading-none">
           {icon(conn)}

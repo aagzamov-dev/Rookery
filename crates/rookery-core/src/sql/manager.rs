@@ -18,17 +18,20 @@ use tokio::task::JoinHandle;
 use zeroize::Zeroizing;
 
 use super::lex::{self, Kind};
+use super::table::{self, ColMeta, ColumnDetail, TableDetail, TableQuery, TableRowsStarted};
 use super::mysql::{self, MyCancel, MyConn};
 use super::pg::{self, PgCancel, PgConn};
 use super::{ConnParams, Done, SchemaTree, Sink, SqlOpened, SqlRunOpts, SqlTarget, SqlTestResult, StmtError, TxAction, IDLE_CLOSE};
 use crate::db::Db;
 use crate::forward::Forwarder;
 use crate::ssh::ConnectionManager;
-use crate::model::{db_secret_id, DbConnection, DbEngine, DbVia, EnvLabel, SslMode};
+use crate::model::{db_secret_id, DbConnection, DbEngine, DbVia, EnvLabel, SqlHistoryEntry, SslMode};
 use crate::vault::Vault;
 use crate::{new_id, now_ms, CoreEvent, Error, Result};
 
 const SWEEP_EVERY: Duration = Duration::from_secs(60);
+/// How long a password read from a `.env` waits in memory for "use password from .env".
+const STASH_FOR: Duration = Duration::from_secs(15 * 60);
 
 enum Conn {
     Pg(PgConn),
@@ -106,6 +109,27 @@ impl Conn {
         }
     }
 
+    async fn columns(&mut self, schema: &str, table: &str) -> Result<Vec<ColumnDetail>> {
+        match self {
+            Conn::Pg(c) => c.columns(schema, table).await,
+            Conn::My(c, _) => c.columns(schema, table).await,
+        }
+    }
+
+    async fn table_detail(&mut self, schema: &str, table: &str) -> Result<TableDetail> {
+        match self {
+            Conn::Pg(c) => c.table_detail(schema, table).await,
+            Conn::My(c, _) => c.table_detail(schema, table).await,
+        }
+    }
+
+    async fn scalar(&mut self, sql: &str) -> Result<Option<String>> {
+        match self {
+            Conn::Pg(c) => c.scalar(sql).await,
+            Conn::My(c, _) => c.scalar(sql).await,
+        }
+    }
+
     fn take_notices(&mut self) -> Vec<String> {
         match self {
             Conn::Pg(c) => c.take_notices(),
@@ -145,6 +169,8 @@ struct State {
 
 struct Session {
     id: String,
+    /// Query history key (see [`conn_key`]).
+    conn_key: String,
     params: Mutex<ConnParams>,
     conn: tokio::sync::Mutex<Option<Conn>>,
     /// Bumped on every (re)connect and deliberate close; a watcher of an older connection stays quiet.
@@ -154,6 +180,8 @@ struct Session {
     closed: AtomicBool,
     /// Through a server: the loopback forward (holds the SSH lease) for this session.
     forward: Mutex<Option<Forwarder>>,
+    /// Table browser: columns per `schema.table` (cleared when the schema is reloaded).
+    columns: Mutex<HashMap<String, Arc<Vec<ColumnDetail>>>>,
 }
 
 /// How the driver reaches the database.
@@ -176,6 +204,8 @@ pub struct SqlManager {
     sessions: Mutex<HashMap<String, Arc<Session>>>,
     queries: Mutex<HashMap<String, Arc<QueryCtl>>>,
     sweeper: Mutex<Option<JoinHandle<()>>>,
+    /// Passwords read from a `.env`, by reference; they never go to the webview.
+    stash: Mutex<HashMap<String, (Zeroizing<String>, Instant)>>,
 }
 
 impl SqlManager {
@@ -188,6 +218,27 @@ impl SqlManager {
             sessions: Mutex::new(HashMap::new()),
             queries: Mutex::new(HashMap::new()),
             sweeper: Mutex::new(None),
+            stash: Mutex::new(HashMap::new()),
+        }
+    }
+
+    // ------------------------------------------------------- .env passwords
+
+    /// Keep a password found in a file for a while; the UI only gets the reference.
+    pub fn stash_password(&self, password: Zeroizing<String>) -> String {
+        let mut s = self.stash.lock();
+        s.retain(|_, (_, at)| at.elapsed() < STASH_FOR);
+        let r = new_id();
+        s.insert(r.clone(), (password, Instant::now()));
+        r
+    }
+
+    /// The password behind a reference from `stash_password` (it stays until it expires or the app locks).
+    pub fn stashed_password(&self, r: &str) -> Result<Zeroizing<String>> {
+        let s = self.stash.lock();
+        match s.get(r) {
+            Some((pw, at)) if at.elapsed() < STASH_FOR => Ok(pw.clone()),
+            _ => Err(Error::Other("the password from .env is no longer in memory; import the file again".into())),
         }
     }
 
@@ -292,6 +343,7 @@ impl SqlManager {
     pub async fn open(self: &Arc<Self>, target: SqlTarget) -> Result<SqlOpened> {
         let (mut params, route, protected) = self.resolve(&target)?;
         params.read_only = protected;
+        let conn_key = conn_key(&target);
         let engine = params.engine;
         let database_hint = params.database.clone();
         let forward = self.forward(&mut params, &route).await?;
@@ -299,6 +351,7 @@ impl SqlManager {
         let database = conn.database().await.ok().flatten().or(database_hint);
         let sess = Arc::new(Session {
             id: new_id(),
+            conn_key: conn_key.clone(),
             params: Mutex::new(params),
             conn: tokio::sync::Mutex::new(Some(conn)),
             conn_gen: AtomicU64::new(1),
@@ -317,12 +370,13 @@ impl SqlManager {
             }),
             closed: AtomicBool::new(false),
             forward: Mutex::new(forward),
+            columns: Mutex::new(HashMap::new()),
         });
         self.watch(&sess, 1, ended);
         self.sessions.lock().insert(sess.id.clone(), sess.clone());
         self.ensure_sweeper();
         self.emit(&sess, "connected", None);
-        Ok(SqlOpened { session_id: sess.id.clone(), engine, server_version: version, read_only: protected, database })
+        Ok(SqlOpened { session_id: sess.id.clone(), engine, server_version: version, read_only: protected, database, conn_key })
     }
 
     fn session(&self, id: &str) -> Result<Arc<Session>> {
@@ -419,6 +473,7 @@ impl SqlManager {
 
     /// App locked / webview reloaded: drop every session (open transactions roll back).
     pub async fn close_all(&self) {
+        self.stash.lock().clear();
         let ids: Vec<String> = self.sessions.lock().keys().cloned().collect();
         for id in ids {
             self.close(&id).await;
@@ -464,6 +519,11 @@ impl SqlManager {
 
     /// Start running a script. Results arrive as `SqlResult` events for the returned query id.
     pub fn run(self: &Arc<Self>, session_id: &str, sql: String, opts: SqlRunOpts) -> Result<String> {
+        self.start(session_id, sql, opts, true)
+    }
+
+    /// `history` = keep it in the query history (the table browser's own queries are not kept).
+    fn start(self: &Arc<Self>, session_id: &str, sql: String, opts: SqlRunOpts, history: bool) -> Result<String> {
         let sess = self.session(session_id)?;
         {
             let mut st = sess.st.lock();
@@ -479,7 +539,14 @@ impl SqlManager {
         let me = self.clone();
         let qid = query_id.clone();
         tokio::spawn(async move {
-            me.run_inner(&ctl, &qid, &sql, opts).await;
+            let started = Instant::now();
+            let mut sink = me.run_inner(&ctl, &qid, &sql, opts).await;
+            sink.end_open();
+            // History first, so it is there when the UI sees `finished`.
+            if history {
+                me.record(&ctl.session.conn_key, &sql, started, sink.failed, sink.last_rows).await;
+            }
+            sink.finished();
             {
                 let mut st = ctl.session.st.lock();
                 st.running = false;
@@ -490,7 +557,32 @@ impl SqlManager {
         Ok(query_id)
     }
 
-    async fn run_inner(self: &Arc<Self>, ctl: &QueryCtl, query_id: &str, sql: &str, opts: SqlRunOpts) {
+    /// Keep the run in the connection's history (text only, no results). Scripts that
+    /// look like they hold a password (`ALTER USER … PASSWORD`, `IDENTIFIED BY`) are not kept.
+    async fn record(&self, conn_key: &str, sql: &str, started: Instant, failed: bool, rows: Option<u64>) {
+        let text = sql.trim();
+        if text.is_empty() || !history_safe(text) {
+            return;
+        }
+        let entry = SqlHistoryEntry {
+            id: 0,
+            conn_key: conn_key.to_string(),
+            sql: text.to_string(),
+            ran_at: now_ms(),
+            ok: !failed,
+            rows: rows.map(|r| r.min(i64::MAX as u64) as i64),
+            elapsed_ms: Some(started.elapsed().as_millis().min(i64::MAX as u128) as i64),
+        };
+        let db = self.db.clone();
+        match tokio::task::spawn_blocking(move || db.add_sql_history(&entry)).await {
+            Ok(Err(e)) => tracing::warn!("sql history: {e}"),
+            Err(e) => tracing::warn!("sql history: {e}"),
+            Ok(Ok(())) => {}
+        }
+    }
+
+    /// Runs the statements; the caller sends `finished` on the returned sink.
+    async fn run_inner(self: &Arc<Self>, ctl: &QueryCtl, query_id: &str, sql: &str, opts: SqlRunOpts) -> Sink {
         let sess = &ctl.session;
         let (engine, timeout_s, row_limit) = {
             let p = sess.params.lock();
@@ -501,15 +593,13 @@ impl SqlManager {
             Ok(s) => s,
             Err(m) => {
                 sink.error(m, None);
-                sink.finished();
-                return;
+                return sink;
             }
         };
         let mut guard = sess.conn.lock().await;
         if let Err(e) = self.ensure_conn(sess, &mut guard).await {
             sink.error(e.to_string(), None);
-            sink.finished();
-            return;
+            return sink;
         }
         for (n, stmt) in stmts.iter().enumerate() {
             if ctl.cancelled.load(Ordering::SeqCst) {
@@ -631,7 +721,7 @@ impl SqlManager {
             }
         }
         drop(guard);
-        sink.finished();
+        sink
     }
 
     /// Stop a running query on the server; the rest of the script is skipped.
@@ -765,6 +855,7 @@ impl SqlManager {
 
     pub async fn schema(self: &Arc<Self>, session_id: &str, system: bool) -> Result<SchemaTree> {
         let sess = self.session(session_id)?;
+        sess.columns.lock().clear();
         let mut guard = sess.conn.lock().await;
         let conn = self.ensure_conn(&sess, &mut guard).await?;
         let tree = conn.schema(system).await?;
@@ -780,6 +871,7 @@ impl SqlManager {
         }
         let mut guard = sess.conn.lock().await;
         sess.params.lock().database = Some(database.clone());
+        sess.columns.lock().clear();
         sess.conn_gen.fetch_add(1, Ordering::SeqCst);
         *guard = None; // the next connect uses the new database
         self.ensure_conn(&sess, &mut guard).await?;
@@ -788,6 +880,96 @@ impl SqlManager {
         self.emit(&sess, "connected", None);
         Ok(())
     }
+}
+
+// ------------------------------------------------------------ table browser
+
+impl SqlManager {
+    /// Structure tab: columns, indexes, foreign keys (both ways), CREATE code, size.
+    pub async fn table_detail(self: &Arc<Self>, session_id: &str, schema: &str, table: &str) -> Result<TableDetail> {
+        let sess = self.session(session_id)?;
+        let mut guard = sess.conn.lock().await;
+        let conn = self.ensure_conn(&sess, &mut guard).await?;
+        let detail = conn.table_detail(schema, table).await?;
+        sess.columns.lock().insert(format!("{schema}.{table}"), Arc::new(detail.columns.clone()));
+        sess.st.lock().last_used = Instant::now();
+        Ok(detail)
+    }
+
+    async fn table_columns(self: &Arc<Self>, sess: &Arc<Session>, schema: &str, table: &str) -> Result<Arc<Vec<ColumnDetail>>> {
+        let key = format!("{schema}.{table}");
+        if let Some(c) = sess.columns.lock().get(&key) {
+            return Ok(c.clone());
+        }
+        let cols = {
+            let mut guard = sess.conn.lock().await;
+            let conn = self.ensure_conn(sess, &mut guard).await?;
+            Arc::new(conn.columns(schema, table).await?)
+        };
+        if cols.is_empty() {
+            return Err(Error::NotFound(format!("table {schema}.{table}")));
+        }
+        sess.columns.lock().insert(key, cols.clone());
+        Ok(cols)
+    }
+
+    /// Data tab: one page of rows. The SQL is built here from the catalog's column names and
+    /// quoted values, then runs like any other read (results arrive as `SqlResult` events).
+    pub async fn table_rows(self: &Arc<Self>, session_id: &str, q: TableQuery) -> Result<TableRowsStarted> {
+        let sess = self.session(session_id)?;
+        let engine = sess.params.lock().engine;
+        let cols = self.table_columns(&sess, &q.schema, &q.table).await?;
+        let meta: Vec<ColMeta> = cols.iter().map(|c| ColMeta { name: &c.name, data_type: &c.data_type }).collect();
+        let sql = table::select_sql(engine, &q, &meta)?;
+        let limit = q.limit.clamp(1, table::MAX_PAGE);
+        let query_id = self.start(session_id, sql.clone(), SqlRunOpts { row_limit: Some(limit) }, false)?;
+        Ok(TableRowsStarted { query_id, sql })
+    }
+
+    /// Exact row count with the same filters (on demand: it can be slow on big tables).
+    pub async fn table_count(self: &Arc<Self>, session_id: &str, q: TableQuery) -> Result<u64> {
+        let sess = self.session(session_id)?;
+        let engine = sess.params.lock().engine;
+        let cols = self.table_columns(&sess, &q.schema, &q.table).await?;
+        let meta: Vec<ColMeta> = cols.iter().map(|c| ColMeta { name: &c.name, data_type: &c.data_type }).collect();
+        let sql = table::count_sql(engine, &q, &meta)?;
+        if sess.st.lock().running {
+            return Err(Error::Other("a query is running in this tab; wait or cancel it".into()));
+        }
+        let mut guard = sess.conn.lock().await;
+        let conn = self.ensure_conn(&sess, &mut guard).await?;
+        let n = conn.scalar(&sql).await?;
+        sess.st.lock().last_used = Instant::now();
+        Ok(n.and_then(|v| v.parse().ok()).unwrap_or(0))
+    }
+}
+
+/// History key of a target: the saved connection's id, `host:<host_id>:<engine>:<port>` for a
+/// server's Database view, `url:<url>` (password removed) for quick connect.
+pub fn conn_key(target: &SqlTarget) -> String {
+    match target {
+        SqlTarget::Saved { id } => id.clone(),
+        SqlTarget::Server { host_id, engine, port, .. } => {
+            let port = if *port == 0 { default_port(*engine) } else { *port };
+            format!("host:{host_id}:{}:{port}", engine.as_str())
+        }
+        SqlTarget::Url { url, .. } => {
+            let clean = match url::Url::parse(url.trim()) {
+                Ok(mut u) => {
+                    let _ = u.set_password(None);
+                    u.to_string()
+                }
+                Err(_) => url.trim().to_string(),
+            };
+            format!("url:{clean}")
+        }
+    }
+}
+
+/// False for text that may carry a password (it is then not kept in the history).
+pub fn history_safe(sql: &str) -> bool {
+    let l = sql.to_ascii_lowercase();
+    !(l.contains("password") || l.contains("identified") || l.contains("passwd"))
 }
 
 impl ConnParams {
@@ -912,6 +1094,38 @@ mod tests {
 
         assert!(parse_url("redis://localhost").is_err());
         assert!(parse_url("prod-api-01").is_err());
+    }
+
+    #[tokio::test]
+    async fn env_passwords_stay_in_memory_until_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let core = crate::Core::init(tmp.path()).unwrap();
+        let r = core.sql.stash_password(Zeroizing::new("pw".into()));
+        assert_eq!(core.sql.stashed_password(&r).unwrap().as_str(), "pw");
+        assert_eq!(core.sql.stashed_password(&r).unwrap().as_str(), "pw", "Test, then Save");
+        assert!(core.sql.stashed_password("nope").is_err());
+        core.sql.close_all().await;
+        assert!(core.sql.stashed_password(&r).is_err(), "locking forgets it");
+    }
+
+    #[test]
+    fn history_keys_and_password_filter() {
+        assert_eq!(conn_key(&SqlTarget::Saved { id: "abc".into() }), "abc");
+        let server = SqlTarget::Server {
+            host_id: "h1".into(),
+            engine: DbEngine::Mysql,
+            address: "172.17.0.2".into(),
+            port: 0,
+            user: "root".into(),
+            database: None,
+            password: Some("pw".into()),
+        };
+        assert_eq!(conn_key(&server), "host:h1:mysql:3306");
+        let url = conn_key(&SqlTarget::Url { url: "postgres://app:secret@db:5432/shop".into(), password: None });
+        assert_eq!(url, "url:postgres://app@db:5432/shop");
+        assert!(history_safe("select * from users where id = 1"));
+        assert!(!history_safe("ALTER USER app WITH PASSWORD 'x'"));
+        assert!(!history_safe("create user 'a'@'%' identified by 'x'"));
     }
 
     #[tokio::test]
@@ -1129,6 +1343,13 @@ mod tests {
         if !pg {
             assert!(!tree.databases.iter().any(|d| d == "mysql"), "system databases hidden");
         }
+
+        // every run went into this connection's history (text only), newest first
+        let hist = core.db.list_sql_history(&opened.conn_key, 200).unwrap();
+        assert_eq!(opened.conn_key, conn.id);
+        assert!(hist.len() >= 10, "{}", hist.len());
+        assert!(hist.iter().any(|h| h.sql == "select * from no_such_table" && !h.ok));
+        assert!(hist.iter().any(|h| h.sql == "select count(*) from t" && h.ok && h.rows == Some(1)));
 
         core.lock(false).await;
         assert!(core.sql.sessions.lock().is_empty(), "locking closes SQL sessions");

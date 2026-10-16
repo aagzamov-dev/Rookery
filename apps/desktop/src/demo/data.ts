@@ -110,12 +110,14 @@ const snippets: Snippet[] = [
   snippet("s2", "Follow app logs", "dlogs", "docker compose logs -f --tail=100 ${service:app}"),
   snippet("s3", "Deploy", "deploy", "", { steps: ["git pull --ff-only", "composer install --no-dev", "php artisan migrate --force", "docker compose up -d --build"], ask_prod: true }),
   snippet("s4", "Disk usage", "df", "df -h / && du -sh /var/log/* | sort -h | tail"),
+  { ...snippet("s5", "Failed orders today", "", "SELECT id, email, total FROM orders WHERE status = 'failed' AND created_at > CURRENT_DATE ORDER BY id DESC;"), alias: null, kind: "sql", scope: "host" },
 ];
 
 const containers: Container[] = [
   ["shop-app-1", "shop/app:2.14.0", "running", "Up 3 hours (healthy)", "9000/tcp", "healthy", "shop", "app"],
   ["shop-nginx-1", "nginx:1.27", "running", "Up 3 hours", "0.0.0.0:443->443/tcp", null, "shop", "nginx"],
   ["shop-redis-1", "redis:7", "running", "Up 3 hours", "6379/tcp", null, "shop", "redis"],
+  ["shop-db-1", "postgres:16-alpine", "running", "Up 3 hours (healthy)", "5432/tcp", "healthy", "shop", "db"],
   ["shop-worker-1", "shop/app:2.14.0", "running", "Up 12 minutes", "", null, "shop", "worker"],
   ["shop-scheduler-1", "shop/app:2.14.0", "running", "Up 3 hours", "", null, "shop", "scheduler"],
   ["uptime-kuma", "louislam/uptime-kuma:1", "exited", "Exited (1) 2 days ago", "", null, null, null],

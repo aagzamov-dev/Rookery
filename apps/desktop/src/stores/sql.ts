@@ -6,6 +6,7 @@ import type { DbConnection } from "../ipc/bindings/DbConnection";
 import type { DbEngine } from "../ipc/bindings/DbEngine";
 import type { ResultColumn } from "../ipc/bindings/ResultColumn";
 import type { SqlOpened } from "../ipc/bindings/SqlOpened";
+import type { SqlPrefill } from "../ipc/bindings/SqlPrefill";
 
 type SqlResultEv = Extract<CoreEvent, { type: "sql_result" }>;
 type SqlSessionEv = Extract<CoreEvent, { type: "sql_session" }>;
@@ -26,6 +27,8 @@ export interface SqlSessionMeta {
   writesUntil: number | null;
   database: string | null;
   message: string | null;
+  /** Query history key (saved connection id, `host:…` or `url:…`). */
+  connKey: string;
 }
 
 export interface SqlResultSet {
@@ -60,8 +63,8 @@ interface SqlState {
   conns: DbConnection[];
   connsLoaded: boolean;
   loadConns: () => Promise<void>;
-  /** password: undefined = keep, "" = forget, value = set. */
-  saveConn: (c: DbConnection, password?: string) => Promise<DbConnection>;
+  /** password: undefined = keep, "" = forget, value = set. passwordRef: the password from a .env. */
+  saveConn: (c: DbConnection, password?: string, passwordRef?: string) => Promise<DbConnection>;
   deleteConn: (id: string) => Promise<void>;
   /** Editor text per SQL tab key; kept on this device only (`ui.sql.drafts`). */
   drafts: Record<string, string>;
@@ -76,6 +79,9 @@ interface SqlState {
   onResult: (ev: SqlResultEv) => void;
   forgetSession: (sessionId: string) => void;
   forgetRun: (queryId: string) => void;
+  /** Docker "Open in SQL": fills the server's Database view form once (per host id). */
+  serverPrefill: Record<string, SqlPrefill>;
+  setServerPrefill: (hostId: string, p: SqlPrefill | null) => void;
 }
 
 /** Result events may arrive before `startRun` (the invoke returns after the task started). */
@@ -118,8 +124,8 @@ export const useSql = create<SqlState>((set, get) => ({
     set({ conns, connsLoaded: true });
   },
 
-  saveConn: async (c, password) => {
-    const saved = await api.sqlConnSave(c, password);
+  saveConn: async (c, password, passwordRef) => {
+    const saved = await api.sqlConnSave(c, password, passwordRef);
     await get().loadConns();
     return saved;
   },
@@ -164,6 +170,7 @@ export const useSql = create<SqlState>((set, get) => ({
           writesUntil: null,
           database: o.database,
           message: null,
+          connKey: o.conn_key,
         },
       },
     })),
@@ -218,5 +225,14 @@ export const useSql = create<SqlState>((set, get) => ({
       const runs = { ...s.runs };
       delete runs[queryId];
       return { runs };
+    }),
+
+  serverPrefill: {},
+  setServerPrefill: (hostId, p) =>
+    set((s) => {
+      const serverPrefill = { ...s.serverPrefill };
+      if (p) serverPrefill[hostId] = p;
+      else delete serverPrefill[hostId];
+      return { serverPrefill };
     }),
 }));

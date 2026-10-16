@@ -1,14 +1,17 @@
 import { useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { AlertTriangle, CheckCircle2, Loader2 } from "lucide-react";
+import { AlertTriangle, CheckCircle2, FileText, Loader2 } from "lucide-react";
 import { api, asCoreError } from "../../ipc/api";
 import type { DbConnection } from "../../ipc/bindings/DbConnection";
 import type { DbEngine } from "../../ipc/bindings/DbEngine";
 import type { EnvLabel } from "../../ipc/bindings/EnvLabel";
+import type { EnvSource } from "../../ipc/bindings/EnvSource";
+import type { SqlPrefill } from "../../ipc/bindings/SqlPrefill";
 import type { SslMode } from "../../ipc/bindings/SslMode";
 import { useHosts } from "../../stores/hosts";
 import { useSql } from "../../stores/sql";
 import { Button, Field, Modal, Select, TextInput } from "../../ui/primitives";
+import { isLocalAddress } from "./shortcuts";
 
 export interface ConnDraft {
   /** Edit this saved connection. */
@@ -21,7 +24,7 @@ export interface ConnDraft {
 
 const PORTS: Record<DbEngine, number> = { postgres: 5432, mysql: 3306 };
 const ENVS: EnvLabel[] = ["none", "prod", "staging", "dev", "lab", "client"];
-const isLocal = (a: string) => ["localhost", "127.0.0.1", "::1"].includes(a.trim().toLowerCase());
+const isLocal = isLocalAddress;
 
 export function blankConn(p: Partial<DbConnection> = {}): DbConnection {
   const engine = p.engine ?? "postgres";
@@ -66,6 +69,48 @@ export function ConnectionDialog({ draft, onClose, onSaved }: { draft: ConnDraft
   const [test, setTest] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState<"test" | "save" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** Laravel .env import: where it came from, and the reference to its password (kept in Rust). */
+  const [envInfo, setEnvInfo] = useState<{ from: string; remote: boolean; note: string | null; passwordRef: string | null } | null>(null);
+  const [useEnvPw, setUseEnvPw] = useState(false);
+  const [remote, setRemote] = useState<{ hostId: string; path: string } | null>(null);
+  const [envBusy, setEnvBusy] = useState(false);
+
+  const importEnv = async (source: EnvSource, from: string) => {
+    setEnvBusy(true);
+    setError(null);
+    try {
+      const p: SqlPrefill = await api.sqlEnvImport(source);
+      const ssh = source.kind === "remote";
+      setC((prev) => {
+        const next: DbConnection = {
+          ...prev,
+          name: prev.name.trim() ? prev.name : p.name,
+          engine: p.engine,
+          address: p.address,
+          port: p.port,
+          username: p.user,
+          database: p.database,
+          via: ssh ? "ssh" : "direct",
+          host_id: ssh ? source.host_id : null,
+        };
+        if (!sslTouched) next.ssl_mode = defaultSsl(next);
+        return next;
+      });
+      setEnvInfo({ from, remote: ssh, note: p.note, passwordRef: p.password_ref });
+      setUseEnvPw(false); // always ask (docs/07 §9)
+      setRemote(null);
+      setTest(null);
+    } catch (e) {
+      setError(asCoreError(e).message);
+    } finally {
+      setEnvBusy(false);
+    }
+  };
+
+  const pickEnvFile = async () => {
+    const p = await openDialog({ multiple: false, title: "Laravel .env file" });
+    if (typeof p === "string") await importEnv({ kind: "local", path: p }, p);
+  };
 
   const patch = (p: Partial<DbConnection>) =>
     setC((prev) => {
@@ -82,13 +127,14 @@ export function ConnectionDialog({ draft, onClose, onSaved }: { draft: ConnDraft
   const prod = c.env_label === "prod";
   const unencrypted = c.via === "direct" && !isLocal(c.address) && c.ssl_mode === "disable";
   // undefined = keep the saved one, "" = forget it, value = set.
-  const pwArg = forget ? "" : password ? password : undefined;
+  const envRef = useEnvPw && envInfo?.passwordRef ? envInfo.passwordRef : undefined;
+  const pwArg = envRef ? undefined : forget ? "" : password ? password : undefined;
 
   const runTest = async () => {
     setBusy("test");
     setTest(null);
     try {
-      const r = await api.sqlTest({ ...c, name: c.name || "test" }, password || undefined);
+      const r = await api.sqlTest({ ...c, name: c.name || "test" }, envRef ? undefined : password || undefined, envRef);
       setTest({ ok: true, text: `Connected · ${r.server_version} · ${r.latency_ms} ms` });
     } catch (e) {
       setTest({ ok: false, text: asCoreError(e).message });
@@ -102,7 +148,7 @@ export function ConnectionDialog({ draft, onClose, onSaved }: { draft: ConnDraft
     setError(null);
     try {
       const name = c.name.trim() || `${c.database ?? c.address}`;
-      const saved = await useSql.getState().saveConn({ ...c, name, read_only: c.read_only || prod }, pwArg);
+      const saved = await useSql.getState().saveConn({ ...c, name, read_only: c.read_only || prod }, pwArg, envRef);
       onSaved?.(saved);
       onClose();
     } catch (e) {
@@ -135,6 +181,61 @@ export function ConnectionDialog({ draft, onClose, onSaved }: { draft: ConnDraft
         </>
       }
     >
+      {!draft.conn && (
+        <div className="flex flex-col gap-2 rounded-lg border border-line bg-panel2/40 px-3 py-2">
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <FileText size={13} className="text-accent" />
+            <span className="text-muted">Import from a Laravel .env:</span>
+            <Button className="h-7 text-xs" disabled={envBusy} onClick={() => void pickEnvFile()}>
+              File on this PC…
+            </Button>
+            <Button className="h-7 text-xs" disabled={envBusy || hosts.length === 0} onClick={() => setRemote(remote ? null : { hostId: c.host_id ?? hosts[0]?.id ?? "", path: "" })}>
+              On a server…
+            </Button>
+            {envBusy && <Loader2 size={13} className="animate-spin text-muted" />}
+          </div>
+          {remote && (
+            <form
+              className="flex items-center gap-2"
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (remote.hostId && remote.path.trim())
+                  void importEnv({ kind: "remote", host_id: remote.hostId, path: remote.path.trim() }, `${hosts.find((h) => h.id === remote.hostId)?.name ?? "server"}:${remote.path.trim()}`);
+              }}
+            >
+              <Select className="h-8 text-xs" aria-label="Server" value={remote.hostId} onChange={(e) => setRemote({ ...remote, hostId: e.target.value })}>
+                {hosts.map((h) => (
+                  <option key={h.id} value={h.id}>
+                    {h.name}
+                  </option>
+                ))}
+              </Select>
+              <TextInput mono autoFocus aria-label="Path of the .env on the server" className="h-8 min-w-0 flex-1 text-xs" placeholder="/var/www/app/.env" value={remote.path} onChange={(e) => setRemote({ ...remote, path: e.target.value })} />
+              <Button type="submit" className="h-8 text-xs" disabled={envBusy || !remote.path.trim()}>
+                Read
+              </Button>
+            </form>
+          )}
+          {envInfo && (
+            <div className="flex flex-col gap-1 text-xs">
+              <span className="text-muted">
+                Filled in from <span className="font-mono text-text">{envInfo.from}</span>
+                {envInfo.remote ? " (through the server)" : ""}.
+              </span>
+              {envInfo.note && <span className="text-warn">{envInfo.note}</span>}
+              {envInfo.passwordRef ? (
+                <label className="flex items-center gap-2">
+                  <input type="checkbox" checked={useEnvPw} onChange={(e) => setUseEnvPw(e.target.checked)} />
+                  Use the password from .env (DB_PASSWORD)
+                </label>
+              ) : (
+                <span className="text-muted">The file has no DB_PASSWORD.</span>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="grid grid-cols-[2fr_1fr_1fr] gap-3">
         <Field label="Name">
           <TextInput value={c.name} placeholder="shop prod" onChange={(e) => patch({ name: e.target.value })} autoFocus />
@@ -201,8 +302,15 @@ export function ConnectionDialog({ draft, onClose, onSaved }: { draft: ConnDraft
         <Field label="User">
           <TextInput mono value={c.username} onChange={(e) => patch({ username: e.target.value })} />
         </Field>
-        <Field label="Password" hint={c.has_password && !forget ? "Saved. Type to change." : "Kept in the vault, never shown again."}>
-          <TextInput type="password" autoComplete="off" value={password} placeholder={c.has_password && !forget ? "unchanged" : ""} disabled={forget} onChange={(e) => setPassword(e.target.value)} />
+        <Field label="Password" hint={envRef ? "From the .env file." : c.has_password && !forget ? "Saved. Type to change." : "Kept in the vault, never shown again."}>
+          <TextInput
+            type="password"
+            autoComplete="off"
+            value={envRef ? "" : password}
+            placeholder={envRef ? "from .env" : c.has_password && !forget ? "unchanged" : ""}
+            disabled={forget || !!envRef}
+            onChange={(e) => setPassword(e.target.value)}
+          />
         </Field>
         <Field label="Database (optional)">
           <TextInput mono value={c.database ?? ""} onChange={(e) => patch({ database: e.target.value || null })} />

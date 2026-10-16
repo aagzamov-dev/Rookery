@@ -40,11 +40,15 @@ interface Props {
   /** Put SQL into the editor; `run` = also run it. */
   onSql: (sql: string, run: boolean) => void;
   onCopy: (text: string) => void;
+  /** Open a table as a tab (single click: preview; double click: keep). */
+  onOpen: (schema: string, table: string, opts?: { pin?: boolean }) => void;
+  /** `schema.table` of the table tab on screen (highlighted). */
+  activeKey: string | null;
 }
 
 const rowsLabel = (n: number | null) => (n == null ? "" : n >= 1000 ? `~${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k` : `~${n}`);
 
-export function SchemaTree({ tree, loading, error, dialect, system, onSystem, onRefresh, onSql, onCopy }: Props) {
+export function SchemaTree({ tree, loading, error, dialect, system, onSystem, onRefresh, onSql, onCopy, onOpen, activeKey }: Props) {
   const [filter, setFilter] = useState("");
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const menu = useContextMenu();
@@ -64,7 +68,9 @@ export function SchemaTree({ tree, loading, error, dialect, system, onSystem, on
   const tableMenu = (schema: string, t: TableInfo): MenuItem[] => {
     const ref = tableRef(schema, t.name, dialect);
     return [
-      { label: "Select top 100", onClick: () => onSql(`SELECT * FROM ${ref} LIMIT 100;`, true) },
+      { label: "Open", icon: <Table2 size={13} />, onClick: () => onOpen(schema, t.name, { pin: true }) },
+      { kind: "separator" },
+      { label: "Select top 100 in Query", onClick: () => onSql(`SELECT * FROM ${ref} LIMIT 100;`, true) },
       { label: "Count rows", onClick: () => onSql(`SELECT count(*) FROM ${ref};`, true) },
       { kind: "separator" },
       { label: "Insert column list", onClick: () => onSql(t.columns.map((c) => qid(c.name, dialect)).join(", "), false) },
@@ -112,18 +118,35 @@ export function SchemaTree({ tree, loading, error, dialect, system, onSystem, on
                   const tOpen = isOpen(tk, false);
                   return (
                     <div key={t.name}>
-                      <button
-                        onClick={() => toggle(tk)}
-                        onDoubleClick={() => onSql(`SELECT * FROM ${tableRef(s.name, t.name, dialect)} LIMIT 100;`, true)}
+                      <div
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => onOpen(s.name, t.name)}
+                        onDoubleClick={() => onOpen(s.name, t.name, { pin: true })}
+                        onKeyDown={(e) => e.key === "Enter" && onOpen(s.name, t.name, { pin: true })}
                         onContextMenu={menu.open(() => tableMenu(s.name, t))}
-                        title="Double-click: show the first 100 rows · right-click: more"
-                        className={clsx("flex w-full items-center gap-1.5 py-0.5 pr-2 text-left hover:bg-panel2", single ? "pl-2" : "pl-5")}
+                        title="Click: open (preview) · double-click: keep it open · arrow: columns · right-click: more"
+                        className={clsx(
+                          "flex w-full cursor-pointer items-center gap-1.5 py-0.5 pr-2 text-left outline-none hover:bg-panel2 focus-visible:bg-panel2",
+                          single ? "pl-1" : "pl-4",
+                          activeKey === `${s.name}.${t.name}` && "bg-accent-bg hover:bg-accent-bg",
+                        )}
                       >
-                        {tOpen ? <ChevronDown size={12} className="flex-none text-muted" /> : <ChevronRight size={12} className="flex-none text-muted" />}
+                        <button
+                          aria-label={tOpen ? `Hide columns of ${t.name}` : `Show columns of ${t.name}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggle(tk);
+                          }}
+                          onDoubleClick={(e) => e.stopPropagation()}
+                          className="grid h-4 w-4 flex-none place-items-center rounded text-muted hover:bg-panel2 hover:text-text"
+                        >
+                          {tOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                        </button>
                         {t.kind === "view" || t.kind === "matview" ? <Eye size={13} className="flex-none text-muted" /> : <Table2 size={13} className="flex-none text-accent" />}
                         <span className="truncate">{t.name}</span>
                         <span className="ml-auto flex-none text-[11px] text-[#6B7690]">{rowsLabel(t.rows_est)}</span>
-                      </button>
+                      </div>
                       {tOpen && (
                         <div className={clsx("pb-1", single ? "pl-7" : "pl-10")}>
                           {t.columns.map((c) => (

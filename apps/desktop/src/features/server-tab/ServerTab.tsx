@@ -3,12 +3,14 @@ import clsx from "clsx";
 import { AlertTriangle, FolderOpen, Loader2, Plus, Radio, ShieldAlert, ShieldQuestion, Terminal as TermIcon, X } from "lucide-react";
 import { isProblem, useDocker } from "../../stores/docker";
 import { useFiles } from "../../stores/files";
+import { useEditor } from "../../stores/editor";
 import { FileBrowser } from "../files/FileBrowser";
 import { DockerView } from "../docker/DockerView";
 import { ServicesView } from "../services/ServicesView";
 import { LogsView } from "../logs/LogsView";
 import { ProcessesView } from "../processes/ProcessesView";
 import { ServerDbView } from "../sql/ServerDbView";
+import { EditorWorkspace } from "../editor/EditorWorkspace";
 import { useTermUi } from "../../stores/termui";
 import { api, asCoreError } from "../../ipc/api";
 import type { Host } from "../../ipc/bindings/Host";
@@ -28,6 +30,7 @@ const VIEWS: { id: View; label: string }[] = [
   { id: "overview", label: "Overview" },
   { id: "terminal", label: "Terminal" },
   { id: "files", label: "Files" },
+  { id: "editor", label: "Editor" },
   { id: "docker", label: "Docker" },
   { id: "database", label: "Database" },
   { id: "services", label: "Services" },
@@ -85,7 +88,7 @@ export function ServerTab({ hostId, active, onEditHost }: Props) {
         {views.opened.includes("terminal") && everConnected && <TerminalView hostId={hostId} visible={show("terminal")} />}
         {views.opened.includes("terminal") && !everConnected && show("terminal") && <Waiting hostId={hostId} />}
         {views.opened.includes("overview") && show("overview") && <OverviewView hostId={hostId} />}
-        {(["files", "docker", "database", "services", "processes", "logs"] as const).map(
+        {(["files", "editor", "docker", "database", "services", "processes", "logs"] as const).map(
           (v) =>
             views.opened.includes(v) &&
             !everConnected &&
@@ -94,6 +97,11 @@ export function ServerTab({ hostId, active, onEditHost }: Props) {
         {everConnected && views.opened.includes("files") && (
           <Keep show={show("files")}>
             <FileBrowser hostId={hostId} visible={show("files")} variant="full" />
+          </Keep>
+        )}
+        {everConnected && views.opened.includes("editor") && (
+          <Keep show={show("editor")}>
+            <EditorWorkspace hostId={hostId} visible={show("editor")} />
           </Keep>
         )}
         {everConnected && views.opened.includes("docker") && (
@@ -131,6 +139,7 @@ function ViewBar({ hostId, current, onSelect }: { hostId: string; current: View;
   const views = useTabs((s) => s.views[hostId]);
   const panelOpen = useFiles((s) => s.byHost[hostId]?.panelOpen ?? false);
   const patchFiles = useFiles((s) => s.patch);
+  const editorDirty = useEditor((s) => (s.byHost[hostId]?.docs ?? []).some((d) => d.dirty));
   const dockerProblem = useDocker((s) => (s.byHost[hostId]?.containers ?? []).some(isProblem));
   const broadcast = useTermUi((s) => s.broadcast);
   const setBroadcast = useTermUi((s) => s.setBroadcast);
@@ -153,6 +162,7 @@ function ViewBar({ hostId, current, onSelect }: { hostId: string; current: View;
           {v.id === "terminal" && <TermIcon size={13} />}
           {v.label}
           {v.id === "terminal" && views && views.terminals.length > 0 && <span className="font-normal text-muted">{views.terminals.length}</span>}
+          {v.id === "editor" && editorDirty && <span aria-label="unsaved changes" className="h-1.5 w-1.5 rounded-full bg-text" />}
           {v.id === "docker" && dockerProblem && <span aria-label="problems" className="h-1.5 w-1.5 rounded-full bg-warn" />}
         </button>
       ))}

@@ -41,6 +41,7 @@ const VIEW_OF: Partial<Record<ActionId, View>> = {
   "view.overview": "overview",
   "view.terminal": "terminal",
   "view.files": "files",
+  "view.editor": "editor",
   "view.docker": "docker",
   "view.services": "services",
   "view.processes": "processes",

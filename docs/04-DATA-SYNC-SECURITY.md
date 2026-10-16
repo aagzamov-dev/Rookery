@@ -11,7 +11,8 @@
 ├─ vault.bin          # encrypted secrets blob (passwords, keys, passphrases, tokens)
 ├─ keys/              # private keys stored by reference (optional, may also live in vault)
 ├─ logs/              # session logs (optional)
-└─ cache/             # temp downloads for "edit locally" (cleared on start)
+├─ cache/             # temp downloads for "edit locally" (cleared on start)
+└─ editor-backups/    # the server's version before each Editor save (last 20 per file, 30 days; never synced or in backups)
 ```
 Secrets are **never** in `rookery.db`; it holds only references (`secret_id`).
 
@@ -126,7 +127,7 @@ plaintext = { format:"rookery-data", version:1, groups, hosts, identities (+ the
 - Key = Argon2id(**sync password**, salt). The derived key is cached in memory per salt (cleared on lock), so only the first sync after unlocking pays the ~0.3 s key derivation; later syncs are milliseconds. Crypto crates are built at `opt-level=3` in every profile.
 - **Sync password:** separate from the master password and the same on every device. Saved in each device's vault (`backup:password`) and never sent back to the webview. PCs can keep different master passwords and PINs.
 - Included: groups, hosts, identities with passwords / keys / passphrases / sudo, snippets, trusted host keys, settings (shortcuts, themes, terminal prefs, dashboard defaults), SQL connections with their passwords (`dbconn:<id>:password`).
-- Not included: dashboard snapshots, cache, and per-device settings (`ui.session`, `ui.dashboard.tab`, `sync.settings`, `ui.sql.drafts`, `backup.*`). Each group's Dashboard Auto-sync switch also stays per device.
+- Not included: dashboard snapshots, SQL query history (`sql_history`, v0.7.1), cache, and per-device settings (`ui.session`, `ui.dashboard.tab`, `sync.settings`, `ui.sql.drafts`, `backup.*`). Each group's Dashboard Auto-sync switch also stays per device.
 - SQL connections to localhost sync too and mean "this computer's database" on each device. A connection through a server whose server is not on the other device arrives without a server (the sync summary says so). Older files without connections, and older apps reading newer files, both work (the field is optional).
 - Tamper / wrong password → refused ("uses a different sync password"). Files over 64 MB are refused.
 

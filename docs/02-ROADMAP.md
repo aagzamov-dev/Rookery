@@ -6,7 +6,7 @@ Priorities:
 - **P2** — nice to have.
 - **P3** — later / maybe.
 
-Each feature points to the file where it is specified: `[A]` 01-ARCHITECTURE, `[D]` 03-DESKTOP-FEATURES, `[S]` 04-DATA-SYNC-SECURITY, `[M]` 05-MOBILE-TABLET, `[U]` 06-AUTO-UPDATE, `[Q]` 07-SQL-CONNECTIONS. New contributors / chats: read [00-START-HERE.md](00-START-HERE.md) first.
+Each feature points to the file where it is specified: `[A]` 01-ARCHITECTURE, `[D]` 03-DESKTOP-FEATURES, `[S]` 04-DATA-SYNC-SECURITY, `[M]` 05-MOBILE-TABLET, `[U]` 06-AUTO-UPDATE, `[Q]` 07-SQL-CONNECTIONS, `[E]` 08-EDITOR. New contributors / chats: read [00-START-HERE.md](00-START-HERE.md) first.
 
 ---
 
@@ -135,15 +135,27 @@ Done when: 20 hosts in the list cause **zero** connections; opening/closing/swit
 | ✅ P0 | PROD safety: read-only by default, Allow changes (15 min), Commit / Rollback, risky-statement confirm (typed name on PROD), row cap | [Q] §6 |
 | ✅ P1 | Connections in backup & device sync (passwords encrypted) | [Q] §3.2 |
 
-## v0.7.1 — SQL shortcuts (next)
+## v0.7.1 — SQL shortcuts — **built (0.7.1)**
 
 | P | Feature | Spec |
 |---|---|---|
-| P1 | Docker "Open in SQL" for postgres / mysql / mariadb containers | [Q] §2.4 |
-| P1 | Import a connection from a Laravel `.env` (local file or via SFTP) | [Q] §2.4 |
-| P1 | Find databases on this PC (port probe + Docker Desktop) | [Q] §2.4 |
-| P1 | Query history per connection (local only, last 200) and "Save as snippet" | [Q] §3.1 |
-| P2 | Edit cells in the grid (v0.8) | [Q] §1 |
+| ✅ P1 | Docker "Open in SQL" for postgres / mysql / mariadb containers | [Q] §2.4, §10.4 |
+| ✅ P1 | Import a connection from a Laravel `.env` (local file or via SFTP; the password only when ticked) | [Q] §2.4, §10.4 |
+| ✅ P1 | Find databases on this PC (port probe + local Docker) | [Q] §2.4, §10.4 |
+| ✅ P1 | Query history per connection (local only, last 200, clearable) and "Save as snippet" (SQL snippets) | [Q] §3.1, §10.4 |
+| ✅ P0 | Tables like HeidiSQL: Structure / Data tabs, sort, filters, WHERE, columns, row detail, foreign-key jumps; SSH / SQL sidebar switch | [Q] §10.6 |
+| P2 | Edit cells in the grid | [Q] §1 |
+
+## v0.8 — Editor — **built (0.8.0)**
+
+| P | Feature | Spec |
+|---|---|---|
+| ✅ P0 | Editor view: folders, tabs, pinned files, Open path, Files → Edit in Rookery | [E] §1 |
+| ✅ P0 | Safe save: SHA-256 version check, local backup first, atomic replace for own files / in place for others, read-back check, sudo save | [E] §4, §6 |
+| ✅ P0 | Changed on the server: focus check, auto-reload of clean tabs, three-way merge, PROD review | [E] §5 |
+| ✅ P1 | Languages, Format (Prettier, `.env`), problems while typing (JSON, YAML, `.env`), Hide values, History | [E] §3, §6 |
+| ✅ P1 | Database view: Remember password (vault), saved logins per server | [Q] §2.1 |
+| P2 | Docker "Edit compose file", new file, edit inside containers | [E] §9 |
 
 ---
 

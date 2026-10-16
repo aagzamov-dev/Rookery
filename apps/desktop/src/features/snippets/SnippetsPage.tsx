@@ -7,6 +7,7 @@ import { askConfirm } from "../../stores/dialogs";
 import { asCoreError } from "../../ipc/api";
 import type { RunMode } from "../../ipc/bindings/RunMode";
 import type { Snippet } from "../../ipc/bindings/Snippet";
+import type { SnippetKind } from "../../ipc/bindings/SnippetKind";
 import type { SnippetScope } from "../../ipc/bindings/SnippetScope";
 import { normalizeChord } from "../../keys/chord";
 import { useHosts } from "../../stores/hosts";
@@ -87,6 +88,7 @@ export function SnippetsPage() {
             >
               <span className="flex items-center gap-2">
                 <span className={clsx("truncate", s.alias ? "font-mono font-medium text-accent" : "font-medium")}>{s.alias ?? s.name}</span>
+                {s.kind === "sql" && <span className="rounded bg-panel2 px-1.5 text-[10px] font-semibold text-muted">SQL</span>}
                 {s.hotkey && (
                   <span className="ml-auto">
                     <ChordView chord={normalizeChord(s.hotkey)} dim />
@@ -216,6 +218,7 @@ function SnippetEditor({ initial, onSaved, onDeleted }: { initial: Snippet; onSa
   const [savedMsg, setSavedMsg] = useState(false);
   const [testHost, setTestHost] = useState(openServers[0] ?? "");
   const [wf, setWf] = useState(initial.steps.length > 0);
+  const isSql = d.kind === "sql";
 
   const toggleWorkflow = () => {
     setSavedMsg(false);
@@ -241,7 +244,11 @@ function SnippetEditor({ initial, onSaved, onDeleted }: { initial: Snippet; onSa
   const doSave = async () => {
     setErr(null);
     try {
-      const saved = await save({ ...d, command: wf ? "" : d.command, steps: wf ? d.steps.filter((s) => s.trim()) : [], vars: syncVars(varSource(d), d.vars) });
+      const saved = await save(
+        isSql
+          ? { ...d, steps: [], vars: [] }
+          : { ...d, command: wf ? "" : d.command, steps: wf ? d.steps.filter((s) => s.trim()) : [], vars: syncVars(varSource(d), d.vars) },
+      );
       setD(saved);
       setSavedMsg(true);
       onSaved(saved);
@@ -267,7 +274,42 @@ function SnippetEditor({ initial, onSaved, onDeleted }: { initial: Snippet; onSa
       <div className="flex items-center gap-2.5">
         <h2 className="m-0 text-xl font-semibold">{d.id ? d.name || "Untitled" : "New snippet"}</h2>
         {d.pack && <span className="rounded-full bg-accent-bg px-2 py-0.5 text-[11px] text-[#BCD3FF]">{d.pack}</span>}
+        <Select
+          aria-label="Snippet type"
+          className="ml-auto h-8"
+          value={d.kind}
+          onChange={(e) => {
+            const kind = e.target.value as SnippetKind;
+            if (kind === "sql" && wf) toggleWorkflow();
+            set("kind", kind);
+          }}
+        >
+          <option value="shell">Terminal command</option>
+          <option value="sql">SQL query</option>
+        </Select>
       </div>
+
+      {isSql ? (
+        <>
+          <Field label="Name">
+            <TextInput autoFocus={!d.id} value={d.name} onChange={(e) => set("name", e.target.value)} placeholder="Slow queries" />
+          </Field>
+          <Field label="SQL" hint="Shows in the SQL tab under History → Snippets. Terminals never run SQL snippets.">
+            <textarea
+              rows={6}
+              value={d.command}
+              onChange={(e) => set("command", e.target.value)}
+              spellCheck={false}
+              className="resize-y rounded-lg border border-line bg-term p-3 font-mono text-[13px] leading-relaxed text-[#D3D9E4] outline-none focus:border-accent-line"
+              placeholder="SELECT * FROM pg_stat_activity WHERE state <> 'idle';"
+            />
+          </Field>
+          <Field label="Pack">
+            <TextInput value={d.pack ?? ""} onChange={(e) => set("pack", e.target.value || null)} placeholder="Mine" />
+          </Field>
+        </>
+      ) : (
+      <>
 
       <div className="grid grid-cols-2 gap-3.5">
         <Field label="Name">
@@ -432,6 +474,8 @@ function SnippetEditor({ initial, onSaved, onDeleted }: { initial: Snippet; onSa
           <TextInput value={d.pack ?? ""} onChange={(e) => set("pack", e.target.value || null)} placeholder="Mine" />
         </Field>
       </div>
+      </>
+      )}
 
       {err && <div className="rounded-lg border border-[#5A2D33] bg-[#33232A] px-3 py-2 text-prod-fg">{err}</div>}
 
@@ -440,7 +484,7 @@ function SnippetEditor({ initial, onSaved, onDeleted }: { initial: Snippet; onSa
           Save snippet
         </Button>
         {savedMsg && <span className="text-xs text-ok">Saved</span>}
-        {openServers.length > 0 && (
+        {openServers.length > 0 && !isSql && (
           <span className="ml-2 flex items-center gap-2">
             <Select className="h-9" value={testHost} onChange={(e) => setTestHost(e.target.value)} aria-label="Server to test on">
               {openServers.map((id) => (

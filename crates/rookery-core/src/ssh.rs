@@ -597,6 +597,37 @@ pub async fn exec(handle: &SshHandle, cmd: &str, timeout: Duration) -> Result<Ex
         .map_err(|_| Error::Ssh("command timed out".into()))?
 }
 
+/// Like [`exec`], with `input` sent on stdin (then EOF). Used for a sudo password only:
+/// file content never travels on the same stdin as a password.
+pub async fn exec_with_input(handle: &SshHandle, cmd: &str, input: &[u8], timeout: Duration) -> Result<ExecOutput> {
+    let run = async {
+        let mut ch = handle.channel_open_session().await?;
+        ch.exec(true, cmd).await?;
+        ch.data(input).await?;
+        ch.eof().await?;
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let mut exit = None;
+        while let Some(msg) = ch.wait().await {
+            match msg {
+                ChannelMsg::Data { ref data } => out.extend_from_slice(data),
+                ChannelMsg::ExtendedData { ref data, .. } => err.extend_from_slice(data),
+                ChannelMsg::ExitStatus { exit_status } => exit = Some(exit_status),
+                ChannelMsg::Close => break,
+                _ => {}
+            }
+        }
+        Ok::<_, Error>(ExecOutput {
+            stdout: String::from_utf8_lossy(&out).into_owned(),
+            stderr: String::from_utf8_lossy(&err).into_owned(),
+            exit,
+        })
+    };
+    tokio::time::timeout(timeout, run)
+        .await
+        .map_err(|_| Error::Ssh("command timed out".into()))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

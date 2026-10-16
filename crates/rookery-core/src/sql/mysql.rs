@@ -10,8 +10,9 @@ use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Opts, OptsBuilder, Row, SslOpts, Value};
 
 use super::schema::{self, TextRow, COL_SEP};
-use super::{ConnParams, Done, ResultColumn, SchemaTree, Sink, StmtError};
-use crate::model::SslMode;
+use super::table::{ColumnDetail, ForeignKey, TableDetail};
+use super::{ConnParams, Done, IndexInfo, ResultColumn, SchemaTree, Sink, StmtError};
+use crate::model::{DbEngine, SslMode};
 use crate::{Error, Result};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -162,6 +163,22 @@ fn lit(s: &str) -> String {
     Value::from(s).as_sql(false)
 }
 
+fn my_fk(r: &TextRow) -> ForeignKey {
+    let s = |i: usize| r.get(i).cloned().flatten().unwrap_or_default();
+    let list = |i: usize| s(i).split(COL_SEP).filter(|c| !c.is_empty()).map(String::from).collect();
+    ForeignKey {
+        name: s(0),
+        from_schema: s(1),
+        from_table: s(2),
+        from_columns: list(3),
+        to_schema: s(4),
+        to_table: s(5),
+        to_columns: list(6),
+        on_update: r.get(7).cloned().flatten(),
+        on_delete: r.get(8).cloned().flatten(),
+    }
+}
+
 impl MyConn {
     async fn rows(&mut self, sql: &str) -> Result<Vec<TextRow>> {
         let rows: Vec<Row> = self.conn.query(sql).await.map_err(other)?;
@@ -230,6 +247,115 @@ impl MyConn {
         }
         drop(r);
         Ok(done)
+    }
+
+    /// First value of the first row (counts).
+    pub async fn scalar(&mut self, sql: &str) -> Result<Option<String>> {
+        Ok(self.rows(sql).await?.into_iter().next().and_then(|r| r.into_iter().next().flatten()))
+    }
+
+    /// Columns of one table, in order.
+    pub async fn columns(&mut self, schema: &str, table: &str) -> Result<Vec<ColumnDetail>> {
+        let (s, t) = (lit(schema), lit(table));
+        let rows = self
+            .rows(&format!(
+                "SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT, EXTRA, COLUMN_COMMENT
+                 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = {s} AND TABLE_NAME = {t} ORDER BY ORDINAL_POSITION"
+            ))
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| ColumnDetail {
+                name: r[0].clone().unwrap_or_default(),
+                data_type: r[1].clone().unwrap_or_default(),
+                nullable: r[2].as_deref() == Some("YES"),
+                default: r[3].clone(),
+                key: None,
+                extra: r[4].clone().filter(|e| !e.is_empty()),
+                comment: r[5].clone().filter(|c| !c.is_empty()),
+            })
+            .collect())
+    }
+
+    /// Everything the Structure tab shows.
+    pub async fn table_detail(&mut self, schema: &str, table: &str) -> Result<TableDetail> {
+        let (s, t) = (lit(schema), lit(table));
+        let info = self
+            .rows(&format!(
+                "SELECT TABLE_TYPE, TABLE_ROWS, DATA_LENGTH + INDEX_LENGTH, ENGINE, TABLE_COLLATION, TABLE_COMMENT
+                 FROM information_schema.TABLES WHERE TABLE_SCHEMA = {s} AND TABLE_NAME = {t}"
+            ))
+            .await?;
+        let Some(info) = info.into_iter().next() else {
+            return Err(Error::NotFound(format!("table {schema}.{table}")));
+        };
+        let kind = if info[0].as_deref().is_some_and(|k| k.contains("VIEW")) { "view" } else { "table" };
+        let mut columns = self.columns(schema, table).await?;
+        let index_rows = self
+            .rows(&format!(
+                "SELECT INDEX_NAME, MIN(NON_UNIQUE) = 0, INDEX_NAME = 'PRIMARY',
+                        GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX SEPARATOR '{COL_SEP}')
+                 FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = {s} AND TABLE_NAME = {t}
+                 GROUP BY INDEX_NAME ORDER BY INDEX_NAME = 'PRIMARY' DESC, INDEX_NAME"
+            ))
+            .await?;
+        let flag = |v: &Option<String>| v.as_deref() == Some("1");
+        let indexes: Vec<IndexInfo> = index_rows
+            .iter()
+            .map(|r| IndexInfo {
+                name: r[0].clone().unwrap_or_default(),
+                unique: flag(&r[1]) || flag(&r[2]),
+                primary: flag(&r[2]),
+                columns: r[3].clone().unwrap_or_default().split(COL_SEP).filter(|c| !c.is_empty()).map(String::from).collect(),
+            })
+            .collect();
+        schema::mark_column_keys(&mut columns, &indexes);
+
+        let fk_sql = |cond: String| {
+            format!(
+                "SELECT k.CONSTRAINT_NAME, k.TABLE_SCHEMA, k.TABLE_NAME,
+                        GROUP_CONCAT(k.COLUMN_NAME ORDER BY k.ORDINAL_POSITION SEPARATOR '{COL_SEP}'),
+                        k.REFERENCED_TABLE_SCHEMA, k.REFERENCED_TABLE_NAME,
+                        GROUP_CONCAT(k.REFERENCED_COLUMN_NAME ORDER BY k.ORDINAL_POSITION SEPARATOR '{COL_SEP}'),
+                        MAX(r.UPDATE_RULE), MAX(r.DELETE_RULE)
+                 FROM information_schema.KEY_COLUMN_USAGE k
+                 LEFT JOIN information_schema.REFERENTIAL_CONSTRAINTS r
+                   ON r.CONSTRAINT_SCHEMA = k.CONSTRAINT_SCHEMA AND r.CONSTRAINT_NAME = k.CONSTRAINT_NAME AND r.TABLE_NAME = k.TABLE_NAME
+                 WHERE k.REFERENCED_TABLE_NAME IS NOT NULL AND {cond}
+                 GROUP BY k.CONSTRAINT_NAME, k.TABLE_SCHEMA, k.TABLE_NAME, k.REFERENCED_TABLE_SCHEMA, k.REFERENCED_TABLE_NAME
+                 ORDER BY k.TABLE_NAME, k.CONSTRAINT_NAME"
+            )
+        };
+        let foreign_keys = self.rows(&fk_sql(format!("k.TABLE_SCHEMA = {s} AND k.TABLE_NAME = {t}"))).await?.iter().map(my_fk).collect();
+        let referenced_by = self
+            .rows(&fk_sql(format!("k.REFERENCED_TABLE_SCHEMA = {s} AND k.REFERENCED_TABLE_NAME = {t}")))
+            .await?
+            .iter()
+            .map(my_fk)
+            .collect();
+        // Column 1 is `Create Table` / `Create View`.
+        let create_sql = self
+            .rows(&format!("SHOW CREATE TABLE {}", super::table::table_ref(DbEngine::Mysql, schema, table)))
+            .await
+            .ok()
+            .and_then(|r| r.into_iter().next())
+            .and_then(|r| r.get(1).cloned().flatten());
+
+        Ok(TableDetail {
+            schema: schema.into(),
+            name: table.into(),
+            kind: kind.into(),
+            columns,
+            indexes,
+            foreign_keys,
+            referenced_by,
+            create_sql,
+            rows_est: info[1].as_deref().and_then(|v| v.parse().ok()),
+            size_bytes: info[2].as_deref().and_then(|v| v.parse().ok()),
+            engine: info[3].clone(),
+            collation: info[4].clone(),
+            comment: info[5].clone().filter(|c| !c.is_empty()),
+        })
     }
 
     pub async fn schema(&mut self, system: bool) -> Result<SchemaTree> {

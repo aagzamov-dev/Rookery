@@ -207,6 +207,15 @@ pub enum DbEngine {
     Mysql,
 }
 
+impl DbEngine {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DbEngine::Postgres => "postgres",
+            DbEngine::Mysql => "mysql",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, Default)]
 #[ts(export, export_to = "../../../apps/desktop/src/ipc/bindings/")]
 #[serde(rename_all = "snake_case")]
@@ -301,6 +310,25 @@ impl DbConnection {
 
 pub fn db_secret_id(conn_id: &str) -> String {
     format!("dbconn:{conn_id}:password")
+}
+
+/// One run in a connection's query history (local only, never synced, no result data).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../apps/desktop/src/ipc/bindings/")]
+pub struct SqlHistoryEntry {
+    #[ts(type = "number")]
+    pub id: i64,
+    /// `db_connections.id`, `host:<host_id>:<engine>:<port>` (server view) or `url:<url without password>`.
+    pub conn_key: String,
+    pub sql: String,
+    #[ts(type = "number")]
+    pub ran_at: i64,
+    pub ok: bool,
+    /// Rows returned (or affected) by the last statement.
+    #[ts(type = "number | null")]
+    pub rows: Option<i64>,
+    #[ts(type = "number | null")]
+    pub elapsed_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -539,6 +567,17 @@ pub struct VaultStatus {
 // Snippets (docs/03-DESKTOP-FEATURES.md §6)
 // ---------------------------------------------------------------------------
 
+/// What a snippet holds. SQL snippets live in the SQL tab only: terminals, the palette,
+/// aliases and hotkeys never run them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, Default)]
+#[ts(export, export_to = "../../../apps/desktop/src/ipc/bindings/")]
+#[serde(rename_all = "snake_case")]
+pub enum SnippetKind {
+    #[default]
+    Shell,
+    Sql,
+}
+
 /// Which servers a snippet shows on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, Default)]
 #[ts(export, export_to = "../../../apps/desktop/src/ipc/bindings/")]
@@ -608,6 +647,9 @@ pub struct Snippet {
     /// Workflow: keep going when a step fails (otherwise stop at the first failure).
     #[serde(default)]
     pub continue_on_error: bool,
+    /// shell (terminals) or sql (the SQL tab only).
+    #[serde(default)]
+    pub kind: SnippetKind,
     #[serde(default)]
     #[ts(type = "number")]
     pub sort: i64,

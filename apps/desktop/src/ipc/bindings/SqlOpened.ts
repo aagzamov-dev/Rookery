@@ -5,4 +5,8 @@ export type SqlOpened = { session_id: string, engine: DbEngine,
 /**
  * "PostgreSQL 16.2", "MySQL 8.0.36", "MariaDB 11.4.2".
  */
-server_version: string, read_only: boolean, database: string | null, };
+server_version: string, read_only: boolean, database: string | null, 
+/**
+ * Key of this connection's query history (`sql_history`).
+ */
+conn_key: string, };

@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-export type View = "overview" | "terminal" | "files" | "docker" | "database" | "services" | "processes" | "logs" | "settings";
+export type View = "overview" | "terminal" | "files" | "editor" | "docker" | "database" | "services" | "processes" | "logs" | "settings";
 export type PageKind = "dashboard" | "snippets" | "hosts" | "tunnels" | "settings" | "shortcuts" | "backup";
 
 /** What a database tab opens. Never holds a password (URL passwords stay in memory, see DbTab). */

@@ -8,11 +8,13 @@
 //!   Values are text (`None` = NULL): display only, no typed decoding.
 //! - Read-only is enforced by the server (session setting) and by [`lex::read_only_guard`].
 
+pub mod detect;
 pub mod lex;
 mod manager;
 mod mysql;
 mod pg;
 mod schema;
+pub mod table;
 mod tls;
 
 use std::time::Instant;
@@ -24,7 +26,7 @@ use ts_rs::TS;
 use crate::model::DbEngine;
 use crate::CoreEvent;
 
-pub use manager::SqlManager;
+pub use manager::{conn_key, default_port, SqlManager};
 
 /// Everything a driver needs to connect. The password only lives in memory.
 #[derive(Clone)]
@@ -78,6 +80,8 @@ pub struct SqlOpened {
     pub server_version: String,
     pub read_only: bool,
     pub database: Option<String>,
+    /// Key of this connection's query history (`sql_history`).
+    pub conn_key: String,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -193,6 +197,9 @@ pub struct Sink {
     stmt_started: Instant,
     cur: Option<OpenSet>,
     row_cap: u32,
+    /// For the history: any statement failed; rows of the last finished statement.
+    pub(crate) failed: bool,
+    pub(crate) last_rows: Option<u64>,
 }
 
 struct OpenSet {
@@ -206,7 +213,7 @@ struct OpenSet {
 
 impl Sink {
     pub fn new(events: broadcast::Sender<CoreEvent>, query_id: String, row_cap: u32) -> Self {
-        Self { events, query_id, next_index: 0, stmt: 0, stmt_started: Instant::now(), cur: None, row_cap: row_cap.max(1) }
+        Self { events, query_id, next_index: 0, stmt: 0, stmt_started: Instant::now(), cur: None, row_cap: row_cap.max(1), failed: false, last_rows: None }
     }
 
     pub fn start_statement(&mut self, stmt: u32) {
@@ -255,6 +262,9 @@ impl Sink {
         let elapsed_ms = done.then(|| self.stmt_started.elapsed().as_millis().min(u32::MAX as u128) as u32);
         let stmt = self.stmt;
         let Some(set) = self.cur.as_mut() else { return };
+        if done {
+            self.last_rows = Some(if set.columns.is_some() || set.count > 0 { u64::from(set.count) } else { affected.unwrap_or(0) });
+        }
         let ev = CoreEvent::SqlResult {
             query_id: self.query_id.clone(),
             index: set.index,
@@ -289,6 +299,7 @@ impl Sink {
     }
 
     pub fn error(&mut self, message: String, error_pos: Option<u32>) {
+        self.failed = true;
         let index = self.cur.take().map(|c| c.index).unwrap_or_else(|| {
             self.next_index += 1;
             self.next_index - 1

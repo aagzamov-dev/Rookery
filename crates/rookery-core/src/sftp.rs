@@ -30,9 +30,10 @@ fn sftp_err(e: impl std::fmt::Display) -> Error {
     Error::Ssh(format!("sftp: {e}"))
 }
 
-struct Conn {
-    _lease: Lease,
-    s: SftpSession,
+pub(crate) struct Conn {
+    /// Keeps the SSH session open; also used by the editor for remote commands.
+    pub(crate) lease: Lease,
+    pub(crate) s: SftpSession,
 }
 
 struct EditWatch {
@@ -62,7 +63,7 @@ impl Sftp {
         }
     }
 
-    async fn conn(&self, host_id: &str) -> Result<Arc<Conn>> {
+    pub(crate) async fn conn(&self, host_id: &str) -> Result<Arc<Conn>> {
         let mut map = self.sessions.lock().await;
         if let Some(c) = map.get(host_id) {
             return Ok(c.clone());
@@ -72,13 +73,13 @@ impl Sftp {
         let ch = h.channel_open_session().await?;
         ch.request_subsystem(true, "sftp").await?;
         let s = SftpSession::new(ch.into_stream()).await.map_err(sftp_err)?;
-        let c = Arc::new(Conn { _lease: lease, s });
+        let c = Arc::new(Conn { lease, s });
         map.insert(host_id.to_string(), c.clone());
         Ok(c)
     }
 
     /// Drop a broken session so the next call reopens it (e.g. after a reconnect).
-    async fn on_err<T>(&self, host_id: &str, r: std::result::Result<T, russh_sftp::client::error::Error>) -> Result<T> {
+    pub(crate) async fn on_err<T>(&self, host_id: &str, r: std::result::Result<T, russh_sftp::client::error::Error>) -> Result<T> {
         match r {
             Ok(v) => Ok(v),
             Err(e) => {
@@ -402,6 +403,21 @@ impl Sftp {
         f.write_all(bytes).await?;
         f.shutdown().await?;
         Ok(())
+    }
+
+    /// Read a small file into memory (e.g. a Laravel `.env`). `~/x` is relative to the home folder.
+    pub async fn read_small(&self, host_id: &str, remote: &str, max: u64) -> Result<Vec<u8>> {
+        let remote = remote.strip_prefix("~/").unwrap_or(remote);
+        let c = self.conn(host_id).await?;
+        let r = c.s.metadata(remote).await;
+        let meta = self.on_err(host_id, r).await?;
+        if meta.size.unwrap_or(0) > max {
+            return Err(Error::Other(format!("{remote} is larger than {} KB", max / 1024)));
+        }
+        let mut f = c.s.open(remote).await.map_err(sftp_err)?;
+        let mut data = Vec::new();
+        f.read_to_end(&mut data).await?;
+        Ok(data)
     }
 
     /// Download `remote` to the edit cache, start watching it, return the local path to open.

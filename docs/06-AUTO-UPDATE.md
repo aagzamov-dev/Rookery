@@ -1,6 +1,6 @@
 # 06 — Auto-update (TODO, planned for v0.6)
 
-Status: **built in v0.6.0**. To start publishing, add the two repository secrets (§4), then push a tag.
+Status: **built in v0.6.0**. Only a pushed tag `vX.Y.Z` releases; pushes to `main` never do.
 - App side: `tauri-plugin-updater` (signed), the banner, and Settings › About.
 - CI: `.github/workflows/release.yml` (tag `v*` → Windows NSIS + macOS universal → published Release with `latest.json`) and `ci.yml` (tests on every push).
 
@@ -102,11 +102,12 @@ One-time setup:
 
 Each release:
 1. Bump the version in `Cargo.toml` (workspace), `crates/rookery-tauri/tauri.conf.json`, `package.json` and `apps/desktop/package.json`.
-2. Add a `## x.y.z` section to `docs/CHANGELOG.md`; it becomes the release notes and the app's "What's new".
-3. Run:
+2. Add a `## x.y.z` section to `docs/CHANGELOG.md`; it becomes the release notes and the app's "What's new" (together with any versions since the last published release, so a skipped one is not lost).
+3. Commit, then tag and push the tag:
    ```
    git commit -am "Release x.y.z" && git tag vx.y.z && git push && git push --tags
    ```
+   Only the tag starts a release; pushing `main` alone runs CI only. The tag must match the version in `tauri.conf.json` (otherwise the run fails), and a version that is already published is skipped. Runs never overlap, and a draft left by a failed run is replaced when you push the tag again (`git push --force origin vx.y.z` after moving it).
 4. About 20 minutes later, Releases has the Windows `.exe`, the macOS `.dmg` / `.app.tar.gz`, the `.sig` files and `latest.json`. Installed apps offer the update on their next start (or via "Check for updates").
 
 macOS without Apple notarization: the first download shows "damaged / unidentified developer". Run `xattr -cr /Applications/Rookery.app` once; updates afterwards install normally.

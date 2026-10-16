@@ -128,6 +128,7 @@ Hosts · Dashboard · Snippets · Tunnels · Hosts & identities · Keyboard shor
 - Delete asks first; folders are deleted with `rm -rf` on the server after a red confirmation.
 
 ### 4.4 Edit locally
+- The built-in way is now the **Editor** view (double-click a file in Files): see [08-EDITOR.md](08-EDITOR.md). Edit locally stays for big files and your own programs.
 - Double-click text file → download to a temp dir → open in built-in CodeMirror tab or external editor (setting). A watcher re-uploads on save with a toast; conflict check via mtime.
 
 ---
@@ -280,7 +281,7 @@ Hosts · Dashboard · Snippets · Tunnels · Hosts & identities · Keyboard shor
 
 ---
 
-## 13. Databases — built (v0.7)
+## 13. Databases — built (v0.7, shortcuts and history v0.7.1)
 Look at a database and fix a problem quickly, on production too. Spec: [07-SQL-CONNECTIONS.md](07-SQL-CONNECTIONS.md).
 
 ### 13.1 Where
@@ -288,6 +289,7 @@ Look at a database and fix a problem quickly, on production too. Spec: [07-SQL-C
 - **Sidebar → Databases**: saved connections (🐘 PostgreSQL / 🐬 MySQL, MariaDB), env tag, 🔒 when it opens read-only. Click opens its tab (or switches to it), double-click / "Open in new tab" opens a second one. Right-click: Edit, Duplicate, Delete.
 - **Quick connect**: the title-bar field takes `postgres://user@host:5432/db`, `mysql://root@localhost/shop`, `mariadb://…`, `ssh+mysql://<saved server>/db`. It opens an unsaved tab with **Save**. A password in the URL is kept in memory only.
 - **Restore**: database tabs come back disconnected and connect on click. No password is ever written to the saved session.
+- **Shortcuts in** (v0.7.1), see §13.5: Docker → **Open in SQL**, **Import from a Laravel .env** in the connection dialog, and **Find databases on this PC** (sidebar → Databases → 🔍).
 
 ### 13.2 Connection dialog
 - Name, engine, environment, group; connect **direct** or **through a server**; host, port, user, password ("Saved. Type to change" / Forget), database.
@@ -307,3 +309,10 @@ Look at a database and fix a problem quickly, on production too. Spec: [07-SQL-C
 - While changes are allowed, the first change opens a transaction: banner "Uncommitted changes · N rows" with Commit / Rollback. Closing the tab, locking (button / Ctrl+L) or switching database asks Commit / Roll back / Cancel. MySQL DDL warns that it commits at once.
 - Risky statements (UPDATE / DELETE without WHERE, DROP, TRUNCATE, ALTER, GRANT / REVOKE, several statements with a change) ask first; on PROD you type the database name.
 - Row cap, statement timeout and Cancel all act on the server. Idle sessions drop their connection after 10 minutes (never with a transaction open) and reconnect on the next run.
+
+### 13.5 Shortcuts, history and SQL snippets (v0.7.1)
+- **Docker → Open in SQL**: a 🛢 button on running `postgres` / `mysql` / `mariadb` (also `postgis`, `timescale`, `percona`) containers. One `docker inspect` fills the server's Database view: engine, user and database from the container's settings, address = `127.0.0.1:<published port>`, else the container IP. The password is **never** read from the container: the form names the variable that holds it (`POSTGRES_PASSWORD`…) and waits for you to type it. **Save** after connecting keeps it as a connection.
+- **Import from a Laravel .env** (new connection dialog): **File on this PC…** or **On a server…** (server + path, read through SFTP; the connection is then "through that server"). Reads `DB_CONNECTION`, `DB_HOST`, `DB_PORT`, `DB_DATABASE`, `DB_USERNAME` (or `DB_URL`). `DB_PASSWORD` stays in Rust and is used only if you tick **Use the password from .env**; it is forgotten after 15 minutes or on lock. `DB_HOST=mysql` (Sail / compose service name) gets a hint to use 127.0.0.1 and the published port.
+- **Find databases on this PC**: tries 127.0.0.1 on 3306, 3307, 5432, 5433 (300 ms each, in parallel) and the ports local Docker containers publish (`docker ps`). It reads the server's greeting, so it says "MariaDB 10.4.32" or "MySQL 8.4", and only lists ports that answer like a database. Each row: **Add MySQL on localhost:3306?** (XAMPP / Laragon: root without a password; Postgres: `postgres`; Docker: user / database from the container) or **Open** when it is already saved.
+- **History** (toolbar → History): every run of this connection, newest first, with ✓ / ✗, rows and time. Click puts it into the editor, ▶ runs it, 🔖 saves it as a snippet. Local only (never synced or backed up), the last 200 per connection, **Clear** per connection; deleting a saved connection deletes its history. Scripts that mention a password (`PASSWORD`, `IDENTIFIED BY`) are not kept.
+- **SQL snippets**: **Save as snippet** (toolbar; the selection or the whole editor) and the panel's **Snippets** tab (click = into the editor, ▶ = run). They are a separate kind on the Snippets page ("SQL query"): no alias, hotkey or scope, and terminals, the palette and container quick commands never run them.

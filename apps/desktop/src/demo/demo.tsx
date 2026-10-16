@@ -1,11 +1,13 @@
 // Demo mode for README screenshots: the real UI with a mocked core (no Tauri, no servers,
 // no vault). Open http://localhost:1420/demo.html?scene=dashboard (dev server only — this
 // page is not part of the app build). Scenes: dashboard, terminal, docker, backup, hosts,
-// shortcuts, snippets, sql (database tab), sql-server (server Database view), sql-dialog.
+// shortcuts, snippets, sql (database tab), sql-server (server Database view), sql-dialog,
+// editor, editor-merge, editor-review.
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import { emit } from "@tauri-apps/api/event";
 import { DEMO } from "./data";
-import { SQL_COLUMNS, SQL_CONNS, SQL_DRAFT, SQL_TREE, sqlRows } from "./sql";
+import { editorMock } from "./editor";
+import { ORDER_COLUMNS, ORDER_DETAIL, orderRows, SQL_COLUMNS, SQL_CONNS, SQL_DRAFT, SQL_TREE, sqlRows } from "./sql";
 
 const scene = new URLSearchParams(location.search).get("scene") ?? "dashboard";
 const b64 = (s: string) => btoa(String.fromCharCode(...new TextEncoder().encode(s)));
@@ -16,6 +18,8 @@ mockWindows("main");
 mockIPC(
   (cmd, args) => {
     const a = (args ?? {}) as Record<string, unknown>;
+    const ed = editorMock(cmd, a, scene);
+    if (ed !== undefined) return ed;
     switch (cmd) {
       case "vault_status":
         return { initialised: true, unlocked: true, pin_set: true, pin_disabled: false, pin_length: 4, pin_attempts_left: null };
@@ -43,7 +47,24 @@ mockIPC(
       case "sql_test":
         return { server_version: "PostgreSQL 16.2", latency_ms: 38 };
       case "sql_open":
-        return { session_id: "sql1", engine: "mysql", server_version: "MySQL 8.0.36", read_only: true, database: "shop" };
+        return { session_id: "sql1", engine: "mysql", server_version: "MySQL 8.0.36", read_only: true, database: "shop", conn_key: "c-shop" };
+      case "sql_detect_local":
+        return [
+          { engine: "mysql", port: 3306, product: "MariaDB 10.4.32", container: null, user: "root", database: null, hint: "XAMPP / Laragon: user root, no password" },
+          { engine: "postgres", port: 5433, product: "PostgreSQL", container: "shop-db-1 (postgres:16-alpine)", user: "shop", database: "shop", hint: "Password: POSTGRES_PASSWORD in the container's settings" },
+        ];
+      case "sql_env_import":
+        return { name: "Shop API", engine: "mysql", address: "127.0.0.1", port: 3306, user: "shop", database: "shop", note: null, password_hint: null, password_ref: "env-1" };
+      case "sql_docker_inspect":
+        return { name: a.container, engine: "postgres", address: "172.18.0.4", port: 5432, user: "shop", database: "shop", note: "container IP on shop_default", password_hint: "POSTGRES_PASSWORD in the container's settings" };
+      case "sql_history": {
+        const now = Date.now();
+        return [
+          { id: 3, conn_key: a.connKey, sql: "SELECT id, email, status FROM orders WHERE status = 'failed' ORDER BY id DESC LIMIT 100", ran_at: now - 60_000, ok: true, rows: 37, elapsed_ms: 41 },
+          { id: 2, conn_key: a.connKey, sql: "SELECT count(*) FROM orders", ran_at: now - 600_000, ok: true, rows: 1, elapsed_ms: 12 },
+          { id: 1, conn_key: a.connKey, sql: "SELECT * FROM order", ran_at: now - 3_600_000, ok: false, rows: null, elapsed_ms: 3 },
+        ];
+      }
       case "sql_allow_writes": {
         const m = a.minutes as number;
         setTimeout(() => core({ type: "sql_session", session_id: a.sessionId, state: "connected", tx_open: false, tx_rows: 0, read_only: m === 0, protected: true, writes_until: m ? Date.now() + m * 60_000 : null, database: "shop", message: null }), 30);
@@ -51,6 +72,20 @@ mockIPC(
       }
       case "sql_schema":
         return SQL_TREE;
+      case "sql_table_detail":
+        return { ...ORDER_DETAIL, name: a.table as string };
+      case "sql_table_count":
+        return 92311;
+      case "sql_table_rows": {
+        const q = `q${++n}`;
+        const base = { query_id: q, stmt: 0, affected: null, error: null, error_pos: null, notice: null, finished: false };
+        setTimeout(() => {
+          const rows = orderRows().slice(0, 200);
+          core({ type: "sql_result", ...base, index: 0, columns: ORDER_COLUMNS, rows, done: true, affected: rows.length, elapsed_ms: 18, truncated: true });
+          core({ type: "sql_result", ...base, index: 1, columns: null, rows: [], done: true, finished: true, elapsed_ms: null, truncated: false });
+        }, 80);
+        return { query_id: q, sql: "SELECT * FROM `shop`.`orders` ORDER BY `id` ASC LIMIT 201" };
+      }
       case "sql_run": {
         const q = `q${++n}`;
         const base = { query_id: q, stmt: 0, affected: null, error: null, error_pos: null, notice: null, finished: false, truncated: false };
@@ -145,12 +180,58 @@ switch (scene) {
     sqlRegistry.get("db:demo")?.run("all");
     break;
   }
+  case "sql-table":
+  case "sql-structure": {
+    tabs.openServer("h-stg-web", "terminal");
+    useTabs.setState((s) => ({ tabs: [...s.tabs, { id: "db:demo", kind: "db", target: { kind: "saved", id: "c-shop" }, title: "shop prod" }], activeTabId: "db:demo" }));
+    let row: HTMLElement | null = null;
+    for (let i = 0; i < 80 && !(row = [...document.querySelectorAll<HTMLElement>("[data-sql-key=\"db:demo\"] [role=button]")].find((e) => e.textContent?.startsWith("orders")) ?? null); i++) await wait(50);
+    row?.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    await wait(400);
+    if (scene === "sql-structure") {
+      [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "Structure")?.click();
+    } else {
+      for (let i = 0; i < 40 && !document.querySelector("[aria-label=\"Search rows\"]"); i++) await wait(50);
+      [...document.querySelectorAll<HTMLButtonElement>("[aria-label=\"Show row details\"]")][0]?.click();
+      const cell = [...document.querySelectorAll<HTMLElement>("[data-sql-key=\"db:demo\"] .truncate")].find((e) => e.textContent === "92309");
+      cell?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    }
+    break;
+  }
   case "sql-dialog": {
     tabs.openServer("h-stg-web", "terminal");
     const { useConnDialog } = await import("../features/sql/connDialog");
     const { useSql } = await import("../stores/sql");
     for (let i = 0; i < 60 && !useSql.getState().connsLoaded; i++) await wait(50);
     useConnDialog.getState().open({ conn: useSql.getState().conns.find((c) => c.id === "c-analytics") });
+    break;
+  }
+  case "editor":
+  case "editor-merge":
+  case "editor-review": {
+    const host = scene === "editor-review" ? api01 : "h-stg-web";
+    if (scene !== "editor-review") tabs.openServer(api01, "terminal");
+    tabs.openServer(host, "editor");
+    const ed = await import("../features/editor/actions");
+    for (let i = 0; i < 80 && !ed.mounted.get(host); i++) await wait(50);
+    await wait(200);
+    if (scene === "editor-review") {
+      const d = await ed.openFile(host, "/srv/shop/nginx/shop.conf");
+      await wait(300);
+      ed.replaceText(d.key, ed.textOf(d.key).replace("proxy_pass http://127.0.0.1:8080;", "proxy_pass http://127.0.0.1:8081;\n        proxy_read_timeout 120s;"));
+      await wait(400);
+      ed.hooks.get(host)?.save(d.key);
+      break;
+    }
+    await ed.openFile(host, "/srv/shop/docker-compose.yml");
+    const d = await ed.openFile(host, "/srv/shop/.env");
+    await wait(300);
+    const t = ed.textOf(d.key);
+    ed.replaceText(d.key, scene === "editor-merge" ? t.replace("MAIL_NAME=Shop orders", "MAIL_NAME=Shop mail").replace("DB_PORT=5432", "DB_PORT=6432") : t.replace("DB_PORT=5432", "DB_PORT=6432"));
+    const { useEditor } = await import("../stores/editor");
+    useEditor.getState().togglePin(host, "/srv/shop/docker-compose.yml");
+    await wait(600);
+    if (scene === "editor-merge") ed.hooks.get(host)?.save(d.key);
     break;
   }
   case "backup":

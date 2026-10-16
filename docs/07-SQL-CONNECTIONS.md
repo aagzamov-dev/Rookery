@@ -1,6 +1,6 @@
 # 07 — SQL connections (v0.7)
 
-Status: **0.7.0 built (the core); v0.7.1 shortcuts next.** What was built, and where it differs from the text below, is in §10. Read [00-START-HERE.md](00-START-HERE.md) first: it has the project rules this feature must follow.
+Status: **0.7.0 (the core) and 0.7.1 (shortcuts, history) built.** What was built, and where it differs from the text below, is in §10. Read [00-START-HERE.md](00-START-HERE.md) first: it has the project rules this feature must follow.
 
 Goal: **see what's in a database and fix a problem quickly**, safely, including on production. Show databases, tables and columns, run SQL, read the results. It is a quick look-and-fix tool next to the terminal, **not** a full database IDE.
 
@@ -331,7 +331,54 @@ Every step: `cargo test -p rookery-core`, `cargo build -p rookery-tauri`, `npx t
 - **Editor text** is kept per tab under the local setting `ui.sql.drafts`; tab restore never stores a password.
 - **Lock**: SQL sessions always close on lock and on webview reload. The lock button / Ctrl+L ask about open transactions first; idle auto-lock cannot ask (the server rolls back).
 
-### 10.3 Left for v0.7.1
+### 10.3 v0.7.1 scope (done, see §10.4)
 - Docker **Open in SQL** (§2.4), Laravel **`.env` import** (§2.4, password always asked), **Find databases on this PC** (§2.4).
 - **History** (`sql_history` table as migration **v7**, last 200 per connection, clearable) and **Save as snippet** (a separate SQL snippet kind, so terminals don't run it).
-- Ideas seen while building: show column types for Postgres results (the simple protocol only gives names; numbers are right-aligned by looking at the values); a Commit / Rollback prompt when the window closes.
+
+### 10.4 Built in 0.7.1, and differences from the text above
+- **Code**: `crates/rookery-core/src/sql/detect.rs` (Docker inspect, `.env`, local detection), history in `db.rs` + `SqlManager::record`; UI `features/sql/SidePanel.tsx` (History / Snippets), `FindLocal.tsx`, `shortcuts.ts`, the import strip in `ConnectionDialog.tsx`, the prefill in `ServerDbView.tsx`, the button in `docker/DockerView.tsx`.
+- **Migration v7**: `sql_history` exactly as §3.1, plus `snippets.kind` (`shell` | `sql`).
+- **History**:
+  - Rust records each run (the whole submitted text, `ok` = no statement failed, `rows` = rows returned or affected by the last statement, `elapsed_ms` = the whole run) **before** it sends `finished`, so the panel can reload on `finished`.
+  - `conn_key`: the saved connection's id; `host:<host_id>:<engine>:<port>` for a server view; `url:<url without password>` for quick connect. `SqlOpened` returns it.
+  - Not kept: text containing `password`, `passwd` or `identified` (`ALTER USER … PASSWORD`, `CREATE USER … IDENTIFIED BY`).
+  - Commands `sql_history(conn_key, limit)` and `sql_history_clear(conn_key)`. Deleting a saved connection also deletes its history.
+- **SQL snippets**: `Snippet.kind = "sql"`. Saving one clears alias, hotkey, variables and steps and stores scope "one server" with no server, so even an older app (0.7.0, which doesn't know `kind`) never offers it to a terminal. `appliesTo` / `appliesToContainer` return false for SQL snippets. They sync and back up like other snippets.
+- **Docker**: `sql_docker_inspect(host_id, container)` → `SqlPrefill` (name, engine, address, port, user, database, `note`, `password_hint`). Engine by image name (`postgres`, `postgis`, `timescale` / `mysql`, `mariadb`, `percona`; `*exporter*` is skipped). User / database: `POSTGRES_USER`/`POSTGRES_DB` (+ bitnami `POSTGRESQL_*`), `MYSQL_USER`/`MARIADB_USER` else `root`, `MYSQL_DATABASE`/`MARIADB_DATABASE`. Address: published port on 127.0.0.1 first, then host network, then the container IP. The env is parsed in Rust; only the *name* of the password variable leaves it. The prefill goes to the server's **Database view** (not a dialog); if a database is already open there, it asks before closing it.
+- **`.env`**: `sql_env_parse(text)` became `sql_env_import(source)` with `source = { kind: "local", path } | { kind: "remote", host_id, path }`, so the file is read by Rust and the password never passes through the webview. `DB_PASSWORD` (or the password in `DB_URL`) is kept in memory under `password_ref` (15 minutes, cleared on lock); `sql_test` and `sql_conn_save` take an optional `password_ref` instead of a password. Remote import makes the connection "through that server". Max file size 256 KB; `~/` paths are relative to the home folder.
+- **Find databases on this PC**: `sql_detect_local()` → `LocalDb[]` (engine, port, product, container, user, database, hint). The probe reads the MySQL / MariaDB greeting, and sends a Postgres SSLRequest to a silent port (answer `S` / `N`); other services are not listed. Docker: `docker ps` + one `docker inspect` for the database containers, run with no console window on Windows and with the usual Docker paths on macOS; no Docker or a stopped daemon just means no Docker rows. Entry: sidebar → Databases → 🔍 (and the empty Databases list).
+- **Tests**: unit tests for all parsers, the probe (fake Postgres / non-database listeners), history pruning and SQL snippet rules; `detect_local_for_real` (`#[ignore]`) and the existing `real_servers_end_to_end` (now also checks the history) were run against PostgreSQL 16 and MySQL 8.4 in Docker.
+
+### 10.6 Table browser (HeidiSQL style) and the SSH | SQL sidebar — built in 0.7.0
+- **Sidebar:** an **SSH | SQL** switch on top of the host list (`useUi.sidebar`, SSH on every start). SQL shows the saved connections (`DbConnections` in `features/sql/DbList.tsx`), the add / find buttons and the filter for them.
+- **Tabs inside a SQL tab / Database view:** **Query** (the editor, always mounted) plus one tab per opened table.
+  - Single click in the tree opens a *preview* tab (italic, replaced by the next click); a double-click, a foreign-key jump or switching Data / Structure keeps it.
+  - Middle-click closes. The tree arrow still shows columns.
+  - Files: `features/sql/TableView.tsx`, `tableLayout.ts`; tabs in `SqlTab.tsx`.
+- **Data tab:**
+  - **Paging:** the page size (100 / 200 / 500 / 1000) fetches one row more to know there's more ("Load N more" appends).
+  - **Sort:** click a header (asc → desc → off); Shift+click adds keys. The default is the primary key.
+  - **Quick search:** looks at up to 40 text columns (debounced 350 ms).
+  - **Filters:** column + condition chips, all AND, editable.
+  - **WHERE box:** a hand-written condition, shown as a chip.
+  - **Right-click a cell:** = / ≠ / contains / is NULL, "Open <table> where <fk> = value" and "Rows in <table> pointing here".
+  - **Columns:** drag to reorder, drag the edge to resize, hide / show.
+  - **Also:** row detail panel, exact **Count**, CSV of the loaded rows, **Show SQL** with "Open in Query".
+- **Structure tab:** columns (type, null, default, extra, comment, key marks), indexes, foreign keys and "referenced by" (clickable), size / engine / collation, and the CREATE code. MySQL uses `SHOW CREATE TABLE`; Postgres builds it from `pg_constraint` / `pg_get_indexdef` / `pg_get_viewdef`.
+- **Rust** (`crates/rookery-core/src/sql/table.rs`):
+  - **Commands:** `sql_table_detail(session, schema, table)`, `sql_table_rows(session, TableQuery)` → `{ query_id, sql }` (rows stream as normal `SqlResult` events, not kept in history), `sql_table_count(session, TableQuery)`.
+  - **Safety:**
+    - column names in filters / sort must exist in the catalog;
+    - identifiers are always quoted;
+    - values are literals: Postgres `'…'` / `E'…'`; MySQL `''` + `\\`;
+    - LIKE patterns are escaped with `!`;
+    - the final SQL must split into exactly one statement and classify as a read, so a WHERE with `;` or a write is refused;
+    - the query then runs through `run_inner`: read-only guard, timeout, row cap and cancel as usual.
+  - Columns per table are cached in the session and cleared on schema reload / `USE`.
+- **Layouts:** `ui.sql.tables` (in `LOCAL_SETTING_KEYS`, not synced) keeps order / hidden / widths / page size per `<connKey>|<schema>.<table>`, the last 300 tables.
+- **Not yet:** editing cells, inserting and deleting rows (v0.8, with the same PROD rules), and structure changes.
+
+### 10.5 Ideas for later
+- Show column types for Postgres results (the simple protocol only gives names; numbers are right-aligned by looking at the values).
+- A Commit / Rollback prompt when the window closes.
+- History search across all connections; a keyboard shortcut for the History panel.

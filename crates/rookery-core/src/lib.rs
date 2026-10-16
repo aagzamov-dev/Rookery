@@ -13,6 +13,7 @@ pub mod actions;
 pub mod backup;
 pub mod collectors;
 pub mod db;
+pub mod editor;
 pub mod error;
 pub mod events;
 pub mod forward;
@@ -54,6 +55,7 @@ pub struct Core {
     pub sync: Arc<sync::SyncEngine>,
     pub backup: Arc<backup::Backup>,
     pub sql: Arc<sql::SqlManager>,
+    pub editor: Arc<editor::Editor>,
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     pub local: Arc<local::LocalTerminals>,
     pub events: broadcast::Sender<CoreEvent>,
@@ -86,6 +88,8 @@ impl Core {
         let sync = Arc::new(sync::SyncEngine::new(db.clone(), vault.clone(), connections.clone(), events.clone()));
         let backup = Arc::new(backup::Backup::new(db.clone(), vault.clone(), events.clone()));
         let sql = Arc::new(sql::SqlManager::new(db.clone(), vault.clone(), connections.clone(), events.clone()));
+        // Local copies of edited files: never synced, never in backups (they may hold secrets).
+        let editor = Arc::new(editor::Editor::new(sftp.clone(), db.clone(), vault.clone(), data_dir.join("editor-backups")));
 
         Ok(Self {
             data_dir,
@@ -98,6 +102,7 @@ impl Core {
             sync,
             backup,
             sql,
+            editor,
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             local: Arc::new(local::LocalTerminals::new(events.clone())),
             events,
