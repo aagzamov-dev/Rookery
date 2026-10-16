@@ -3,7 +3,7 @@
 # update files are signed, and a GitHub Release with `latest.json` is published (installed
 # apps update from it). Pushes to main never release (they only run CI). A version that is
 # already released is skipped.
-#Good
+#
 # Needs two repository secrets (Settings → Secrets and variables → Actions):
 #   TAURI_SIGNING_PRIVATE_KEY           contents of ~/.tauri/rookery-updater.key
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  contents of ~/.tauri/rookery-updater.key.password
