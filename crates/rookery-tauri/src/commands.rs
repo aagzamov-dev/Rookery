@@ -1,4 +1,5 @@
 use rookery_core::model::*;
+use rookery_core::sql::{SchemaTree, SqlOpened, SqlRunOpts, SqlTarget, SqlTestResult, TxAction};
 use rookery_core::{new_id, CoreEvent, Error, Result};
 use serde::Serialize;
 use tauri::State;
@@ -162,6 +163,7 @@ pub async fn frontend_ready(s: State<'_, AppState>) -> Result<()> {
     s.core.subscriptions.stop_all().await;
     s.core.terminals.close_all().await;
     s.core.local.close_all();
+    s.core.sql.close_all().await;
     Ok(())
 }
 
@@ -618,6 +620,91 @@ pub fn snippet_save(s: State<'_, AppState>, snippet: Snippet) -> Result<Snippet>
 #[tauri::command]
 pub fn snippet_delete(s: State<'_, AppState>, id: String) -> Result<()> {
     s.core.db.delete_snippet(&id)
+}
+
+// ------------------------------------------------------------ SQL connections
+
+#[tauri::command]
+pub fn sql_conns_list(s: State<'_, AppState>) -> Result<Vec<DbConnection>> {
+    let v = s.core.vault.lock();
+    let mut list = s.core.db.list_db_connections()?;
+    for c in &mut list {
+        c.has_password = v.has(&c.secret_id());
+    }
+    Ok(list)
+}
+
+/// Password: `None` = keep as is, `Some("")` = delete, `Some(value)` = set. It is never returned.
+#[tauri::command]
+pub fn sql_conn_save(s: State<'_, AppState>, conn: DbConnection, password: Option<String>) -> Result<DbConnection> {
+    if password.as_deref().is_some_and(|p| !p.is_empty()) && !s.core.vault.lock().is_unlocked() {
+        return Err(Error::VaultLocked);
+    }
+    let mut saved = s.core.db.save_db_connection(conn)?;
+    let mut v = s.core.vault.lock();
+    match password {
+        None => {}
+        Some(x) if x.is_empty() => v.delete(&saved.secret_id())?,
+        Some(x) => v.set(&saved.secret_id(), &x)?,
+    }
+    saved.has_password = v.has(&saved.secret_id());
+    Ok(saved)
+}
+
+#[tauri::command]
+pub fn sql_conn_delete(s: State<'_, AppState>, id: String) -> Result<()> {
+    s.core.vault.lock().delete(&db_secret_id(&id))?;
+    s.core.db.delete_db_connection(&id)
+}
+
+/// "Test connection": connect once and close. `password` None = the saved one.
+#[tauri::command]
+pub async fn sql_test(s: State<'_, AppState>, conn: DbConnection, password: Option<String>) -> Result<SqlTestResult> {
+    s.core.sql.test(&conn, password).await
+}
+
+#[tauri::command]
+pub async fn sql_open(s: State<'_, AppState>, target: SqlTarget) -> Result<SqlOpened> {
+    s.core.sql.open(target).await
+}
+
+#[tauri::command]
+pub async fn sql_close(s: State<'_, AppState>, session_id: String) -> Result<()> {
+    s.core.sql.close(&session_id).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn sql_schema(s: State<'_, AppState>, session_id: String, system: bool) -> Result<SchemaTree> {
+    s.core.sql.schema(&session_id, system).await
+}
+
+#[tauri::command]
+pub async fn sql_use(s: State<'_, AppState>, session_id: String, database: String) -> Result<()> {
+    s.core.sql.use_database(&session_id, database).await
+}
+
+/// Returns a query id at once; rows arrive as `sql_result` events.
+#[tauri::command]
+pub async fn sql_run(s: State<'_, AppState>, session_id: String, sql: String, opts: Option<SqlRunOpts>) -> Result<String> {
+    s.core.sql.run(&session_id, sql, opts.unwrap_or_default())
+}
+
+#[tauri::command]
+pub async fn sql_cancel(s: State<'_, AppState>, query_id: String) -> Result<()> {
+    s.core.sql.cancel(&query_id).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn sql_tx(s: State<'_, AppState>, session_id: String, action: TxAction) -> Result<()> {
+    s.core.sql.tx(&session_id, action).await
+}
+
+/// "Allow changes for N minutes" on a read-only (PROD) connection; 0 = read-only again now.
+#[tauri::command]
+pub async fn sql_allow_writes(s: State<'_, AppState>, session_id: String, minutes: u32) -> Result<()> {
+    s.core.sql.allow_writes(&session_id, minutes).await
 }
 
 // ------------------------------------------------------------- UI settings

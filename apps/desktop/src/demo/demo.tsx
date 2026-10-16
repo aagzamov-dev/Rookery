@@ -1,10 +1,11 @@
 // Demo mode for README screenshots: the real UI with a mocked core (no Tauri, no servers,
 // no vault). Open http://localhost:1420/demo.html?scene=dashboard (dev server only — this
 // page is not part of the app build). Scenes: dashboard, terminal, docker, backup, hosts,
-// shortcuts, snippets.
+// shortcuts, snippets, sql (database tab), sql-server (server Database view), sql-dialog.
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import { emit } from "@tauri-apps/api/event";
 import { DEMO } from "./data";
+import { SQL_COLUMNS, SQL_CONNS, SQL_DRAFT, SQL_TREE, sqlRows } from "./sql";
 
 const scene = new URLSearchParams(location.search).get("scene") ?? "dashboard";
 const b64 = (s: string) => btoa(String.fromCharCode(...new TextEncoder().encode(s)));
@@ -35,7 +36,31 @@ mockIPC(
       case "sessions_all":
         return [];
       case "setting_get":
+        if (a.key === "ui.sql.drafts") return { "host:h-api01": SQL_DRAFT, "db:demo": SQL_DRAFT };
         return DEMO.settings[a.key as string] ?? null;
+      case "sql_conns_list":
+        return SQL_CONNS;
+      case "sql_test":
+        return { server_version: "PostgreSQL 16.2", latency_ms: 38 };
+      case "sql_open":
+        return { session_id: "sql1", engine: "mysql", server_version: "MySQL 8.0.36", read_only: true, database: "shop" };
+      case "sql_allow_writes": {
+        const m = a.minutes as number;
+        setTimeout(() => core({ type: "sql_session", session_id: a.sessionId, state: "connected", tx_open: false, tx_rows: 0, read_only: m === 0, protected: true, writes_until: m ? Date.now() + m * 60_000 : null, database: "shop", message: null }), 30);
+        return null;
+      }
+      case "sql_schema":
+        return SQL_TREE;
+      case "sql_run": {
+        const q = `q${++n}`;
+        const base = { query_id: q, stmt: 0, affected: null, error: null, error_pos: null, notice: null, finished: false, truncated: false };
+        setTimeout(() => {
+          const rows = sqlRows();
+          core({ type: "sql_result", ...base, index: 0, columns: SQL_COLUMNS, rows, done: true, affected: rows.length, elapsed_ms: 41 });
+          core({ type: "sql_result", ...base, index: 1, columns: null, rows: [], done: true, finished: true, elapsed_ms: null });
+        }, 120);
+        return q;
+      }
       case "sync_status":
         return DEMO.syncStatus;
       case "backup_status":
@@ -97,6 +122,35 @@ switch (scene) {
     const { useDocker } = await import("../stores/docker");
     for (let i = 0; i < 40 && !useDocker.getState().byHost[api01]?.containers.length; i++) await wait(50);
     useDocker.getState().select(api01, DEMO.containers[0].id); // open the logs panel
+    break;
+  }
+  case "sql-server": {
+    tabs.openServer("h-stg-web", "terminal");
+    tabs.openServer(api01, "database");
+    let btn: HTMLButtonElement | null = null;
+    for (let i = 0; i < 60 && !(btn = document.querySelector<HTMLButtonElement>("form button[type=submit]")); i++) await wait(50);
+    btn?.click();
+    const { sqlRegistry } = await import("../features/sql/registry");
+    for (let i = 0; i < 60 && !sqlRegistry.get("host:h-api01"); i++) await wait(50);
+    await wait(300);
+    sqlRegistry.get("host:h-api01")?.run("all");
+    break;
+  }
+  case "sql": {
+    tabs.openServer("h-stg-web", "terminal");
+    useTabs.setState((s) => ({ tabs: [...s.tabs, { id: "db:demo", kind: "db", target: { kind: "saved", id: "c-shop" }, title: "shop prod" }], activeTabId: "db:demo" }));
+    const { sqlRegistry } = await import("../features/sql/registry");
+    for (let i = 0; i < 60 && !sqlRegistry.get("db:demo"); i++) await wait(50);
+    await wait(300);
+    sqlRegistry.get("db:demo")?.run("all");
+    break;
+  }
+  case "sql-dialog": {
+    tabs.openServer("h-stg-web", "terminal");
+    const { useConnDialog } = await import("../features/sql/connDialog");
+    const { useSql } = await import("../stores/sql");
+    for (let i = 0; i < 60 && !useSql.getState().connsLoaded; i++) await wait(50);
+    useConnDialog.getState().open({ conn: useSql.getState().conns.find((c) => c.id === "c-analytics") });
     break;
   }
   case "backup":

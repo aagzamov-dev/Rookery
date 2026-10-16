@@ -195,6 +195,114 @@ impl Identity {
     }
 }
 
+// ---------------------------------------------------------------- SQL connections (v0.7)
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, Default)]
+#[ts(export, export_to = "../../../apps/desktop/src/ipc/bindings/")]
+#[serde(rename_all = "snake_case")]
+pub enum DbEngine {
+    #[default]
+    Postgres,
+    /// MySQL and MariaDB.
+    Mysql,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, Default)]
+#[ts(export, export_to = "../../../apps/desktop/src/ipc/bindings/")]
+#[serde(rename_all = "snake_case")]
+pub enum DbVia {
+    /// The driver connects to `address:port` itself.
+    #[default]
+    Direct,
+    /// Through the saved server `host_id` (SSH loopback forward).
+    Ssh,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, Default)]
+#[ts(export, export_to = "../../../apps/desktop/src/ipc/bindings/")]
+pub enum SslMode {
+    #[serde(rename = "disable")]
+    Disable,
+    /// TLS when the server offers it, certificate not checked.
+    #[default]
+    #[serde(rename = "prefer")]
+    Prefer,
+    /// TLS always, certificate not checked.
+    #[serde(rename = "require")]
+    Require,
+    /// TLS always, certificate and host name checked (system roots + optional CA file).
+    #[serde(rename = "verify-full")]
+    VerifyFull,
+}
+
+/// A saved database connection. The password lives in the vault (`dbconn:<id>:password`).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../apps/desktop/src/ipc/bindings/")]
+pub struct DbConnection {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub engine: DbEngine,
+    #[serde(default)]
+    pub via: DbVia,
+    /// The server to go through when `via = ssh`.
+    pub host_id: Option<String>,
+    /// Database host, as seen from this PC (direct) or from the server (ssh).
+    pub address: String,
+    pub port: u16,
+    #[serde(default)]
+    pub username: String,
+    /// Default database (MySQL) / database (Postgres).
+    pub database: Option<String>,
+    #[serde(default)]
+    pub ssl_mode: SslMode,
+    pub ca_path: Option<String>,
+    #[serde(default)]
+    pub env_label: EnvLabel,
+    pub group_id: Option<String>,
+    /// Open read-only (always on for PROD, whatever this says).
+    #[serde(default)]
+    pub read_only: bool,
+    #[serde(default = "default_row_limit")]
+    pub row_limit: u32,
+    #[serde(default = "default_timeout_s")]
+    pub timeout_s: u32,
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub sort: i64,
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub created_at: i64,
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub updated_at: i64,
+    /// Read-only flag computed from the vault; ignored on save.
+    #[serde(default)]
+    pub has_password: bool,
+}
+
+fn default_row_limit() -> u32 {
+    500
+}
+fn default_timeout_s() -> u32 {
+    30
+}
+
+impl DbConnection {
+    pub fn secret_id(&self) -> String {
+        db_secret_id(&self.id)
+    }
+
+    /// PROD connections always open read-only.
+    pub fn opens_read_only(&self) -> bool {
+        self.read_only || self.env_label == EnvLabel::Prod
+    }
+}
+
+pub fn db_secret_id(conn_id: &str) -> String {
+    format!("dbconn:{conn_id}:password")
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../apps/desktop/src/ipc/bindings/")]
 pub struct KnownHost {
@@ -739,6 +847,8 @@ pub struct BackupInfo {
     pub groups: u32,
     pub identities: u32,
     pub snippets: u32,
+    #[serde(default)]
+    pub db_connections: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

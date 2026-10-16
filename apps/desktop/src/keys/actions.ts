@@ -30,6 +30,7 @@ export type ActionId =
   | "view.terminal"
   | "view.files"
   | "view.docker"
+  | "view.database"
   | "view.services"
   | "view.processes"
   | "view.logs"
@@ -67,11 +68,16 @@ export type ActionId =
   // files
   | "files.copyPath"
   | "files.upload"
-  | "files.refresh";
+  | "files.refresh"
+  // SQL editor
+  | "sql.run"
+  | "sql.runAll"
+  | "sql.cancel"
+  | "sql.toggleTree";
 
-export type ActionGroup = "App" | "Tabs" | "Server views" | "Terminal" | "Copy & paste" | "Scroll & find" | "Font size" | "Files";
+export type ActionGroup = "App" | "Tabs" | "Server views" | "Terminal" | "Copy & paste" | "Scroll & find" | "Font size" | "Files" | "SQL";
 
-export const ACTION_GROUPS: ActionGroup[] = ["App", "Tabs", "Server views", "Terminal", "Copy & paste", "Scroll & find", "Font size", "Files"];
+export const ACTION_GROUPS: ActionGroup[] = ["App", "Tabs", "Server views", "Terminal", "Copy & paste", "Scroll & find", "Font size", "Files", "SQL"];
 
 export interface ActionDef {
   id: ActionId;
@@ -81,6 +87,8 @@ export interface ActionDef {
   defaults: string[];
   /** Only fires while a terminal has keyboard focus (so text fields keep their own copy/paste). */
   terminalOnly?: boolean;
+  /** Only fires while a SQL editor is focused or visible. */
+  sqlOnly?: boolean;
   hint?: string;
 }
 
@@ -127,6 +135,7 @@ export const ACTIONS: ActionDef[] = [
   { id: "view.services", label: "Services", group: "Server views", defaults: W(["Ctrl+5"], ["Meta+Alt+5"]) },
   { id: "view.processes", label: "Processes", group: "Server views", defaults: W(["Ctrl+6"], ["Meta+Alt+6"]) },
   { id: "view.logs", label: "Logs", group: "Server views", defaults: W(["Ctrl+7"], ["Meta+Alt+7"]) },
+  { id: "view.database", label: "Database", group: "Server views", defaults: W(["Ctrl+8"], ["Meta+Alt+8"]) },
   { id: "view.filesPanel", label: "Files panel next to the terminal", group: "Server views", defaults: ["Mod+Shift+E"] },
 
   // Terminal
@@ -167,6 +176,11 @@ export const ACTIONS: ActionDef[] = [
   { id: "files.copyPath", label: "Copy current folder path", group: "Files", defaults: [] },
   { id: "files.upload", label: "Upload files to current folder", group: "Files", defaults: [] },
   { id: "files.refresh", label: "Refresh file list", group: "Files", defaults: [] },
+  // SQL editor
+  { id: "sql.run", label: "Run statement at cursor (or the selection)", group: "SQL", defaults: ["Mod+Enter"], sqlOnly: true },
+  { id: "sql.runAll", label: "Run everything in the editor", group: "SQL", defaults: ["Mod+Shift+Enter"], sqlOnly: true },
+  { id: "sql.cancel", label: "Cancel the running query", group: "SQL", defaults: ["Mod+."], sqlOnly: true },
+  { id: "sql.toggleTree", label: "Show / hide the schema tree", group: "SQL", defaults: [], sqlOnly: true },
 ];
 
 export const ACTION_BY_ID = Object.fromEntries(ACTIONS.map((a) => [a.id, a])) as Record<ActionId, ActionDef>;

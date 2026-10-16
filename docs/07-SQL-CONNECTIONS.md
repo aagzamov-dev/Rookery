@@ -1,6 +1,6 @@
 # 07 — SQL connections (v0.7)
 
-Status: **designed, not started.** This is the build spec for the next milestone. Read [00-START-HERE.md](00-START-HERE.md) first: it has the project rules this feature must follow.
+Status: **0.7.0 built (the core); v0.7.1 shortcuts next.** What was built, and where it differs from the text below, is in §10. Read [00-START-HERE.md](00-START-HERE.md) first: it has the project rules this feature must follow.
 
 Goal: **see what's in a database and fix a problem quickly**, safely, including on production. Show databases, tables and columns, run SQL, read the results. It is a quick look-and-fix tool next to the terminal, **not** a full database IDE.
 
@@ -300,7 +300,38 @@ Every step: `cargo test -p rookery-core`, `cargo build -p rookery-tauri`, `npx t
 - **Keep it minimal:** see / run / fix. PROD safety comes first.
 - **Engines:** PostgreSQL + MySQL / MariaDB first.
 
-## 9. Open questions (ask the user before deciding)
-- Should database tabs also appear in the Dashboard? (Default: no.)
-- Allow-changes duration: 15 min default — OK?
-- Save the password from a Laravel `.env` automatically, or always ask? (Default: ask.)
+## 9. Open questions — answered (2026-10-16)
+- Database tabs in the Dashboard? **No.**
+- Allow-changes duration: **15 min.**
+- Password from a Laravel `.env`: **always ask** (v0.7.1).
+- Scope: **"simple core first"**: the §2.4 shortcuts and history move to v0.7.1.
+- Server view password: **Save makes a saved connection** (vault); unsaved views keep it in memory.
+- Idle close with a transaction open: **never** (only idle sessions without a transaction close).
+- Risky statement on PROD: **type the database name.**
+- Grid: `@tanstack/react-virtual`.
+
+---
+
+## 10. Built in 0.7.0
+
+### 10.1 Done (steps 1–8 of §7)
+- **Core** (`crates/rookery-core/src/sql/`): `manager.rs` (sessions, read-only, writes timer, transactions, idle close, cancel), `pg.rs` (tokio-postgres, simple query, notices), `mysql.rs` (mysql_async, text protocol, `KILL QUERY`), `lex.rs` (split / classify / read-only guard), `schema.rs` (catalog rows → tree), `tls.rs` (rustls + ring).
+- **Forwarder** `crates/rookery-core/src/forward.rs`, migration **v6** (`db_connections` only), backup / sync of connections + passwords.
+- **UI** `apps/desktop/src/features/sql/`: `SqlTab`, `SqlEditor`, `SchemaTree`, `ResultsGrid`, `ConnectionDialog`, `DbList`, `DbTab`, `ServerDbView`, `split.ts`, `classify.ts`, `txGuard.ts`, `url.ts`; store `stores/sql.ts`; demo scenes `sql`, `sql-server`, `sql-dialog`.
+- **Tests**: unit tests in Rust and vitest; `#[ignore]` integration tests against real servers (`ROOKERY_TEST_PG_URL`, `ROOKERY_TEST_MYSQL_URL`, `ROOKERY_TEST_MARIADB_URL`, and `ROOKERY_TEST_SSH` + `ROOKERY_TEST_SSH_DB` for "through a server"). Run on PostgreSQL 16, MySQL 8.4, MariaDB 11.4 and an OpenSSH server in Docker.
+
+### 10.2 Differences from the text above
+- **Commands**: `sql_open` server target also takes `address` and an optional `password`. `sql_set_read_only` is `sql_allow_writes(session_id, minutes)` (0 = read-only again; while writes are on it extends). Added `sql_use(session_id, database)` (both engines reconnect to switch database). `sql_schema(session_id, system)` loads the current database's schemas with columns and indexes in one call. `sql_history`, `sql_detect_local`, `sql_docker_inspect`, `sql_env_parse` are v0.7.1.
+- **Statements are split in Rust** (`lex.rs`) and run one by one; `SqlResult` has `stmt`, `error_pos` (char offset in the submitted text) and `finished` (last event of a run). `split.ts` is the same splitter for "statement at cursor" and risk checks.
+- **Read-only**: besides the server setting, Rust refuses statements that change data while read-only and anything that would switch read-only off (`SET … READ WRITE`, `default_transaction_read_only`, `transaction_read_only` / `tx_read_only`, `BEGIN / START TRANSACTION READ WRITE`, `RESET ALL`, `DISCARD`, `set_config(…)`).
+- **Auto-transaction** only on protected sessions (PROD / "Open read-only") while changes are allowed; ordinary connections autocommit. Postgres wraps each statement inside a transaction in a savepoint, so an error or a cut-off read doesn't lose the transaction.
+- **Timeout**: MariaDB uses `max_statement_time` (seconds); MySQL `max_execution_time`; plus a client-side watchdog that cancels after `timeout_s + 2`.
+- **Expiry with an open transaction**: further writes are refused at once; the server's read-only setting follows when the transaction ends.
+- **SQL tab session events**: `SqlSession.state` = connected | lost | closed (idle / tab closed); a run reconnects transparently.
+- **Editor text** is kept per tab under the local setting `ui.sql.drafts`; tab restore never stores a password.
+- **Lock**: SQL sessions always close on lock and on webview reload. The lock button / Ctrl+L ask about open transactions first; idle auto-lock cannot ask (the server rolls back).
+
+### 10.3 Left for v0.7.1
+- Docker **Open in SQL** (§2.4), Laravel **`.env` import** (§2.4, password always asked), **Find databases on this PC** (§2.4).
+- **History** (`sql_history` table as migration **v7**, last 200 per connection, clearable) and **Save as snippet** (a separate SQL snippet kind, so terminals don't run it).
+- Ideas seen while building: show column types for Postgres results (the simple protocol only gives names; numbers are right-aligned by looking at the values); a Commit / Rollback prompt when the window closes.

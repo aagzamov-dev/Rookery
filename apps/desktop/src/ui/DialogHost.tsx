@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useDialogs, type ConfirmRequest, type TextRequest, type VarsRequest } from "../stores/dialogs";
+import { useDialogs, type ChoiceRequest, type ConfirmRequest, type TextRequest, type VarsRequest } from "../stores/dialogs";
 import { fillCommand } from "../features/snippets/vars";
 import { Button, Field, Modal, TextInput } from "./primitives";
 
@@ -8,6 +8,7 @@ export function DialogHost() {
   if (!current) return null;
   if (current.kind === "confirm") return <Confirm key={current.id} req={current} />;
   if (current.kind === "text") return <TextAsk key={current.id} req={current} />;
+  if (current.kind === "choice") return <Choice key={current.id} req={current} />;
   return <Vars key={current.id} req={current} />;
 }
 
@@ -58,11 +59,15 @@ function TextAsk({ req }: { req: TextRequest }) {
 function Confirm({ req }: { req: ConfirmRequest }) {
   const done = useDialogs((s) => s.done);
   const okRef = useRef<HTMLButtonElement>(null);
+  const [typed, setTyped] = useState("");
+  const locked = req.typeToConfirm != null && typed !== req.typeToConfirm;
   const finish = (ok: boolean) => {
-    req.resolve(ok);
+    req.resolve(ok && !locked);
     done();
   };
-  useEffect(() => okRef.current?.focus(), []);
+  useEffect(() => {
+    if (req.typeToConfirm == null) okRef.current?.focus();
+  }, [req.typeToConfirm]);
   return (
     <Modal
       title={req.title}
@@ -73,7 +78,7 @@ function Confirm({ req }: { req: ConfirmRequest }) {
           <Button variant="ghost" onClick={() => finish(false)}>
             Cancel
           </Button>
-          <Button ref={okRef} variant={req.danger ? "danger" : "primary"} onClick={() => finish(true)}>
+          <Button ref={okRef} variant={req.danger ? "danger" : "primary"} disabled={locked} onClick={() => finish(true)}>
             {req.confirmLabel}
           </Button>
         </>
@@ -85,6 +90,47 @@ function Confirm({ req }: { req: ConfirmRequest }) {
           {req.preview}
         </pre>
       )}
+      {req.typeToConfirm != null && (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!locked) finish(true);
+          }}
+        >
+          <Field label={`Type ${req.typeToConfirm} to confirm`}>
+            <TextInput mono autoFocus value={typed} onChange={(e) => setTyped(e.target.value)} aria-label="Confirmation text" />
+          </Field>
+        </form>
+      )}
+    </Modal>
+  );
+}
+
+function Choice({ req }: { req: ChoiceRequest }) {
+  const done = useDialogs((s) => s.done);
+  const finish = (id: string | null) => {
+    req.resolve(id);
+    done();
+  };
+  return (
+    <Modal
+      title={req.title}
+      onClose={() => finish(null)}
+      width={520}
+      footer={
+        <>
+          <Button variant="ghost" onClick={() => finish(null)}>
+            Cancel
+          </Button>
+          {req.choices.map((c, i) => (
+            <Button key={c.id} autoFocus={i === 0} variant={c.variant ?? "outline"} onClick={() => finish(c.id)}>
+              {c.label}
+            </Button>
+          ))}
+        </>
+      }
+    >
+      {req.body && <p className="m-0 leading-relaxed whitespace-pre-line text-muted">{req.body}</p>}
     </Modal>
   );
 }

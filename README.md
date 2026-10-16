@@ -25,7 +25,7 @@
 
 Rookery is a desktop app for managing SSH servers: a lighter, cleaner alternative to MobaXterm or Termius.
 
-You add your servers once and group them (Production, Staging, Home lab, a client…). A click opens a server as a **tab**, and that tab holds everything about it: terminals, files, Docker containers with logs, systemd services, processes and log files.
+You add your servers once and group them (Production, Staging, Home lab, a client…). A click opens a server as a **tab**, and that tab holds everything about it: terminals, files, Docker containers with logs, its databases, systemd services, processes and log files.
 
 Everything stays on **your** computer: servers, logins, passwords and keys, snippets and shortcuts. Passwords and keys are encrypted in a vault you unlock with a 4-digit PIN. There is no account and no cloud service. When you want your laptop to match your PC, Rookery syncs through a folder **you** choose (Google Drive, OneDrive, Dropbox), still encrypted.
 
@@ -35,7 +35,8 @@ Everything stays on **your** computer: servers, logins, passwords and keys, snip
 |---|---|
 | 🔒 **Local and encrypted** | Vault: Argon2id + XChaCha20-Poly1305. The PIN unlocks it through the OS keychain. Secrets never reach the UI layer. |
 | 💤 **Nothing connects until you ask** | Opening the app or the dashboard makes no connection. A server connects when you open its tab, and views only collect data while they're on screen. Your servers aren't polled in the background. |
-| 🗂 **One tab per server** | Terminal, Files, Docker, Services, Processes, Logs, all in one place, and kept as you left them when you switch tabs. |
+| 🗂 **One tab per server** | Terminal, Files, Docker, Database, Services, Processes, Logs, all in one place, and kept as you left them when you switch tabs. |
+| 🛢 **SQL that's safe on production** | PostgreSQL, MySQL, MariaDB: browse tables, run SQL, read results. PROD is read-only on the server until you allow changes, and nothing is saved until you Commit. |
 | 🔁 **PC ↔ laptop sync without an account** | Each device writes its own encrypted file into your cloud folder. Newest edit wins, and deletions sync too. |
 | ⚡ **Small and fast** | Rust core plus a native webview. About a 4 MB installer, no Electron. |
 | ⌨️ **Keyboard first** | ~50 functions you can bind (MobaXterm / PuTTY, Windows Terminal and iTerm2 presets), a command palette, and snippets with aliases (`paserve` + Tab). |
@@ -62,6 +63,15 @@ An iTerm-style terminal (xterm.js + WebGL): themes (10 built in, plus iTerm `.it
 - **No polling:** the list updates from `docker events`.
 
 <img src="docs/screenshots/docker.png" alt="Docker view: compose project, live stats and a container's logs with errors highlighted" width="100%" />
+
+### Databases
+PostgreSQL, MySQL and MariaDB, for a quick look-and-fix next to the terminal (not a full database IDE).
+- **Where:** the **Database** view in a server tab (through its SSH session), or saved connections in the sidebar, each in its own tab: on this PC, direct with SSL, or through a server. Quick connect takes URLs like `postgres://user@host/db`.
+- **See it:** schema tree with tables, columns, keys and indexes; double-click a table for its first rows.
+- **Run it:** CodeMirror editor with completion of your tables and columns. Ctrl+Enter runs the statement at the cursor, and Cancel really stops it on the server. The results grid stays fast with many rows; copy or export CSV.
+- **Safe on PROD:** read-only enforced by the database server. **Allow changes** turns writes on for 15 minutes; every change waits in a transaction until you **Commit**. DELETE without WHERE, DROP and friends ask first, and on PROD you type the database name.
+
+<img src="docs/screenshots/sql.png" alt="Database tab: schema tree, SQL editor and a results grid, on a read-only PROD connection" width="100%" />
 
 ### Dashboard
 - **Every server at a glance:** CPU, RAM, disk, containers, "synced 2 min ago".
@@ -111,6 +121,7 @@ flowchart LR
       V["Vault<br/>Argon2id · XChaCha20"]
       DB[("SQLite<br/>servers, snippets, snapshots")]
       S["SSH sessions<br/>shared per server, leased"]
+      Q["SQL sessions<br/>Postgres · MySQL"]
       C["Collectors<br/>metrics · docker · logs"]
       SY["Dashboard sync"]
       B["Backup & device sync"]
@@ -118,11 +129,13 @@ flowchart LR
   end
   UI <--> T <--> Core
   S <-->|SSH| SRV[(Your servers)]
+  Q -->|direct, TLS or<br/>through SSH| DBS[(Your databases)]
   B <-->|encrypted file| F[["Your cloud folder<br/>Drive / OneDrive / Dropbox"]]
 ```
 
 - **One SSH connection per server**, shared by all its terminals, file transfers and collectors. It closes 30 s after the last user lets go, and reconnects automatically if the network drops.
 - **Collectors run only while you're looking:** the stats bar while the tab is active and the window focused, Docker stats while the Docker view is open, logs while the log panel is visible. Leaving a view stops them on the server too (the remote process is closed).
+- **Databases** connect only when you open a database tab or view. "Through a server" goes over that server's SSH session (a forward that only listens on your own PC), and idle database connections close after 10 minutes.
 - **Secrets stay in Rust:** the UI never receives a password or key. The vault key is only in memory, wiped on lock, and the PIN is wrapped by the OS keychain.
 - **Network traffic Rookery starts on its own:** none to your servers. The only automatic request is a once-a-day update check of a small file on GitHub, and you can turn it off.
 
@@ -139,22 +152,22 @@ npm test             # Rust + frontend tests
 npm run build        # installer in target/release/bundle
 ```
 
-- **Screenshots:** the images above are the real UI with made-up data. Run `npm --workspace apps/desktop run dev` and open `http://localhost:1420/demo.html?scene=dashboard` (scenes: `terminal`, `docker`, `backup`, `hosts`, `shortcuts`, `snippets`).
+- **Screenshots:** the images above are the real UI with made-up data. Run `npm --workspace apps/desktop run dev` and open `http://localhost:1420/demo.html?scene=dashboard` (scenes: `terminal`, `docker`, `sql`, `sql-server`, `backup`, `hosts`, `shortcuts`, `snippets`).
 - **Releasing:** push a tag `vX.Y.Z` and GitHub Actions builds Windows and macOS and publishes a signed release. See [06-AUTO-UPDATE.md](docs/06-AUTO-UPDATE.md) §4.
 
 ```
-crates/rookery-core    Rust core: vault, SQLite, SSH, SFTP, collectors, sync, backup, importers (no UI deps)
+crates/rookery-core    Rust core: vault, SQLite, SSH, SFTP, collectors, SQL connections, sync, backup, importers (no UI deps)
 crates/rookery-tauri   Desktop shell: Tauri commands, events, plugins
 apps/desktop           React + TypeScript UI (Vite, Tailwind, zustand, xterm.js)
 ```
 
 ## Project docs
 
-[Start here](docs/00-START-HERE.md) · [Architecture](docs/01-ARCHITECTURE.md) · [Roadmap](docs/02-ROADMAP.md) · [Desktop features](docs/03-DESKTOP-FEATURES.md) · [Data, sync & security](docs/04-DATA-SYNC-SECURITY.md) · [Mobile & tablet](docs/05-MOBILE-TABLET.md) · [Auto-update](docs/06-AUTO-UPDATE.md) · [SQL connections (next)](docs/07-SQL-CONNECTIONS.md) · [Changelog](docs/CHANGELOG.md)
+[Start here](docs/00-START-HERE.md) · [Architecture](docs/01-ARCHITECTURE.md) · [Roadmap](docs/02-ROADMAP.md) · [Desktop features](docs/03-DESKTOP-FEATURES.md) · [Data, sync & security](docs/04-DATA-SYNC-SECURITY.md) · [Mobile & tablet](docs/05-MOBILE-TABLET.md) · [Auto-update](docs/06-AUTO-UPDATE.md) · [SQL connections](docs/07-SQL-CONNECTIONS.md) · [Changelog](docs/CHANGELOG.md)
 
 ## Roadmap
 
-- **v0.7 — SQL connections:** browse databases, tables and columns, run SQL with production safety (read-only by default, Commit / Rollback), in a server tab or in database tabs of their own (local MySQL / PostgreSQL too). Spec: [docs/07-SQL-CONNECTIONS.md](docs/07-SQL-CONNECTIONS.md).
+- **v0.7.1 — SQL shortcuts:** "Open in SQL" from a Docker database container, import a connection from a Laravel `.env`, find the databases running on this PC, query history. Spec: [docs/07-SQL-CONNECTIONS.md](docs/07-SQL-CONNECTIONS.md) §10.
 - **Then:** tunnels (port forwarding with on/off switches), jump hosts, SSH agent login, SSH key generator.
 - **v1.0:** Android (then iOS), with the same core and a phone layout for checking servers and quick actions.
 

@@ -4,10 +4,23 @@ import type { Container } from "./Container";
 import type { ContainerStats } from "./ContainerStats";
 import type { MergeSummary } from "./MergeSummary";
 import type { MetricsSample } from "./MetricsSample";
+import type { ResultColumn } from "./ResultColumn";
 import type { SessionInfo } from "./SessionInfo";
 import type { Snapshot } from "./Snapshot";
 import type { SyncState } from "./SyncState";
 import type { SyncSummary } from "./SyncSummary";
 import type { Transfer } from "./Transfer";
 
-export type CoreEvent = { "type": "session", info: SessionInfo, } | { "type": "term_data", term_id: string, data: string, } | { "type": "term_exit", term_id: string, code: number | null, reason: string | null, } | { "type": "metrics", host_id: string, sample: MetricsSample, } | { "type": "collector_error", host_id: string, source: string, message: string, } | { "type": "docker_list", host_id: string, containers: Array<Container>, error: string | null, } | { "type": "docker_stats", host_id: string, stats: Array<ContainerStats>, } | { "type": "log_lines", host_id: string, stream: string, lines: Array<string>, } | { "type": "log_ended", host_id: string, stream: string, reason: string, } | { "type": "transfer", transfer: Transfer, } | { "type": "edit_sync", host_id: string, remote: string, state: string, message: string | null, } | { "type": "sync_progress", job_id: string, host_id: string, state: SyncState, snapshot: Snapshot | null, } | { "type": "sync_done", job_id: string, auto: boolean, summary: SyncSummary, } | { "type": "backup_status", status: BackupStatus, } | { "type": "data_changed", summary: MergeSummary, } | { "type": "vault_locked" } | { "type": "vault_unlocked" };
+export type CoreEvent = { "type": "session", info: SessionInfo, } | { "type": "term_data", term_id: string, data: string, } | { "type": "term_exit", term_id: string, code: number | null, reason: string | null, } | { "type": "metrics", host_id: string, sample: MetricsSample, } | { "type": "collector_error", host_id: string, source: string, message: string, } | { "type": "docker_list", host_id: string, containers: Array<Container>, error: string | null, } | { "type": "docker_stats", host_id: string, stats: Array<ContainerStats>, } | { "type": "log_lines", host_id: string, stream: string, lines: Array<string>, } | { "type": "log_ended", host_id: string, stream: string, reason: string, } | { "type": "transfer", transfer: Transfer, } | { "type": "edit_sync", host_id: string, remote: string, state: string, message: string | null, } | { "type": "sync_progress", job_id: string, host_id: string, state: SyncState, snapshot: Snapshot | null, } | { "type": "sync_done", job_id: string, auto: boolean, summary: SyncSummary, } | { "type": "backup_status", status: BackupStatus, } | { "type": "data_changed", summary: MergeSummary, } | { "type": "sql_result", query_id: string, index: number, stmt: number, columns: Array<ResultColumn> | null, rows: Array<Array<string | null>>, done: boolean, affected: number | null, elapsed_ms: number | null, truncated: boolean, error: string | null, error_pos: number | null, notice: string | null, finished: boolean, } | { "type": "sql_session", session_id: string, state: string, tx_open: boolean, 
+/**
+ * Rows changed in the open transaction.
+ */
+tx_rows: number, read_only: boolean, 
+/**
+ * Opened read-only (PROD / "Open read-only"); writes need "Allow changes".
+ */
+protected: boolean, 
+/**
+ * Writes turn off again at this time (ms).
+ */
+writes_until: number | null, database: string | null, message: string | null, } | { "type": "vault_locked" } | { "type": "vault_unlocked" };

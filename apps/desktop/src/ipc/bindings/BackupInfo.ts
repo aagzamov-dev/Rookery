@@ -3,4 +3,4 @@
 /**
  * Shown before importing a backup file.
  */
-export type BackupInfo = { device_name: string, created_at: number, hosts: number, groups: number, identities: number, snippets: number, };
+export type BackupInfo = { device_name: string, created_at: number, hosts: number, groups: number, identities: number, snippets: number, db_connections: number, };

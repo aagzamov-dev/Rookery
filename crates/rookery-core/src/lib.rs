@@ -15,12 +15,14 @@ pub mod collectors;
 pub mod db;
 pub mod error;
 pub mod events;
+pub mod forward;
 pub mod importers;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod local;
 pub mod model;
 pub mod sessionlog;
 pub mod sftp;
+pub mod sql;
 pub mod ssh;
 pub mod subscriptions;
 pub mod sync;
@@ -51,6 +53,7 @@ pub struct Core {
     pub sftp: Arc<sftp::Sftp>,
     pub sync: Arc<sync::SyncEngine>,
     pub backup: Arc<backup::Backup>,
+    pub sql: Arc<sql::SqlManager>,
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     pub local: Arc<local::LocalTerminals>,
     pub events: broadcast::Sender<CoreEvent>,
@@ -82,6 +85,7 @@ impl Core {
         let sftp = Arc::new(sftp::Sftp::new(connections.clone(), events.clone(), data_dir.join("cache")));
         let sync = Arc::new(sync::SyncEngine::new(db.clone(), vault.clone(), connections.clone(), events.clone()));
         let backup = Arc::new(backup::Backup::new(db.clone(), vault.clone(), events.clone()));
+        let sql = Arc::new(sql::SqlManager::new(db.clone(), vault.clone(), connections.clone(), events.clone()));
 
         Ok(Self {
             data_dir,
@@ -93,6 +97,7 @@ impl Core {
             sftp,
             sync,
             backup,
+            sql,
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             local: Arc::new(local::LocalTerminals::new(events.clone())),
             events,
@@ -111,9 +116,11 @@ impl Core {
     }
 
     /// Lock the vault, stop every subscription and (optionally) close sessions.
+    /// SQL sessions always close (an open transaction rolls back).
     pub async fn lock(&self, close_sessions: bool) {
         self.sync.cancel_all();
         self.backup.lock();
+        self.sql.close_all().await;
         self.subscriptions.stop_all().await;
         if close_sessions {
             self.terminals.close_all().await;

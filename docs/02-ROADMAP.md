@@ -124,17 +124,25 @@ Done when: 20 hosts in the list cause **zero** connections; opening/closing/swit
 
 ---
 
-## v0.7 — SQL connections (next)
+## v0.7 — SQL connections — **built (0.7.0, the core)**
 
 | P | Feature | Spec |
 |---|---|---|
-| P0 | Engine: PostgreSQL + MySQL/MariaDB (streaming results, cancel, timeout, read-only, transactions) | [Q] §4 |
-| P0 | Database view inside a server tab (through the server's SSH session) | [Q] §2.1, §4.1 |
-| P0 | Database tabs: saved connections in the sidebar, direct / through a server / SSL, quick-connect URLs | [Q] §2, §3 |
-| P0 | Schema tree, SQL editor (CodeMirror, completion), results grid, CSV, history | [Q] §2.2, §5 |
-| P0 | PROD safety: read-only by default, Allow changes (15 min), Commit / Rollback, risky-statement confirm, row cap | [Q] §6 |
-| P1 | Docker "Open in SQL", Laravel .env import, Find databases on this PC | [Q] §2.4 |
-| P1 | Connections in backup & device sync (passwords encrypted) | [Q] §3.2 |
+| ✅ P0 | Engine: PostgreSQL + MySQL/MariaDB (streaming results, cancel, timeout, read-only, transactions) | [Q] §4 |
+| ✅ P0 | Database view inside a server tab (through the server's SSH session, loopback forward) | [Q] §2.1, §4.1 |
+| ✅ P0 | Database tabs: saved connections in the sidebar, direct / through a server / SSL, quick-connect URLs | [Q] §2, §3 |
+| ✅ P0 | Schema tree, SQL editor (CodeMirror, completion), results grid, Messages, CSV | [Q] §2.2, §5 |
+| ✅ P0 | PROD safety: read-only by default, Allow changes (15 min), Commit / Rollback, risky-statement confirm (typed name on PROD), row cap | [Q] §6 |
+| ✅ P1 | Connections in backup & device sync (passwords encrypted) | [Q] §3.2 |
+
+## v0.7.1 — SQL shortcuts (next)
+
+| P | Feature | Spec |
+|---|---|---|
+| P1 | Docker "Open in SQL" for postgres / mysql / mariadb containers | [Q] §2.4 |
+| P1 | Import a connection from a Laravel `.env` (local file or via SFTP) | [Q] §2.4 |
+| P1 | Find databases on this PC (port probe + Docker Desktop) | [Q] §2.4 |
+| P1 | Query history per connection (local only, last 200) and "Save as snippet" | [Q] §3.1 |
 | P2 | Edit cells in the grid (v0.8) | [Q] §1 |
 
 ---

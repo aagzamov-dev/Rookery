@@ -12,7 +12,19 @@ export interface ConfirmRequest {
   preview?: string;
   confirmLabel: string;
   danger?: boolean;
+  /** The confirm button stays off until this exact text is typed (PROD database name). */
+  typeToConfirm?: string;
   resolve: (ok: boolean) => void;
+}
+
+export interface ChoiceRequest {
+  id: number;
+  kind: "choice";
+  title: string;
+  body?: string;
+  /** Buttons, left to right; Cancel is always added. */
+  choices: { id: string; label: string; variant?: "primary" | "danger" | "outline" }[];
+  resolve: (choice: string | null) => void;
 }
 
 export interface VarsRequest {
@@ -38,7 +50,7 @@ export interface TextRequest {
   resolve: (value: string | null) => void;
 }
 
-type Request = ConfirmRequest | VarsRequest | TextRequest;
+type Request = ConfirmRequest | VarsRequest | TextRequest | ChoiceRequest;
 
 interface DialogsState {
   current: Request | null;
@@ -67,4 +79,9 @@ export function askText(opts: Omit<TextRequest, "id" | "kind" | "resolve">): Pro
 
 export function askVars(opts: Omit<VarsRequest, "id" | "kind" | "resolve">): Promise<Record<string, string> | null> {
   return new Promise((resolve) => useDialogs.getState().push({ id: nextId++, kind: "vars", ...opts, resolve }));
+}
+
+/** Several answers (e.g. Commit / Rollback); resolves to the chosen id, or null for Cancel. */
+export function askChoice(opts: Omit<ChoiceRequest, "id" | "kind" | "resolve">): Promise<string | null> {
+  return new Promise((resolve) => useDialogs.getState().push({ id: nextId++, kind: "choice", ...opts, resolve }));
 }

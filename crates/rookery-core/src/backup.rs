@@ -74,6 +74,15 @@ pub struct IdentityRecord {
     pub secrets: BTreeMap<String, String>,
 }
 
+/// A database connection and its password (vault `dbconn:<id>:password`), if one is saved.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DbConnRecord {
+    #[serde(flatten)]
+    pub conn: DbConnection,
+    #[serde(default)]
+    pub password: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Payload {
     pub format: String,
@@ -92,6 +101,9 @@ pub struct Payload {
     pub settings: Vec<SettingRecord>,
     #[serde(default)]
     pub tombstones: Vec<Tombstone>,
+    /// SQL connections (v0.7). Older files have none; older apps ignore the field.
+    #[serde(default)]
+    pub db_connections: Vec<DbConnRecord>,
 }
 
 /// Everything that syncs, secrets included (they only ever leave the process encrypted).
@@ -104,9 +116,25 @@ pub fn collect(db: &Db, vault: &Vault) -> Result<Payload> {
             secrets.entry(ident.to_string()).or_default().insert(kind.to_string(), value.to_string());
         }
     }
+    let mut db_passwords: HashMap<String, String> = HashMap::new();
+    for (id, value) in vault.secrets_with_prefix("dbconn:")? {
+        // dbconn:<uuid>:password
+        if let Some(conn) = id.strip_prefix("dbconn:").and_then(|r| r.strip_suffix(":password")) {
+            db_passwords.insert(conn.to_string(), value.to_string());
+        }
+    }
     Ok(Payload {
         format: FORMAT.into(),
         version: 1,
+        db_connections: db
+            .list_db_connections()?
+            .into_iter()
+            .map(|mut conn| {
+                conn.has_password = false;
+                let password = db_passwords.remove(&conn.id);
+                DbConnRecord { conn, password }
+            })
+            .collect(),
         groups: db.list_groups()?,
         hosts: db.list_hosts()?,
         identities: db
@@ -128,6 +156,9 @@ pub fn collect(db: &Db, vault: &Vault) -> Result<Payload> {
 pub enum SecretOp {
     Replace { identity_id: String, secrets: BTreeMap<String, String> },
     Delete { identity_id: String },
+    /// A database connection's password travels with it (None = no password saved there).
+    DbPassword { conn_id: String, password: Option<String> },
+    DbDelete { conn_id: String },
 }
 
 /// Merge `remote` into the database: newest version wins per item, tombstones delete.
@@ -229,6 +260,29 @@ pub fn merge(db: &Db, remote: &Payload) -> Result<(MergeSummary, Vec<SecretOp>)>
         }
     }
 
+    // SQL connections, after hosts: a connection through a server needs that server here.
+    let all_hosts: HashSet<String> = db.list_hosts()?.into_iter().map(|h| h.id).collect();
+    let local_conns: HashMap<String, i64> = db.list_db_connections()?.into_iter().map(|c| (c.id, c.updated_at)).collect();
+    for r in &remote.db_connections {
+        let c = &r.conn;
+        if let Some(new) = decide("db_connection", &c.id, c.updated_at, local_conns.get(&c.id).copied()) {
+            let mut c = c.clone();
+            if c.host_id.as_ref().is_some_and(|h| !all_hosts.contains(h)) {
+                c.host_id = None;
+                if c.via == DbVia::Ssh {
+                    sum.notes.push(format!("Database \"{}\": its server is not on this device; edit it and pick one", c.name));
+                }
+            }
+            if c.group_id.as_ref().is_some_and(|g| !all_groups.contains(g)) {
+                c.group_id = None;
+            }
+            db.put_db_connection(&c)?;
+            db.clear_tombstone("db_connection", &c.id)?;
+            ops.push(SecretOp::DbPassword { conn_id: c.id.clone(), password: r.password.clone() });
+            count(&mut sum, new);
+        }
+    }
+
     // Snippets (an alias can exist only once).
     let local_snips: HashMap<String, i64> = db.list_snippets()?.into_iter().map(|s| (s.id, s.updated_at)).collect();
     for s in &remote.snippets {
@@ -272,6 +326,7 @@ pub fn merge(db: &Db, remote: &Payload) -> Result<(MergeSummary, Vec<SecretOp>)>
         .chain(db.list_identities()?.into_iter().map(|i| (("identity", i.id), i.updated_at)))
         .chain(db.list_snippets()?.into_iter().map(|s| (("snippet", s.id), s.updated_at)))
         .chain(db.list_known_hosts()?.into_iter().map(|k| (("known_host", k.host_id), k.first_seen)))
+        .chain(db.list_db_connections()?.into_iter().map(|c| (("db_connection", c.id), c.updated_at)))
         .collect();
     for t in &remote.tombstones {
         let kind: &str = match t.kind.as_str() {
@@ -280,6 +335,7 @@ pub fn merge(db: &Db, remote: &Payload) -> Result<(MergeSummary, Vec<SecretOp>)>
             "identity" => "identity",
             "snippet" => "snippet",
             "known_host" => "known_host",
+            "db_connection" => "db_connection",
             _ => continue,
         };
         match versions.get(&(kind, t.id.clone())) {
@@ -288,6 +344,9 @@ pub fn merge(db: &Db, remote: &Payload) -> Result<(MergeSummary, Vec<SecretOp>)>
                 db.apply_delete(t)?;
                 if kind == "identity" {
                     ops.push(SecretOp::Delete { identity_id: t.id.clone() });
+                }
+                if kind == "db_connection" {
+                    ops.push(SecretOp::DbDelete { conn_id: t.id.clone() });
                 }
                 if kind != "known_host" {
                     sum.deleted += 1;
@@ -310,6 +369,8 @@ pub fn apply_secret_ops(vault: &mut Vault, ops: Vec<SecretOp>) -> Result<()> {
                 vault.replace_prefix(&prefix, &entries)?;
             }
             SecretOp::Delete { identity_id } => vault.delete_prefix(&format!("identity:{identity_id}:"))?,
+            SecretOp::DbPassword { conn_id, password: Some(p) } => vault.set(&db_secret_id(&conn_id), &p)?,
+            SecretOp::DbPassword { conn_id, password: None } | SecretOp::DbDelete { conn_id } => vault.delete(&db_secret_id(&conn_id))?,
         }
     }
     Ok(())
@@ -622,6 +683,7 @@ impl Backup {
             groups: p.groups.len() as u32,
             identities: p.identities.len() as u32,
             snippets: p.snippets.len() as u32,
+            db_connections: p.db_connections.len() as u32,
         })
     }
 
@@ -632,7 +694,9 @@ impl Backup {
         }
         if mode == ImportMode::Replace {
             self.db.wipe_synced()?;
-            self.vault.lock().delete_prefix("identity:")?;
+            let mut v = self.vault.lock();
+            v.delete_prefix("identity:")?;
+            v.delete_prefix("dbconn:")?;
         }
         let sum = self.apply(&payload)?;
         self.state.lock().pushed = None; // our sync file should reflect the import
@@ -803,6 +867,7 @@ mod tests {
             known_hosts: db.list_known_hosts().unwrap(),
             settings: db.list_synced_settings().unwrap(),
             tombstones: db.list_tombstones().unwrap(),
+            db_connections: db.list_db_connections().unwrap().into_iter().map(|conn| DbConnRecord { conn, password: None }).collect(),
         }
     }
 
@@ -959,6 +1024,30 @@ mod tests {
         let names: Vec<String> = pc.db.list_hosts().unwrap().into_iter().map(|h| h.name).collect();
         assert!(!names.contains(&"db".to_string()), "{names:?}");
 
+        // a database connection and its password travel too…
+        let conn = pc.db.save_db_connection(crate::db::tests::db_conn("shop prod")).unwrap();
+        pc.vault.lock().set(&conn.secret_id(), "db-secret").unwrap();
+        pc.backup.sync_now(false).await.unwrap();
+        laptop.backup.sync_now(false).await.unwrap();
+        assert_eq!(laptop.db.get_db_connection(&conn.id).unwrap().name, "shop prod");
+        assert_eq!(laptop.vault.lock().get(&conn.secret_id()).unwrap().unwrap().as_str(), "db-secret");
+        // …a new password on one device reaches the other…
+        laptop.vault.lock().set(&conn.secret_id(), "rotated").unwrap();
+        let mut renamed = laptop.db.get_db_connection(&conn.id).unwrap();
+        renamed.name = "shop production".into();
+        laptop.db.save_db_connection(renamed).unwrap();
+        laptop.backup.sync_now(false).await.unwrap();
+        pc.backup.sync_now(false).await.unwrap();
+        assert_eq!(pc.db.get_db_connection(&conn.id).unwrap().name, "shop production");
+        assert_eq!(pc.vault.lock().get(&conn.secret_id()).unwrap().unwrap().as_str(), "rotated");
+        // …and deleting it removes it (and its password) on the other device
+        pc.db.delete_db_connection(&conn.id).unwrap();
+        pc.vault.lock().delete(&conn.secret_id()).unwrap();
+        pc.backup.sync_now(false).await.unwrap();
+        laptop.backup.sync_now(false).await.unwrap();
+        assert!(laptop.db.get_db_connection(&conn.id).is_err());
+        assert!(laptop.vault.lock().get(&conn.secret_id()).unwrap().is_none());
+
         // one file per device, nothing else left behind
         let mut files: Vec<String> = std::fs::read_dir(&shared)
             .unwrap()
@@ -976,6 +1065,32 @@ mod tests {
         let st = other.backup.sync_now(false).await.unwrap();
         assert!(st.peers.iter().all(|p| p.error.as_deref() == Some("uses a different sync password")));
         assert!(other.db.list_hosts().unwrap().is_empty());
+    }
+
+    #[test]
+    fn db_connection_whose_server_is_missing_keeps_coming_but_without_server() {
+        let laptop = Db::open_in_memory().unwrap();
+        let mut c = crate::db::tests::db_conn("via ssh");
+        c.id = "c1".into();
+        c.via = DbVia::Ssh;
+        c.host_id = Some("not-here".into());
+        c.group_id = Some("no-such-group".into());
+        c.updated_at = 10;
+        let p = Payload { db_connections: vec![DbConnRecord { conn: c, password: Some("pw".into()) }], ..payload(&laptop) };
+        let (sum, ops) = merge(&laptop, &p).unwrap();
+        assert_eq!(sum.added, 1);
+        assert!(sum.notes.iter().any(|n| n.contains("via ssh") && n.contains("server")), "{:?}", sum.notes);
+        let got = laptop.get_db_connection("c1").unwrap();
+        assert_eq!((got.via, got.host_id, got.group_id), (DbVia::Ssh, None, None));
+        assert!(ops.iter().any(|o| matches!(o, SecretOp::DbPassword { conn_id, password: Some(_) } if conn_id == "c1")));
+        // an older copy does not overwrite a newer edit
+        let mut newer = laptop.get_db_connection("c1").unwrap();
+        newer.name = "renamed here".into();
+        newer.updated_at = 20;
+        laptop.put_db_connection(&newer).unwrap();
+        let (sum, _) = merge(&laptop, &p).unwrap();
+        assert_eq!(sum.updated, 0);
+        assert_eq!(laptop.get_db_connection("c1").unwrap().name, "renamed here");
     }
 
     #[test]

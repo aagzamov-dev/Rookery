@@ -1,6 +1,6 @@
 # 00 — Start here (for every new chat / contributor)
 
-Read this file fully before changing anything. Then read the spec for the feature you're working on (the current one is [07-SQL-CONNECTIONS.md](07-SQL-CONNECTIONS.md)).
+Read this file fully before changing anything. Then read the spec for the feature you're working on (the current one is [07-SQL-CONNECTIONS.md](07-SQL-CONNECTIONS.md), §10 lists what is built and what is left).
 
 ## 1. What Rookery is
 - **What:** a local-first desktop SSH server manager for Windows and macOS (Android later), meant as a lighter MobaXterm / Termius.
@@ -8,13 +8,13 @@ Read this file fully before changing anything. Then read the spec for the featur
 - **Pages:** Dashboard, Snippets, Hosts & identities, Shortcuts, Backup & sync, Settings.
 - **Storage:** everything lives on the user's computer. Secrets are in an encrypted vault, unlocked with a 4-digit PIN. There is no account.
 - **Repository:** https://github.com/aagzamov-dev/Rookery (public, MIT). Default branch `main`.
-- **Status:** v0.1 – v0.6 built (see [02-ROADMAP.md](02-ROADMAP.md), [CHANGELOG.md](CHANGELOG.md)). Next: **v0.7 SQL connections**.
+- **Status:** v0.1 – v0.7 built (see [02-ROADMAP.md](02-ROADMAP.md), [CHANGELOG.md](CHANGELOG.md)). v0.7 = the SQL connections core. Next: **v0.7.1 SQL shortcuts** (Docker "Open in SQL", Laravel `.env`, find local databases, query history).
 
 ## 2. Repository layout
 ```
 crates/rookery-core     Rust core, NO Tauri dependency (reused by mobile later)
   src/lib.rs            Core struct: db, vault, connections, terminals, subscriptions, sftp, sync, backup, local
-  src/db.rs             SQLite (rusqlite + rusqlite_migration). MIGRATIONS is append-only (currently v1–v5)
+  src/db.rs             SQLite (rusqlite + rusqlite_migration). MIGRATIONS is append-only (currently v1–v6)
   src/vault.rs          Argon2id + XChaCha20-Poly1305 vault; PIN wrapped in OS keychain (service "app.rookery")
   src/ssh.rs            ConnectionManager: one russh session per host, leases, 30 s grace close, auto-reconnect
   src/terminal.rs       PTY channels; src/sessionlog.rs session log files
@@ -24,6 +24,8 @@ crates/rookery-core     Rust core, NO Tauri dependency (reused by mobile later)
   src/sync.rs           Dashboard sync engine (snapshots, scheduler)
   src/backup.rs         encrypted backup files + device sync folder + merge (newest wins, tombstones)
   src/importers.rs      MobaXterm / PuTTY / ~/.ssh/config
+  src/sql/              SQL connections: manager (sessions, read-only, tx), pg.rs, mysql.rs, lex.rs (split / classify / guard)
+  src/forward.rs        loopback port forward through an SSH session (SQL "through a server", later Tunnels)
   src/model.rs          shared types, exported to TS with ts-rs
 crates/rookery-tauri    Tauri 2 shell: src/commands.rs (all commands), src/lib.rs (plugins, event forwarder),
                         tauri.conf.json, capabilities/default.json
@@ -118,4 +120,4 @@ docs/                   all documentation (this file, specs, CHANGELOG, screensh
 - **Copy:** text is plain and calm, says what happens, never blames.
 
 ## 7. Kickoff prompt (paste into a new chat)
-> You are continuing development of **Rookery** (repo root = current folder). First read `docs/00-START-HERE.md` completely and follow its rules, then read `docs/07-SQL-CONNECTIONS.md` (the spec for v0.7 SQL connections) and skim `docs/01-ARCHITECTURE.md`, `docs/04-DATA-SYNC-SECURITY.md` §5 and the code it points to (`crates/rookery-core/src/{lib,db,ssh,backup}.rs`, `crates/rookery-tauri/src/commands.rs`, `apps/desktop/src/stores/tabs.ts`, `apps/desktop/src/features/server-tab/ServerTab.tsx`). Then implement v0.7 following the build order in §7 of the spec, one step at a time. After each step run all checks from 00-START-HERE §3 and tell me what passed. Before step 1, list any questions from §9 of the spec you need me to answer, plus anything in the spec that doesn't match the code. Don't commit, push or release unless I ask.
+> You are continuing development of **Rookery** (repo root = current folder). First read `docs/00-START-HERE.md` completely and follow its rules, then read `docs/07-SQL-CONNECTIONS.md` (the SQL spec; §10 says what 0.7.0 built and what v0.7.1 adds) and skim `docs/01-ARCHITECTURE.md`, `docs/04-DATA-SYNC-SECURITY.md` §5 and the code it points to (`crates/rookery-core/src/{lib,db,ssh,backup}.rs`, `crates/rookery-core/src/sql/`, `crates/rookery-tauri/src/commands.rs`, `apps/desktop/src/stores/{tabs,sql}.ts`, `apps/desktop/src/features/sql/`). Then implement v0.7.1 (spec §10.3), one step at a time. After each step run all checks from 00-START-HERE §3 and tell me what passed. Before step 1, list any questions from §9 of the spec you need me to answer, plus anything in the spec that doesn't match the code. Don't commit, push or release unless I ask.

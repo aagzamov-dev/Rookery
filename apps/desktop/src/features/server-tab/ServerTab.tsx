@@ -8,6 +8,7 @@ import { DockerView } from "../docker/DockerView";
 import { ServicesView } from "../services/ServicesView";
 import { LogsView } from "../logs/LogsView";
 import { ProcessesView } from "../processes/ProcessesView";
+import { ServerDbView } from "../sql/ServerDbView";
 import { useTermUi } from "../../stores/termui";
 import { api, asCoreError } from "../../ipc/api";
 import type { Host } from "../../ipc/bindings/Host";
@@ -28,6 +29,7 @@ const VIEWS: { id: View; label: string }[] = [
   { id: "terminal", label: "Terminal" },
   { id: "files", label: "Files" },
   { id: "docker", label: "Docker" },
+  { id: "database", label: "Database" },
   { id: "services", label: "Services" },
   { id: "processes", label: "Processes" },
   { id: "logs", label: "Logs" },
@@ -83,7 +85,7 @@ export function ServerTab({ hostId, active, onEditHost }: Props) {
         {views.opened.includes("terminal") && everConnected && <TerminalView hostId={hostId} visible={show("terminal")} />}
         {views.opened.includes("terminal") && !everConnected && show("terminal") && <Waiting hostId={hostId} />}
         {views.opened.includes("overview") && show("overview") && <OverviewView hostId={hostId} />}
-        {(["files", "docker", "services", "processes", "logs"] as const).map(
+        {(["files", "docker", "database", "services", "processes", "logs"] as const).map(
           (v) =>
             views.opened.includes(v) &&
             !everConnected &&
@@ -97,6 +99,11 @@ export function ServerTab({ hostId, active, onEditHost }: Props) {
         {everConnected && views.opened.includes("docker") && (
           <Keep show={show("docker")}>
             <DockerView hostId={hostId} />
+          </Keep>
+        )}
+        {everConnected && views.opened.includes("database") && (
+          <Keep show={show("database")}>
+            <ServerDbView hostId={hostId} />
           </Keep>
         )}
         {everConnected && views.opened.includes("services") && (

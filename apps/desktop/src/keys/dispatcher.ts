@@ -1,8 +1,9 @@
 // One keydown listener (capture phase) for every shortcut in the app.
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { activeServerHostId, closeTab, cycleTab } from "../app/tabActions";
+import { activeServerHostId, closeTab, lockApp, cycleTab } from "../app/tabActions";
 import { useLocalShells } from "../features/local/LocalTab";
 import { terminalRegistry } from "../features/server-tab/terminal/registry";
+import { sqlRegistry } from "../features/sql/registry";
 import { findAlias, resolveCommand, runSnippet } from "../features/snippets/run";
 import { copyText } from "../ipc/clipboard";
 import { useFiles } from "../stores/files";
@@ -44,6 +45,7 @@ const VIEW_OF: Partial<Record<ActionId, View>> = {
   "view.services": "services",
   "view.processes": "processes",
   "view.logs": "logs",
+  "view.database": "database",
 };
 
 /** The terminal a terminal-action applies to: the focused one, else the active tab's. */
@@ -60,6 +62,16 @@ export function runAction(id: ActionId, termKey: string | null) {
   const tabs = useTabs.getState();
   const hostId = activeServerHostId();
   const term = activeTerminalKey(termKey);
+  if (id.startsWith("sql.")) {
+    const key = sqlRegistry.activeKey();
+    const h = key ? sqlRegistry.get(key) : undefined;
+    if (!h) return;
+    if (id === "sql.run") h.run("current");
+    else if (id === "sql.runAll") h.run("all");
+    else if (id === "sql.cancel") h.cancel();
+    else if (id === "sql.toggleTree") h.toggleTree();
+    return;
+  }
   const view = VIEW_OF[id];
   if (view) {
     if (hostId) tabs.setView(hostId, view);
@@ -77,7 +89,7 @@ export function runAction(id: ActionId, termKey: string | null) {
       useUi.getState().setPaletteOpen(!useUi.getState().paletteOpen);
       break;
     case "app.lock":
-      void useVault.getState().lock();
+      void lockApp();
       break;
     case "hostList.toggle":
       useUi.getState().toggleHostList();
@@ -134,6 +146,7 @@ export function runAction(id: ActionId, termKey: string | null) {
       if (t?.kind === "server") tabs.openServer(t.hostId);
       else if (t?.kind === "page") tabs.openPage(t.page);
       else if (t?.kind === "local") tabs.openLocal(t.shellId, t.title);
+      else if (t?.kind === "db") tabs.openDb(t.target, t.title, true);
       break;
     }
     case "tab.moveLeft":
@@ -345,6 +358,7 @@ export function installKeyDispatcher(): () => void {
     const action = actionForChord(chord, keys.bindings);
     if (action) {
       if (ACTION_BY_ID[action].terminalOnly && !termKey) return; // text fields keep native copy/paste
+      if (ACTION_BY_ID[action].sqlOnly && !sqlRegistry.activeKey()) return;
       stop(e);
       runAction(action, termKey);
       return;

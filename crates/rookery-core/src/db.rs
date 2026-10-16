@@ -123,6 +123,30 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (kind, id)
     );
     "#,
+    // v6: SQL connections (docs/07 §3.1). Passwords live in the vault (`dbconn:<id>:password`).
+    r#"
+    CREATE TABLE db_connections (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        engine TEXT NOT NULL,
+        via TEXT NOT NULL DEFAULT 'direct',
+        host_id TEXT REFERENCES hosts(id) ON DELETE SET NULL,
+        address TEXT NOT NULL,
+        port INTEGER NOT NULL,
+        username TEXT NOT NULL DEFAULT '',
+        database TEXT,
+        ssl_mode TEXT NOT NULL DEFAULT 'prefer',
+        ca_path TEXT,
+        env_label TEXT NOT NULL DEFAULT 'none',
+        group_id TEXT REFERENCES groups(id) ON DELETE SET NULL,
+        read_only INTEGER NOT NULL DEFAULT 0,
+        row_limit INTEGER NOT NULL DEFAULT 500,
+        timeout_s INTEGER NOT NULL DEFAULT 30,
+        sort INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+    );
+    "#,
 ];
 
 pub struct Db {
@@ -334,6 +358,91 @@ impl Db {
 
     pub fn delete_identity(&self, id: &str) -> Result<()> {
         self.delete_tracked("identities", "id", "identity", id)
+    }
+
+    // -------------------------------------------------------- db connections
+
+    pub fn list_db_connections(&self) -> Result<Vec<DbConnection>> {
+        let c = self.conn.lock();
+        let mut st = c.prepare(&format!("{DBCONN_SELECT} ORDER BY sort, name"))?;
+        let rows = st.query_map([], row_db_connection)?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    pub fn get_db_connection(&self, id: &str) -> Result<DbConnection> {
+        let c = self.conn.lock();
+        c.query_row(&format!("{DBCONN_SELECT} WHERE id = ?1"), [id], row_db_connection)
+            .optional()?
+            .ok_or_else(|| Error::NotFound(format!("database connection {id}")))
+    }
+
+    pub fn save_db_connection(&self, mut d: DbConnection) -> Result<DbConnection> {
+        d.name = d.name.trim().to_string();
+        d.address = d.address.trim().to_string();
+        d.database = d.database.map(|x| x.trim().to_string()).filter(|x| !x.is_empty());
+        d.ca_path = d.ca_path.map(|x| x.trim().to_string()).filter(|x| !x.is_empty());
+        if d.name.is_empty() || d.address.is_empty() || d.port == 0 {
+            return Err(Error::Other("name, address and port are required".into()));
+        }
+        if d.via == DbVia::Ssh && d.host_id.is_none() {
+            return Err(Error::Other("pick the server to connect through".into()));
+        }
+        d.row_limit = d.row_limit.clamp(1, 100_000);
+        d.timeout_s = d.timeout_s.clamp(1, 24 * 3600);
+        let now = now_ms();
+        if d.id.is_empty() {
+            d.id = new_id();
+            d.created_at = now;
+        }
+        if d.created_at == 0 {
+            d.created_at = now;
+        }
+        d.updated_at = now;
+        self.put_db_connection(&d)?;
+        Ok(d)
+    }
+
+    /// Write a connection as is, keeping its timestamps (device sync / backup import).
+    pub fn put_db_connection(&self, d: &DbConnection) -> Result<()> {
+        self.conn.lock().execute(
+            "INSERT INTO db_connections (id, name, engine, via, host_id, address, port, username, database,
+                                         ssl_mode, ca_path, env_label, group_id, read_only, row_limit, timeout_s,
+                                         sort, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
+             ON CONFLICT(id) DO UPDATE SET
+                name=excluded.name, engine=excluded.engine, via=excluded.via, host_id=excluded.host_id,
+                address=excluded.address, port=excluded.port, username=excluded.username,
+                database=excluded.database, ssl_mode=excluded.ssl_mode, ca_path=excluded.ca_path,
+                env_label=excluded.env_label, group_id=excluded.group_id, read_only=excluded.read_only,
+                row_limit=excluded.row_limit, timeout_s=excluded.timeout_s, sort=excluded.sort,
+                updated_at=excluded.updated_at",
+            params![
+                d.id,
+                d.name,
+                enum_str(&d.engine)?,
+                enum_str(&d.via)?,
+                d.host_id,
+                d.address,
+                d.port,
+                d.username,
+                d.database,
+                enum_str(&d.ssl_mode)?,
+                d.ca_path,
+                enum_str(&d.env_label)?,
+                d.group_id,
+                d.read_only as i64,
+                d.row_limit,
+                d.timeout_s,
+                d.sort,
+                d.created_at,
+                d.updated_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_db_connection(&self, id: &str) -> Result<()> {
+        self.delete_tracked("db_connections", "id", "db_connection", id)
     }
 
     // ----------------------------------------------------------- known hosts
@@ -612,6 +721,7 @@ impl Db {
             "identity" => ("identities", "id"),
             "snippet" => ("snippets", "id"),
             "known_host" => ("known_hosts", "host_id"),
+            "db_connection" => ("db_connections", "id"),
             _ => return Ok(()),
         };
         let mut c = self.conn.lock();
@@ -644,8 +754,8 @@ impl Db {
         let tx = c.transaction()?;
         let local: Vec<String> = LOCAL_SETTING_KEYS.iter().map(|k| format!("'{k}'")).collect();
         tx.execute_batch(&format!(
-            "DELETE FROM known_hosts; DELETE FROM hosts; DELETE FROM groups; DELETE FROM identities;
-             DELETE FROM snippets; DELETE FROM tombstones;
+            "DELETE FROM db_connections; DELETE FROM known_hosts; DELETE FROM hosts; DELETE FROM groups;
+             DELETE FROM identities; DELETE FROM snippets; DELETE FROM tombstones;
              DELETE FROM settings WHERE key NOT IN ({}) AND key NOT LIKE 'backup.%';",
             local.join(",")
         ))?;
@@ -666,11 +776,13 @@ impl Db {
                (SELECT COALESCE(MAX(first_seen), 0) FROM known_hosts),
                (SELECT COALESCE(MAX(updated_at), 0) FROM settings WHERE key NOT IN ({}) AND key NOT LIKE 'backup.%'),
                (SELECT COALESCE(MAX(deleted_at), 0) FROM tombstones),
+               (SELECT COALESCE(MAX(updated_at), 0) FROM db_connections),
                (SELECT COUNT(*) FROM groups) + (SELECT COUNT(*) FROM hosts) + (SELECT COUNT(*) FROM identities)
-                 + (SELECT COUNT(*) FROM snippets) + (SELECT COUNT(*) FROM known_hosts) + (SELECT COUNT(*) FROM tombstones)",
+                 + (SELECT COUNT(*) FROM snippets) + (SELECT COUNT(*) FROM known_hosts) + (SELECT COUNT(*) FROM tombstones)
+                 + (SELECT COUNT(*) FROM db_connections)",
             local.join(",")
         );
-        let v: Vec<i64> = c.query_row(&sql, [], |r| (0..8).map(|i| r.get::<_, i64>(i)).collect())?;
+        let v: Vec<i64> = c.query_row(&sql, [], |r| (0..9).map(|i| r.get::<_, i64>(i)).collect())?;
         Ok(v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(":"))
     }
 
@@ -774,8 +886,8 @@ const HOST_SELECT: &str = "SELECT id, group_id, name, address, port, env_label, 
     theme, start_view, start_folder, auto_reconnect, keepalive_s, log_session, refresh_json, sort,
     created_at, updated_at FROM hosts";
 
-/// Settings that stay on this device (open tabs, dashboard tab, sync / backup config).
-pub const LOCAL_SETTING_KEYS: &[&str] = &["ui.session", "ui.dashboard.tab", "sync.settings"];
+/// Settings that stay on this device (open tabs, dashboard tab, sync / backup config, SQL editor text).
+pub const LOCAL_SETTING_KEYS: &[&str] = &["ui.session", "ui.dashboard.tab", "sync.settings", "ui.sql.drafts"];
 
 pub fn is_local_setting(key: &str) -> bool {
     LOCAL_SETTING_KEYS.contains(&key) || key.starts_with("backup.")
@@ -878,6 +990,34 @@ fn row_host(r: &Row) -> rusqlite::Result<Host> {
     })
 }
 
+const DBCONN_SELECT: &str = "SELECT id, name, engine, via, host_id, address, port, username, database, ssl_mode,
+    ca_path, env_label, group_id, read_only, row_limit, timeout_s, sort, created_at, updated_at FROM db_connections";
+
+fn row_db_connection(r: &Row) -> rusqlite::Result<DbConnection> {
+    Ok(DbConnection {
+        id: r.get(0)?,
+        name: r.get(1)?,
+        engine: enum_parse(r.get(2)?),
+        via: enum_parse(r.get(3)?),
+        host_id: r.get(4)?,
+        address: r.get(5)?,
+        port: r.get(6)?,
+        username: r.get(7)?,
+        database: r.get(8)?,
+        ssl_mode: enum_parse(r.get(9)?),
+        ca_path: r.get(10)?,
+        env_label: enum_parse(r.get(11)?),
+        group_id: r.get(12)?,
+        read_only: r.get::<_, i64>(13)? != 0,
+        row_limit: r.get(14)?,
+        timeout_s: r.get(15)?,
+        sort: r.get(16)?,
+        created_at: r.get(17)?,
+        updated_at: r.get(18)?,
+        has_password: false,
+    })
+}
+
 fn row_identity(r: &Row) -> rusqlite::Result<Identity> {
     Ok(Identity {
         id: r.get(0)?,
@@ -894,7 +1034,7 @@ fn row_identity(r: &Row) -> rusqlite::Result<Identity> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn host(name: &str, group: Option<&str>) -> Host {
@@ -1007,6 +1147,61 @@ mod tests {
         let got = &db.list_snippets().unwrap()[0];
         assert_eq!(got.steps, vec!["git pull".to_string(), "php artisan migrate --force".to_string()]);
         assert!(got.continue_on_error);
+    }
+
+    pub(crate) fn db_conn(name: &str) -> DbConnection {
+        DbConnection {
+            id: String::new(),
+            name: name.into(),
+            engine: DbEngine::Mysql,
+            via: DbVia::Direct,
+            host_id: None,
+            address: "127.0.0.1".into(),
+            port: 3306,
+            username: "root".into(),
+            database: Some("shop".into()),
+            ssl_mode: SslMode::VerifyFull,
+            ca_path: None,
+            env_label: EnvLabel::Prod,
+            group_id: None,
+            read_only: false,
+            row_limit: 500,
+            timeout_s: 30,
+            sort: 0,
+            created_at: 0,
+            updated_at: 0,
+            has_password: false,
+        }
+    }
+
+    #[test]
+    fn db_connection_roundtrip_and_tombstone() {
+        let db = Db::open_in_memory().unwrap();
+        let d = db.save_db_connection(db_conn("shop prod")).unwrap();
+        let back = db.get_db_connection(&d.id).unwrap();
+        assert_eq!(back.engine, DbEngine::Mysql);
+        assert_eq!(back.ssl_mode, SslMode::VerifyFull);
+        assert_eq!(back.database.as_deref(), Some("shop"));
+        assert!(back.opens_read_only(), "PROD always opens read-only");
+        assert_eq!(back.secret_id(), format!("dbconn:{}:password", d.id));
+
+        // through a server needs a server
+        let mut ssh = db_conn("via ssh");
+        ssh.via = DbVia::Ssh;
+        assert!(db.save_db_connection(ssh).is_err());
+
+        // deleting the server keeps the connection, without a server
+        let h = db.save_host(host("prod-api-01", None)).unwrap();
+        let mut ssh = db_conn("via ssh");
+        ssh.via = DbVia::Ssh;
+        ssh.host_id = Some(h.id.clone());
+        let ssh = db.save_db_connection(ssh).unwrap();
+        db.delete_host(&h.id).unwrap();
+        assert_eq!(db.get_db_connection(&ssh.id).unwrap().host_id, None);
+
+        db.delete_db_connection(&d.id).unwrap();
+        assert!(db.get_db_connection(&d.id).is_err());
+        assert!(db.list_tombstones().unwrap().iter().any(|t| t.kind == "db_connection" && t.id == d.id));
     }
 
     #[test]

@@ -25,6 +25,13 @@ import type { SubParams } from "./bindings/SubParams";
 import type { Snippet } from "./bindings/Snippet";
 import type { TermOpen } from "./bindings/TermOpen";
 import type { VaultStatus } from "./bindings/VaultStatus";
+import type { DbConnection } from "./bindings/DbConnection";
+import type { SchemaTree } from "./bindings/SchemaTree";
+import type { SqlOpened } from "./bindings/SqlOpened";
+import type { SqlRunOpts } from "./bindings/SqlRunOpts";
+import type { SqlTarget } from "./bindings/SqlTarget";
+import type { SqlTestResult } from "./bindings/SqlTestResult";
+import type { TxAction } from "./bindings/TxAction";
 
 export type CoreErrorKind =
   | "db" | "io" | "json"
@@ -186,6 +193,21 @@ export const api = {
   snippetSave: (snippet: Snippet) => invoke<Snippet>("snippet_save", { snippet }),
   snippetDelete: (id: string) => invoke<void>("snippet_delete", { id }),
 
+  // SQL connections (passwords go to the vault in Rust and never come back)
+  sqlConnsList: () => invoke<DbConnection[]>("sql_conns_list"),
+  /** password: undefined = keep, "" = delete, value = set. */
+  sqlConnSave: (conn: DbConnection, password?: string) => invoke<DbConnection>("sql_conn_save", { conn, password: password ?? null }),
+  sqlConnDelete: (id: string) => invoke<void>("sql_conn_delete", { id }),
+  sqlTest: (conn: DbConnection, password?: string) => invoke<SqlTestResult>("sql_test", { conn, password: password || null }),
+  sqlOpen: (target: SqlTarget) => invoke<SqlOpened>("sql_open", { target }),
+  sqlClose: (sessionId: string) => invoke<void>("sql_close", { sessionId }),
+  sqlSchema: (sessionId: string, system = false) => invoke<SchemaTree>("sql_schema", { sessionId, system }),
+  sqlUse: (sessionId: string, database: string) => invoke<void>("sql_use", { sessionId, database }),
+  /** Returns the query id; rows arrive as `sql_result` events. */
+  sqlRun: (sessionId: string, sql: string, opts: SqlRunOpts = { row_limit: null }) => invoke<string>("sql_run", { sessionId, sql, opts }),
+  sqlCancel: (queryId: string) => invoke<void>("sql_cancel", { queryId }),
+  sqlTx: (sessionId: string, action: TxAction) => invoke<void>("sql_tx", { sessionId, action }),
+  sqlAllowWrites: (sessionId: string, minutes: number) => invoke<void>("sql_allow_writes", { sessionId, minutes }),
   // UI settings (only `ui.*` keys)
   settingGet: <T>(key: string) => invoke<T | null>("setting_get", { key }),
   settingSet: (key: string, value: unknown) => invoke<void>("setting_set", { key, value }),

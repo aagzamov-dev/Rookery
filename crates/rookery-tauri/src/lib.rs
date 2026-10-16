@@ -149,6 +149,18 @@ pub fn run() {
             commands::services_list,
             commands::shell_integration_install,
             commands::debug_active_subscriptions,
+            commands::sql_conns_list,
+            commands::sql_conn_save,
+            commands::sql_conn_delete,
+            commands::sql_test,
+            commands::sql_open,
+            commands::sql_close,
+            commands::sql_schema,
+            commands::sql_use,
+            commands::sql_run,
+            commands::sql_cancel,
+            commands::sql_tx,
+            commands::sql_allow_writes,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Rookery");

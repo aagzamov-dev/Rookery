@@ -35,6 +35,16 @@ keyring = { version = "3", features = ["windows-native", "apple-native", "sync-s
 russh = "0.52"
 russh-sftp = "2"
 
+# SQL connections (v0.7). TLS through rustls + ring only: aws-lc-rs needs cmake / NASM on Windows.
+tokio-postgres = { version = "0.7.18", default-features = false, features = ["runtime"] }
+tokio-postgres-rustls = { version = "0.14", default-features = false, features = ["ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-native-certs = "0.8"
+url = "2"
+percent-encoding = "2"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+mysql_async = { version = "0.37", default-features = false, features = ["default-rustls-ring"] }
+
 # misc
 dirs = "6"
 time = { version = "0.3", features = ["serde", "formatting", "parsing", "local-offset", "macros"] }

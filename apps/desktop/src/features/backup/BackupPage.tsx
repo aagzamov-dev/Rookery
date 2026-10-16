@@ -349,7 +349,7 @@ function FileCard({ onDone, onError }: Notify) {
         <div className="flex flex-col gap-2.5 rounded-lg border border-accent-line bg-accent-bg px-3 py-3 text-[13px]">
           <span>
             Backup from <b>{pending.info.device_name}</b>, {new Date(pending.info.created_at).toLocaleString()}: {pending.info.hosts} servers · {pending.info.groups} groups ·{" "}
-            {pending.info.identities} logins · {pending.info.snippets} snippets
+            {pending.info.identities} logins · {pending.info.snippets} snippets · {pending.info.db_connections} databases
           </span>
           <div className="flex flex-wrap gap-2">
             <Button variant="primary" disabled={busy} onClick={() => void runImport("merge")} title="Adds what is new, keeps the newest version of each item">

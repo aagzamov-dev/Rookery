@@ -1,12 +1,16 @@
 import { create } from "zustand";
 
-export type View = "overview" | "terminal" | "files" | "docker" | "services" | "processes" | "logs" | "settings";
+export type View = "overview" | "terminal" | "files" | "docker" | "database" | "services" | "processes" | "logs" | "settings";
 export type PageKind = "dashboard" | "snippets" | "hosts" | "tunnels" | "settings" | "shortcuts" | "backup";
+
+/** What a database tab opens. Never holds a password (URL passwords stay in memory, see DbTab). */
+export type DbTarget = { kind: "saved"; id: string } | { kind: "url"; url: string };
 
 export type Tab =
   | { id: string; kind: "server"; hostId: string }
   | { id: string; kind: "page"; page: PageKind }
-  | { id: string; kind: "local"; shellId: string; title: string };
+  | { id: string; kind: "local"; shellId: string; title: string }
+  | { id: string; kind: "db"; target: DbTarget; title: string };
 
 export interface TerminalSlot {
   key: string;
@@ -31,6 +35,8 @@ interface TabsState {
   openServer: (hostId: string, startView?: View, cwd?: string | null) => void;
   openPage: (page: PageKind) => void;
   openLocal: (shellId: string, title: string) => string;
+  /** Open a database tab; an open tab of the same saved connection is reused unless `newTab`. Returns the tab id. */
+  openDb: (target: DbTarget, title: string, newTab?: boolean) => string;
   /** Restored server tabs wait for a click before connecting. */
   deferred: Record<string, boolean>;
   setDeferred: (hostId: string, v: boolean) => void;
@@ -92,6 +98,20 @@ export const useTabs = create<TabsState>((set, get) => ({
   openLocal: (shellId, title) => {
     const id = `local:${newKey()}`;
     set((s) => ({ tabs: [...s.tabs, { id, kind: "local", shellId, title }], activeTabId: id }));
+    return id;
+  },
+
+  openDb: (target, title, newTab = false) => {
+    if (target.kind === "saved" && !newTab) {
+      const existing = get().tabs.find((t) => t.kind === "db" && t.target.kind === "saved" && t.target.id === target.id);
+      if (existing) {
+        if (get().deferred[existing.id]) get().setDeferred(existing.id, false);
+        set({ activeTabId: existing.id });
+        return existing.id;
+      }
+    }
+    const id = `db:${newKey()}`;
+    set((s) => ({ tabs: [...s.tabs, { id, kind: "db", target, title }], activeTabId: id }));
     return id;
   },
 

@@ -20,6 +20,7 @@ import {
   TerminalSquare,
   FolderSync,
   Copy,
+  Database,
 } from "lucide-react";
 import { useContextMenu, type MenuItem } from "../ui/ContextMenu";
 import { duplicateHost } from "../features/hosts/HostsTable";
@@ -27,7 +28,6 @@ import { useHosts } from "../stores/hosts";
 import { pageTabId, serverTabId, useTabs, type PageKind } from "../stores/tabs";
 import { useSessions } from "../stores/sessions";
 import { useUi } from "../stores/ui";
-import { useVault } from "../stores/vault";
 import { useKeys } from "../stores/keys";
 import { useSnippets } from "../stores/snippets";
 import { ago, useSync } from "../stores/sync";
@@ -43,7 +43,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { api } from "../ipc/api";
 import { useFiles } from "../stores/files";
 import { useAutoLock } from "./useAutoLock";
-import { closeTab } from "./tabActions";
+import { closeTab, lockApp } from "./tabActions";
 import { ServerTab } from "../features/server-tab/ServerTab";
 import { CommandPalette } from "../features/palette/CommandPalette";
 import { DialogHost } from "../ui/DialogHost";
@@ -52,6 +52,10 @@ import { restoreSession, useSessionPersistence } from "./session";
 import { HostEditor, type HostDraft } from "../features/hosts/HostEditor";
 import { GroupEditor } from "../features/hosts/GroupEditor";
 import { PageTab } from "../features/pages/Pages";
+import { DbTab, isDbUrl, openDbUrl } from "../features/sql/DbTab";
+import { DbList } from "../features/sql/DbList";
+import { ConnDialogHost } from "../features/sql/connDialog";
+import { useSql } from "../stores/sql";
 import { EnvTag, IconButton, StatusDot } from "../ui/primitives";
 import type { Group } from "../ipc/bindings/Group";
 import type { Host } from "../ipc/bindings/Host";
@@ -65,6 +69,7 @@ export function Shell() {
     void useSnippets.getState().load();
     void useSync.getState().load();
     void useBackup.getState().load();
+    void useSql.getState().loadConns().catch(() => {});
     void useUpdate.getState().init().catch(() => {});
     return installKeyDispatcher();
   }, []);
@@ -119,6 +124,8 @@ export function Shell() {
                 <ServerTab key={t.id} hostId={t.hostId} active={t.id === activeTabId} onEditHost={(h) => setHostEditor({ host: h })} />
               ) : t.kind === "local" ? (
                 <LocalTab key={t.id} tabId={t.id} shellId={t.shellId} active={t.id === activeTabId} />
+              ) : t.kind === "db" ? (
+                <DbTab key={t.id} tab={t} active={t.id === activeTabId} />
               ) : (
                 <PageTab key={t.id} page={t.page} active={t.id === activeTabId} onEditHost={(h) => setHostEditor({ host: h })} />
               ),
@@ -131,6 +138,7 @@ export function Shell() {
       {importOpen && <ImportDialog onClose={() => setImportOpen(false)} />}
       <Welcome onNewHost={() => setHostEditor({})} onImport={() => setImportOpen(true)} />
       <CommandPalette onNewHost={() => setHostEditor({})} />
+      <ConnDialogHost />
       <DialogHost />
     </div>
   );
@@ -150,6 +158,12 @@ async function uploadToCurrentFolder(hostId: string) {
 function TitleBar({ onQuickConnect }: { onQuickConnect: (d: HostDraft) => void }) {
   const [q, setQ] = useState("");
   const submit = () => {
+    // postgres:// mysql:// mariadb:// ssh+mysql://server/db → an unsaved database tab.
+    if (isDbUrl(q)) {
+      openDbUrl(q);
+      setQ("");
+      return;
+    }
     // user@host[:port] → prefilled "new host" form (saving is the user's choice).
     const m = q.trim().match(/^(?:([^@\s]+)@)?([^:\s]+)(?::(\d+))?$/);
     if (!m) return;
@@ -168,7 +182,7 @@ function TitleBar({ onQuickConnect }: { onQuickConnect: (d: HostDraft) => void }
         <Search size={14} />
         <input
           aria-label="Quick connect"
-          placeholder="Quick connect: user@host:port"
+          placeholder="Quick connect: user@host:port or postgres://user@host/db"
           value={q}
           onChange={(e) => setQ(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && submit()}
@@ -231,7 +245,6 @@ function IconRail() {
   const hostListOpen = useUi((s) => s.hostListOpen);
   const activeTabId = useTabs((s) => s.activeTabId);
   const openPage = useTabs((s) => s.openPage);
-  const lock = useVault((s) => s.lock);
 
   const item = (label: string, icon: ReactNode, onClick: () => void, active: boolean) => (
     <button
@@ -258,7 +271,7 @@ function IconRail() {
       {page("shortcuts", "Keyboard shortcuts", <Keyboard size={18} />)}
       {page("backup", "Backup & sync", <FolderSync size={18} />)}
       <span className="flex-1" />
-      {item("Lock (Ctrl+L)", <Lock size={18} />, () => void lock(), false)}
+      {item("Lock (Ctrl+L)", <Lock size={18} />, () => void lockApp(), false)}
       {page("settings", "Settings", <SlidersHorizontal size={18} />)}
     </nav>
   );
@@ -356,6 +369,7 @@ function HostList({
           </div>
         )}
         {hosts.length === 0 && <p className="px-2 text-xs leading-relaxed text-muted">No hosts yet. Add one with the + button.</p>}
+        <DbList filter={filter} />
       </div>
       <span className="border-t border-line px-1.5 pt-2.5 text-[11px] leading-relaxed text-muted">Click a server to open it as a tab. Nothing connects until you do.</span>
     </nav>
@@ -420,6 +434,7 @@ function TabBar() {
   const activate = useTabs((s) => s.activate);
   const hosts = useHosts((s) => s.hosts);
   const sessions = useSessions((s) => s.byHost);
+  const conns = useSql((s) => s.conns);
   if (tabs.length === 0)
     return (
       <div className="flex h-10 border-b border-line bg-panel">
@@ -431,7 +446,8 @@ function TabBar() {
       {tabs.map((t) => {
         const active = t.id === activeTabId;
         const host = t.kind === "server" ? hosts.find((h) => h.id === t.hostId) : undefined;
-        const prod = host?.env_label === "prod";
+        const conn = t.kind === "db" && t.target.kind === "saved" ? conns.find((c) => c.id === (t.target as { id: string }).id) : undefined;
+        const prod = (host ?? conn)?.env_label === "prod";
         return (
           <div
             key={t.id}
@@ -439,12 +455,12 @@ function TabBar() {
             aria-selected={active}
             tabIndex={0}
             onClick={() => activate(t.id)}
-            onAuxClick={(e) => e.button === 1 && closeTab(t)}
+            onAuxClick={(e) => e.button === 1 && void closeTab(t)}
             onKeyDown={(e) => e.key === "Enter" && activate(t.id)}
             className={clsx(
               "group/t flex cursor-pointer items-center gap-2 border-r border-t-2 border-r-line pr-2 pl-3.5 whitespace-nowrap",
               active ? (prod ? "border-t-bad" : "border-t-accent") : "border-t-transparent",
-              active ? (t.kind === "server" ? "bg-term text-text" : "bg-bg text-text") : "text-muted hover:text-text",
+              active ? (t.kind === "server" || t.kind === "db" ? "bg-term text-text" : "bg-bg text-text") : "text-muted hover:text-text",
             )}
           >
             {t.kind === "server" ? (
@@ -458,6 +474,8 @@ function TabBar() {
                 <TerminalSquare size={13} className="text-muted" />
                 {t.title}
               </>
+            ) : t.kind === "db" ? (
+              <DbTabLabel tabId={t.id} title={conn?.name ?? t.title} env={conn?.env_label} />
             ) : (
               <>
                 {pageMeta[t.page].icon}
@@ -468,7 +486,7 @@ function TabBar() {
               aria-label="Close tab"
               onClick={(e) => {
                 e.stopPropagation();
-                closeTab(t);
+                void closeTab(t);
               }}
               className={clsx("grid h-5 w-5 place-items-center rounded text-muted hover:bg-panel2 hover:text-text", !active && "invisible group-hover/t:visible")}
             >
@@ -541,5 +559,24 @@ function EmptyState({ onNewHost }: { onNewHost: () => void }) {
         )}
       </div>
     </div>
+  );
+}
+
+/** Database tab label: engine dot, "name · database", env tag. */
+function DbTabLabel({ tabId, title, env }: { tabId: string; title: string; env?: string }) {
+  const sessionDb = useSql((s) => {
+    // the tab's session is the one its SqlTab registered under this tab id
+    const meta = Object.values(s.sessions).find((m) => m.tabKey === tabId);
+    return meta ? `${meta.state}|${meta.database ?? ""}` : "";
+  });
+  const [state, db] = sessionDb ? sessionDb.split("|") : ["", ""];
+  return (
+    <>
+      <StatusDot state={state === "connected" ? "connected" : state === "lost" ? "error" : undefined} />
+      <Database size={13} className="text-muted" />
+      {title}
+      {db && !title.includes(db) && <span className="text-muted">· {db}</span>}
+      {env && <EnvTag env={env} />}
+    </>
   );
 }

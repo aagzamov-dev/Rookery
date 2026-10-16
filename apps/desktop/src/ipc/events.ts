@@ -9,6 +9,7 @@ import { useMetrics } from "../stores/metrics";
 import { useVault } from "../stores/vault";
 import { useSync } from "../stores/sync";
 import { onDataChanged, useBackup } from "../stores/backup";
+import { useSql } from "../stores/sql";
 import { terminalRegistry } from "../features/server-tab/terminal/registry";
 
 let started = false;
@@ -82,6 +83,12 @@ export function dispatch(ev: CoreEvent) {
       break;
     case "sync_done":
       useSync.getState().onDone(ev.job_id, ev.auto, ev.summary);
+      break;
+    case "sql_result":
+      useSql.getState().onResult(ev);
+      break;
+    case "sql_session":
+      useSql.getState().onSession(ev);
       break;
     case "vault_locked":
       useVault.getState().markLocked();

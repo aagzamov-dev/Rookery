@@ -277,3 +277,33 @@ Hosts · Dashboard · Snippets · Tunnels · Hosts & identities · Keyboard shor
   - Import my servers (MobaXterm / PuTTY / ~/.ssh/config)
   - I use Rookery on another computer (opens Backup & sync)
 - It is shown once (`ui.onboarded`).
+
+---
+
+## 13. Databases — built (v0.7)
+Look at a database and fix a problem quickly, on production too. Spec: [07-SQL-CONNECTIONS.md](07-SQL-CONNECTIONS.md).
+
+### 13.1 Where
+- **Server tab → Database** (Ctrl+8): a database on, or reachable from, that server, through its SSH session (loopback forward, nothing opened on the network). Fill engine, address as seen from the server (default 127.0.0.1), port, user, password → Connect. The password stays in memory; **Save** turns it into a saved connection.
+- **Sidebar → Databases**: saved connections (🐘 PostgreSQL / 🐬 MySQL, MariaDB), env tag, 🔒 when it opens read-only. Click opens its tab (or switches to it), double-click / "Open in new tab" opens a second one. Right-click: Edit, Duplicate, Delete.
+- **Quick connect**: the title-bar field takes `postgres://user@host:5432/db`, `mysql://root@localhost/shop`, `mariadb://…`, `ssh+mysql://<saved server>/db`. It opens an unsaved tab with **Save**. A password in the URL is kept in memory only.
+- **Restore**: database tabs come back disconnected and connect on click. No password is ever written to the saved session.
+
+### 13.2 Connection dialog
+- Name, engine, environment, group; connect **direct** or **through a server**; host, port, user, password ("Saved. Type to change" / Forget), database.
+- SSL: disable / prefer / require / verify-full (+ CA file). Default: off for this PC and through a server, prefer for other hosts. Direct + no SSL to another machine shows a warning.
+- Safety: Open read-only (always on for PROD), row limit (500), timeout (30 s).
+- **Test connection**: "Connected · PostgreSQL 16.2 · 38 ms".
+
+### 13.3 The SQL tab
+- **Toolbar**: Run (Ctrl+Enter: statement at cursor or the selection), Run all (Ctrl+Shift+Enter), Cancel (Ctrl+.), database switcher, 🔒 state, transaction state, time.
+- **Schema tree** (260 px, filter, ↻, "Show system schemas"): tables / views with row estimates → columns (type, key, nullable, default) and indexes. Double-click a table adds `SELECT * … LIMIT 100` at the end of the editor and runs it. Right-click: Select top 100, Count rows, Insert column list, Show CREATE, Copy name.
+- **Editor**: CodeMirror 6, Postgres / MySQL highlighting, completion from the schema, terminal font. The text is kept per tab on this device (`ui.sql.drafts`, not synced).
+- **Results**: one tab per result set + Messages (rows affected, notices, errors). Virtual grid: numbers right-aligned, NULL greyed, long text cut with "…". Right-click: copy value / row / column / all as CSV or TSV. "500 rows (limit) · Load 500 more", CSV export. Postgres errors underline the position in the editor.
+
+### 13.4 Safety
+- PROD (or "Open read-only") connections are read-only **on the server**; switching it off in SQL is refused.
+- 🔒 → **Allow changes for 15 minutes** (asks, names the connection) → countdown in the toolbar, then read-only again by itself.
+- While changes are allowed, the first change opens a transaction: banner "Uncommitted changes · N rows" with Commit / Rollback. Closing the tab, locking (button / Ctrl+L) or switching database asks Commit / Roll back / Cancel. MySQL DDL warns that it commits at once.
+- Risky statements (UPDATE / DELETE without WHERE, DROP, TRUNCATE, ALTER, GRANT / REVOKE, several statements with a change) ask first; on PROD you type the database name.
+- Row cap, statement timeout and Cancel all act on the server. Idle sessions drop their connection after 10 minutes (never with a transaction open) and reconnect on the next run.

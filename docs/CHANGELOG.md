@@ -2,6 +2,20 @@
 
 The release workflow copies the section for a tag (e.g. `## 0.6.0`) into the GitHub Release notes, which the in-app updater shows under "What's new".
 
+## 0.7.0
+
+- **Databases (PostgreSQL, MySQL, MariaDB)**: see what's in a database and fix a problem quickly, right next to the terminal.
+  - **In a server tab**: the new **Database** view (Ctrl+8) connects through that server's SSH session. Nothing opens on the network.
+  - **Database tabs**: saved connections in the sidebar under your hosts, direct or through a server, with SSL. Paste a URL into quick connect (`postgres://user@host/db`, `mysql://root@localhost/shop`).
+  - **Schema tree** with tables, columns, keys and indexes. Double-click a table to see its first rows.
+  - **SQL editor** with highlighting and completion of your table and column names. Ctrl+Enter runs the statement at the cursor, Ctrl+. cancels it on the server.
+  - **Results grid** that stays fast with many rows. Copy values, rows or columns, or export CSV.
+- **Safe on production**: PROD connections are read-only, enforced by the database server. **Allow changes** turns writes on for 15 minutes with a countdown.
+  - Every change goes into a transaction, and nothing is saved until you press **Commit**.
+  - Risky statements (DELETE without WHERE, DROP, TRUNCATE…) ask first. On PROD you type the database name.
+  - Closing a tab, locking or switching database with uncommitted changes asks Commit / Roll back.
+- **Backup & sync**: saved database connections and their passwords travel to your other devices, encrypted, like your servers do.
+
 ## 0.6.0
 
 - **Auto-update**: Rookery checks GitHub once a day when it starts (can be turned off in Settings › About). When there is an update it shows the release notes and an Update button, verifies the signature, installs and restarts. Your data is kept.

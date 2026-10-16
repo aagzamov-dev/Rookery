@@ -121,16 +121,17 @@ One encrypted file format serves both a **backup file** (save it, send it by Tel
 "RKRYBK1\n" | header JSON | "\n" | XChaCha20-Poly1305 ciphertext
 header    = { v:1, kdf:{m_kib:65536,t:3,p:1}, salt, nonce, device_id, device_name, created_at }   (readable, authenticated as AAD)
 plaintext = { format:"rookery-data", version:1, groups, hosts, identities (+ their secrets), snippets,
-              known_hosts, settings, tombstones }
+              known_hosts, settings, tombstones, db_connections (+ their passwords, v0.7) }
 ```
 - Key = Argon2id(**sync password**, salt). The derived key is cached in memory per salt (cleared on lock), so only the first sync after unlocking pays the ~0.3 s key derivation; later syncs are milliseconds. Crypto crates are built at `opt-level=3` in every profile.
 - **Sync password:** separate from the master password and the same on every device. Saved in each device's vault (`backup:password`) and never sent back to the webview. PCs can keep different master passwords and PINs.
-- Included: groups, hosts, identities with passwords / keys / passphrases / sudo, snippets, trusted host keys, settings (shortcuts, themes, terminal prefs, dashboard defaults).
-- Not included: dashboard snapshots, cache, and per-device settings (`ui.session`, `ui.dashboard.tab`, `sync.settings`, `backup.*`). Each group's Dashboard Auto-sync switch also stays per device.
+- Included: groups, hosts, identities with passwords / keys / passphrases / sudo, snippets, trusted host keys, settings (shortcuts, themes, terminal prefs, dashboard defaults), SQL connections with their passwords (`dbconn:<id>:password`).
+- Not included: dashboard snapshots, cache, and per-device settings (`ui.session`, `ui.dashboard.tab`, `sync.settings`, `ui.sql.drafts`, `backup.*`). Each group's Dashboard Auto-sync switch also stays per device.
+- SQL connections to localhost sync too and mean "this computer's database" on each device. A connection through a server whose server is not on the other device arrives without a server (the sync summary says so). Older files without connections, and older apps reading newer files, both work (the field is optional).
 - Tamper / wrong password → refused ("uses a different sync password"). Files over 64 MB are refused.
 
 ### 5.2 Merge (newest wins, deletes travel)
-- Every synced record has a version time: `updated_at` (groups, hosts, identities, snippets, settings); `first_seen` for trusted keys.
+- Every synced record has a version time: `updated_at` (groups, hosts, identities, snippets, settings, SQL connections); `first_seen` for trusted keys.
 - Deleting leaves a **tombstone** `(kind, id, deleted_at)`, so the deletion reaches the other device and an old file cannot bring the item back.
 - Per item: the newest of {local edit, remote edit, local delete, remote delete} wins. An edit made after a delete brings the item back.
 - Groups are written parents first. A missing parent / group becomes "no parent / ungrouped".

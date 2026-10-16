@@ -5,7 +5,9 @@ import { useEffect } from "react";
 import { api } from "../ipc/api";
 import { useHosts } from "../stores/hosts";
 import { useKeys } from "../stores/keys";
+import { useSql } from "../stores/sql";
 import { useTabs, type ServerViews, type Tab } from "../stores/tabs";
+import { tabForSave } from "../features/sql/url";
 
 const KEY = "ui.session";
 
@@ -24,13 +26,20 @@ export async function restoreSession() {
   const saved = await api.settingGet<Saved>(KEY).catch(() => null);
   if (!saved?.tabs?.length) return;
   if (!useHosts.getState().loaded) await useHosts.getState().load();
+  if (!useSql.getState().connsLoaded) await useSql.getState().loadConns().catch(() => {});
   const hosts = useHosts.getState().hosts;
-  const tabs = saved.tabs.filter((t) => t.kind !== "server" || hosts.some((h) => h.id === t.hostId));
+  const conns = useSql.getState().conns;
+  const tabs = saved.tabs
+    .filter((t) => t.kind !== "server" || hosts.some((h) => h.id === t.hostId))
+    .filter((t) => t.kind !== "db" || t.target.kind === "url" || conns.some((c) => c.id === (t.target as { id: string }).id))
+    .map(tabForSave);
   const views: Record<string, ServerViews> = {};
   const deferred: Record<string, boolean> = {};
   const auto = useKeys.getState().app.autoConnectRestored;
   let n = 0;
   for (const t of tabs) {
+    // Database tabs come back disconnected too; they connect on first click.
+    if (t.kind === "db" && !auto) deferred[t.id] = true;
     if (t.kind !== "server") continue;
     const v = saved.views[t.hostId];
     const terminals = (v?.terminals?.length ? v.terminals : [{ title: "shell 1" }]).map((x) => ({ key: `r${Date.now().toString(36)}${n++}`, title: x.title, cwd: x.cwd }));
@@ -59,7 +68,7 @@ export function useSessionPersistence() {
             terminals: v.terminals.filter((t) => !t.container).map((t) => ({ title: t.title, cwd: t.cwd })),
           };
         }
-        void api.settingSet(KEY, { tabs: s.tabs, activeTabId: s.activeTabId, views } satisfies Saved);
+        void api.settingSet(KEY, { tabs: s.tabs.map(tabForSave), activeTabId: s.activeTabId, views } satisfies Saved);
       }, 800);
     });
     return () => {

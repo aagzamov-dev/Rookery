@@ -3,6 +3,7 @@
 use serde::Serialize;
 use ts_rs::TS;
 
+use crate::sql::ResultColumn;
 use crate::model::{BackupStatus, Container, ContainerStats, MergeSummary, MetricsSample, SessionInfo, Snapshot, SyncState, SyncSummary, Transfer};
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -39,6 +40,43 @@ pub enum CoreEvent {
     BackupStatus { status: BackupStatus },
     /// Data arrived from another device or a backup: reload hosts, snippets, settings.
     DataChanged { summary: MergeSummary },
+    /// Rows / outcome of a running SQL script (docs/07 §4.5). Chunks of ≤ 500 rows; `columns`
+    /// comes with the first chunk of each result set. `index` = result set in this run,
+    /// `stmt` = statement number. `error_pos` = char offset in the submitted text.
+    /// The last event of a run has `finished` = true.
+    SqlResult {
+        query_id: String,
+        index: u32,
+        stmt: u32,
+        columns: Option<Vec<ResultColumn>>,
+        rows: Vec<Vec<Option<String>>>,
+        done: bool,
+        #[ts(type = "number | null")]
+        affected: Option<u64>,
+        elapsed_ms: Option<u32>,
+        truncated: bool,
+        error: Option<String>,
+        error_pos: Option<u32>,
+        notice: Option<String>,
+        finished: bool,
+    },
+    /// SQL session state. `state` = connected | lost | closed (idle / tab closed; a run reconnects).
+    SqlSession {
+        session_id: String,
+        state: String,
+        tx_open: bool,
+        /// Rows changed in the open transaction.
+        #[ts(type = "number")]
+        tx_rows: u64,
+        read_only: bool,
+        /// Opened read-only (PROD / "Open read-only"); writes need "Allow changes".
+        protected: bool,
+        /// Writes turn off again at this time (ms).
+        #[ts(type = "number | null")]
+        writes_until: Option<i64>,
+        database: Option<String>,
+        message: Option<String>,
+    },
     VaultLocked,
     VaultUnlocked,
 }

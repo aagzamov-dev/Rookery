@@ -7,6 +7,7 @@ import type { MergeSummary } from "../ipc/bindings/MergeSummary";
 import { useHosts } from "./hosts";
 import { useKeys } from "./keys";
 import { useSnippets } from "./snippets";
+import { useSql } from "./sql";
 import { useSync } from "./sync";
 
 interface BackupStore {
@@ -29,7 +30,13 @@ export const useBackup = create<BackupStore>((set) => ({
 /** Another device's changes (or an imported backup) landed in the DB: reload what the UI shows. */
 export async function onDataChanged(summary: MergeSummary) {
   useBackup.setState({ notice: { summary, at: Date.now() } });
-  await Promise.all([useHosts.getState().load(), useSnippets.getState().load(), useKeys.getState().load(), useSync.getState().load()]);
+  await Promise.all([
+    useHosts.getState().load(),
+    useSnippets.getState().load(),
+    useKeys.getState().load(),
+    useSync.getState().load(),
+    useSql.getState().loadConns().catch(() => {}),
+  ]);
 }
 
 export function summaryText(s: MergeSummary): string {
