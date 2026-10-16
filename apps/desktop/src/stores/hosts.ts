@@ -98,6 +98,7 @@ export function emptyGroup(): Group {
     start_folder: null,
     refresh: { mode: "inherit", interval_s: null, collect: null, desktop: null, mobile: null, wifi_only: null },
     auto_sync_enabled: false,
+    updated_at: 0,
   };
 }
 
@@ -112,5 +113,6 @@ export function emptyIdentity(): Identity {
     has_key: false,
     has_passphrase: false,
     has_sudo: false,
+    updated_at: 0,
   };
 }

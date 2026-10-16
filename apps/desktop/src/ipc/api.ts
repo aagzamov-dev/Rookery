@@ -1,7 +1,11 @@
 // Typed wrappers for Tauri commands (crates/rookery-tauri/src/commands.rs).
 // Tauri converts snake_case Rust argument names to camelCase on the JS side.
 import { invoke } from "@tauri-apps/api/core";
+import type { BackupInfo } from "./bindings/BackupInfo";
+import type { BackupStatus } from "./bindings/BackupStatus";
 import type { EffectiveRefresh } from "./bindings/EffectiveRefresh";
+import type { ImportMode } from "./bindings/ImportMode";
+import type { MergeSummary } from "./bindings/MergeSummary";
 import type { RefreshSetting } from "./bindings/RefreshSetting";
 import type { Snapshot } from "./bindings/Snapshot";
 import type { SyncScope } from "./bindings/SyncScope";
@@ -87,6 +91,17 @@ export const api = {
   refreshGlobalSet: (setting: RefreshSetting) => invoke<RefreshSetting>("refresh_global_set", { setting }),
   syncSetAuto: (groupIds: string[], on: boolean) => invoke<void>("sync_set_auto", { groupIds, on }),
   syncWindowVisible: (visible: boolean) => invoke<void>("sync_window_visible", { visible }),
+
+  // backup & device sync (passwords go to the vault in Rust and never come back)
+  backupStatus: () => invoke<BackupStatus>("backup_status"),
+  backupSetConfig: (folder: string | null, auto: boolean, deviceName: string) =>
+    invoke<BackupStatus>("backup_set_config", { folder, auto, deviceName }),
+  backupSetPassword: (password: string) => invoke<void>("backup_set_password", { password }),
+  backupSyncNow: () => invoke<BackupStatus>("backup_sync_now"),
+  backupExport: (path: string, password: string | null) => invoke<void>("backup_export", { path, password }),
+  backupInspect: (path: string, password: string | null) => invoke<BackupInfo>("backup_inspect", { path, password }),
+  backupImport: (path: string, password: string | null, mode: ImportMode) => invoke<MergeSummary>("backup_import", { path, password, mode }),
+  fileCopyToClipboard: (path: string) => invoke<void>("file_copy_to_clipboard", { path }),
 
   // clipboard
   clipboardWrite: (text: string) => invoke<void>("clipboard_write", { text }),

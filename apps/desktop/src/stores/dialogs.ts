@@ -31,6 +31,8 @@ export interface TextRequest {
   label: string;
   value: string;
   confirmLabel: string;
+  /** Masked input (passwords). */
+  secret?: boolean;
   /** Select only this part on open (e.g. the name without extension). */
   selectUntil?: number;
   resolve: (value: string | null) => void;

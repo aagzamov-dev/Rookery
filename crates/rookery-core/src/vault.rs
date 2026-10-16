@@ -307,6 +307,34 @@ impl Vault {
         Ok(())
     }
 
+    /// Every secret whose id starts with `prefix`, decrypted (backup export).
+    pub fn secrets_with_prefix(&self, prefix: &str) -> Result<Vec<(String, Zeroizing<String>)>> {
+        let file = self.file.as_ref().ok_or(Error::VaultNotInitialised)?;
+        let ids: Vec<String> = file.secrets.keys().filter(|k| k.starts_with(prefix)).cloned().collect();
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(v) = self.get(&id)? {
+                out.push((id, v));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Replace all secrets under `prefix` with `entries`, in one write (backup import).
+    pub fn replace_prefix(&mut self, prefix: &str, entries: &[(String, Zeroizing<String>)]) -> Result<()> {
+        let vk = self.vk.as_ref().ok_or(Error::VaultLocked)?;
+        let mut sealed = Vec::with_capacity(entries.len());
+        for (id, value) in entries {
+            if id.starts_with(prefix) {
+                sealed.push((id.clone(), seal(vk, value.as_bytes(), id.as_bytes())?));
+            }
+        }
+        let file = self.file.as_mut().ok_or(Error::VaultNotInitialised)?;
+        file.secrets.retain(|k, _| !k.starts_with(prefix));
+        file.secrets.extend(sealed);
+        self.save()
+    }
+
     // ---------------------------------------------------------- internal
 
     fn vault_id(&self) -> Result<&str> {

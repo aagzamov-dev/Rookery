@@ -18,6 +18,7 @@ import {
   Zap,
   Keyboard,
   TerminalSquare,
+  FolderSync,
 } from "lucide-react";
 import { useHosts } from "../stores/hosts";
 import { pageTabId, serverTabId, useTabs, type PageKind } from "../stores/tabs";
@@ -26,7 +27,8 @@ import { useUi } from "../stores/ui";
 import { useVault } from "../stores/vault";
 import { useKeys } from "../stores/keys";
 import { useSnippets } from "../stores/snippets";
-import { useSync } from "../stores/sync";
+import { ago, useSync } from "../stores/sync";
+import { summaryText, useBackup } from "../stores/backup";
 import { useSubscriptionEngine } from "../subscriptions/useEngine";
 import { installKeyDispatcher, shellHooks } from "../keys/dispatcher";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -54,6 +56,7 @@ export function Shell() {
     void useKeys.getState().load().then(() => restoreSession());
     void useSnippets.getState().load();
     void useSync.getState().load();
+    void useBackup.getState().load();
     return installKeyDispatcher();
   }, []);
 
@@ -157,8 +160,52 @@ function TitleBar({ onQuickConnect }: { onQuickConnect: (d: HostDraft) => void }
           className="min-w-0 flex-1 bg-transparent text-text outline-none"
         />
       </label>
-      <span className="rounded-full bg-panel2 px-2.5 py-1 text-xs text-muted">Local only · not backed up</span>
+      <BackupChip />
     </header>
+  );
+}
+
+/** Title-bar status: sync state, last backup, or "not backed up". Click → Backup & sync. */
+function BackupChip() {
+  const status = useBackup((s) => s.status);
+  const notice = useBackup((s) => s.notice);
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => tick((n) => n + 1), 30_000);
+    return () => clearInterval(t);
+  }, []);
+  // "3 added from Laptop" fades after a few seconds.
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => useBackup.getState().clearNotice(), 6000);
+    return () => clearTimeout(t);
+  }, [notice]);
+
+  const cfg = status?.config;
+  let text = "Local only · not backed up";
+  let tone = "bg-panel2 text-muted";
+  if (notice) {
+    text = `Synced · ${summaryText(notice.summary)}`;
+    tone = "bg-[#1e3d33] text-[#86E0B6]";
+  } else if (cfg?.folder && status) {
+    if (status.syncing) text = "Syncing…";
+    else if (status.last_error) {
+      text = "Sync problem";
+      tone = "bg-[#33232A] text-prod-fg";
+    } else if (!status.has_password) {
+      text = "Sync: set a password";
+      tone = "bg-[#44391A] text-[#F7CB6A]";
+    } else if (status.last_sync_at) text = `Synced ${ago(status.last_sync_at)}`;
+    else text = "Sync on";
+  }
+  return (
+    <button
+      onClick={() => useTabs.getState().openPage("backup")}
+      title={status?.last_error ?? "Backup & sync"}
+      className={clsx("flex-none rounded-full px-2.5 py-1 text-xs hover:brightness-110", tone)}
+    >
+      {text}
+    </button>
   );
 }
 
@@ -194,6 +241,7 @@ function IconRail() {
       {page("tunnels", "Tunnels", <ArrowLeftRight size={18} />)}
       {page("hosts", "Hosts & identities", <KeyRound size={18} />)}
       {page("shortcuts", "Keyboard shortcuts", <Keyboard size={18} />)}
+      {page("backup", "Backup & sync", <FolderSync size={18} />)}
       <span className="flex-1" />
       {item("Lock (Ctrl+L)", <Lock size={18} />, () => void lock(), false)}
       {page("settings", "Settings", <SlidersHorizontal size={18} />)}
@@ -331,6 +379,7 @@ const pageMeta: Record<PageKind, { label: string; icon: ReactNode }> = {
   hosts: { label: "Hosts & identities", icon: <KeyRound size={13} /> },
   settings: { label: "Settings", icon: <SlidersHorizontal size={13} /> },
   shortcuts: { label: "Shortcuts", icon: <Keyboard size={13} /> },
+  backup: { label: "Backup & sync", icon: <FolderSync size={13} /> },
 };
 
 function TabBar() {

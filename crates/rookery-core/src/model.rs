@@ -102,6 +102,10 @@ pub struct Group {
     pub refresh: RefreshSetting,
     #[serde(default)]
     pub auto_sync_enabled: bool,
+    /// Version time for device sync (ms).
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub updated_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -179,6 +183,10 @@ pub struct Identity {
     pub has_passphrase: bool,
     #[serde(default)]
     pub has_sudo: bool,
+    /// Version time for device sync (ms).
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub updated_at: i64,
 }
 
 impl Identity {
@@ -639,3 +647,103 @@ pub struct SubParams {
     pub since: Option<String>,
 }
 
+
+// ---------------------------------------------------------------------------
+// Backup & device sync (docs/04 §5)
+// ---------------------------------------------------------------------------
+
+/// A deletion remembered so it reaches other devices. `kind` = group | host | identity | snippet | known_host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../apps/desktop/src/ipc/bindings/")]
+pub struct Tombstone {
+    pub kind: String,
+    pub id: String,
+    #[ts(type = "number")]
+    pub deleted_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SettingRecord {
+    pub key: String,
+    pub value: serde_json::Value,
+    pub updated_at: i64,
+}
+
+/// Per-device backup / sync configuration (`backup.config`, never leaves this device).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../apps/desktop/src/ipc/bindings/")]
+pub struct BackupConfig {
+    pub device_id: String,
+    pub device_name: String,
+    /// Sync folder (e.g. inside Google Drive / OneDrive / Dropbox). None = sync off.
+    pub folder: Option<String>,
+    /// Sync on start, after changes, and when another device wrote.
+    pub auto: bool,
+}
+
+/// What a merge changed on this device.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../apps/desktop/src/ipc/bindings/")]
+pub struct MergeSummary {
+    pub added: u32,
+    pub updated: u32,
+    pub deleted: u32,
+    /// Human notes, e.g. alias conflicts that were resolved.
+    pub notes: Vec<String>,
+}
+
+impl MergeSummary {
+    pub fn changed(&self) -> bool {
+        self.added + self.updated + self.deleted > 0
+    }
+}
+
+/// Another device seen in the sync folder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../apps/desktop/src/ipc/bindings/")]
+pub struct SyncPeer {
+    pub device_id: String,
+    pub device_name: String,
+    /// When that device last wrote its file.
+    #[ts(type = "number")]
+    pub written_at: i64,
+    /// File could not be opened (other password, damaged…).
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../apps/desktop/src/ipc/bindings/")]
+pub struct BackupStatus {
+    pub config: BackupConfig,
+    /// A sync password is saved in this device's vault.
+    pub has_password: bool,
+    pub syncing: bool,
+    #[ts(type = "number | null")]
+    pub last_sync_at: Option<i64>,
+    pub last_error: Option<String>,
+    pub last_summary: Option<MergeSummary>,
+    pub peers: Vec<SyncPeer>,
+}
+
+/// Shown before importing a backup file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../apps/desktop/src/ipc/bindings/")]
+pub struct BackupInfo {
+    pub device_name: String,
+    #[ts(type = "number")]
+    pub created_at: i64,
+    pub hosts: u32,
+    pub groups: u32,
+    pub identities: u32,
+    pub snippets: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../apps/desktop/src/ipc/bindings/")]
+#[serde(rename_all = "snake_case")]
+pub enum ImportMode {
+    /// Newest wins per item; nothing on this device is lost unless it was deleted elsewhere later.
+    Merge,
+    /// This device becomes exactly the backup.
+    Replace,
+}

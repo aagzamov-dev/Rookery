@@ -9,4 +9,8 @@ export type Identity = { id: string, name: string, username: string, auth: AuthK
 /**
  * Read-only flags computed from the vault; ignored on save.
  */
-has_password: boolean, has_key: boolean, has_passphrase: boolean, has_sudo: boolean, };
+has_password: boolean, has_key: boolean, has_passphrase: boolean, has_sudo: boolean, 
+/**
+ * Version time for device sync (ms).
+ */
+updated_at: number, };

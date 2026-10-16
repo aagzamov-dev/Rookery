@@ -112,31 +112,54 @@ S(){ head -1 /proc/stat; cat /proc/net/dev; }; S; echo ---; sleep 1; S; echo ---
 
 ---
 
-## 5. Backup: export / import
+## 5. Backup & device sync — **built (v0.5)**
+
+One encrypted file format serves both a **backup file** (save it, send it by Telegram / mail / USB, import elsewhere) and **device sync** (PC ↔ laptop through a cloud-synced folder). Code: `rookery-core/src/backup.rs`. UI: page tab **Backup & sync** (icon rail; also the title-bar chip).
 
 ### 5.1 File `.rookerybackup`
 ```
-magic "RKRYBK1" | json header { version, created_at, app_version, kdf:{salt,m,t,p}, nonce } | ciphertext
-plaintext = JSON { db: { groups, hosts, identities, snippets, workflows, settings, known_hosts }, secrets: { id: base64 } , keys: {...} }
+"RKRYBK1\n" | header JSON | "\n" | XChaCha20-Poly1305 ciphertext
+header    = { v:1, kdf:{m_kib:65536,t:3,p:1}, salt, nonce, device_id, device_name, created_at }   (readable, authenticated as AAD)
+plaintext = { format:"rookery-data", version:1, groups, hosts, identities (+ their secrets), snippets,
+              known_hosts, settings, tombstones }
 ```
-Encrypted with a key derived from a **backup password** (default: the master password; user may set a different one). Snapshots and logs are not included (optional flag).
+- Key = Argon2id(**sync password**, salt). The derived key is cached in memory per salt (cleared on lock), so only the first sync after unlocking pays the ~0.3 s key derivation; later syncs are milliseconds. Crypto crates are built at `opt-level=3` in every profile.
+- **Sync password:** separate from the master password and the same on every device. Saved in each device's vault (`backup:password`) and never sent back to the webview. PCs can keep different master passwords and PINs.
+- Included: groups, hosts, identities with passwords / keys / passphrases / sudo, snippets, trusted host keys, settings (shortcuts, themes, terminal prefs, dashboard defaults).
+- Not included: dashboard snapshots, cache, and per-device settings (`ui.session`, `ui.dashboard.tab`, `sync.settings`, `backup.*`). Each group's Dashboard Auto-sync switch also stays per device.
+- Tamper / wrong password → refused ("uses a different sync password"). Files over 64 MB are refused.
 
-### 5.2 Import
-- Modes: Replace all / Merge (by id; conflicts → keep newer `updated_at`, show summary). Validates version, migrates older formats.
+### 5.2 Merge (newest wins, deletes travel)
+- Every synced record has a version time: `updated_at` (groups, hosts, identities, snippets, settings); `first_seen` for trusted keys.
+- Deleting leaves a **tombstone** `(kind, id, deleted_at)`, so the deletion reaches the other device and an old file cannot bring the item back.
+- Per item: the newest of {local edit, remote edit, local delete, remote delete} wins. An edit made after a delete brings the item back.
+- Groups are written parents first. A missing parent / group becomes "no parent / ungrouped".
+- A snippet alias already used here is saved without the alias, and the summary says so.
+- An identity's secrets travel with it: the winning version replaces that identity's vault secrets.
+- Import modes: **Merge into this device** (default) or **Replace everything** (wipe synced data first; asks to confirm).
 
-### 5.3 Where
-- Settings › Backup: Export to file, Import from file, Google Drive (section 6). Title-bar chip shows last backup time and warns if > 7 days (configurable).
+### 5.3 Sync folder
+- The user picks a folder that Google Drive for desktop / OneDrive / Dropbox syncs: the same folder on each computer.
+- Each device writes **its own** file `rookery-<device-name>-<id8>.rookerybackup`, so two devices never write the same file and the cloud never makes "conflicted copies". Writes are atomic (temp file + rename).
+- **Sync** = read every other device's file whose (mtime, size) changed → merge → write our file if our data revision changed. Revision = a few MAX / COUNT queries.
+- **Auto sync:** on by default once a folder and password are set. Checks every 10 s; the checks are local file stats only. No network of its own: the cloud app moves the files.
+- The page lists the other devices in the folder with "wrote X ago" and any error. Renaming this device removes its old file.
+- After a merge the UI reloads hosts, snippets, shortcuts and dashboard settings. The title bar briefly shows "Synced · 3 added".
 
-### 5.4 Scheduled local backup (P2)
-- Daily to a chosen folder, keep last N.
+### 5.4 Backup file
+- **Save backup…** (default name `Rookery backup <device> <date>.rookerybackup`), then **Show in folder** or **Copy file**. Copy file puts the file itself on the clipboard (`Set-Clipboard -LiteralPath` on Windows, `osascript` on macOS) to paste into Telegram.
+- **Import backup…** shows device, date and counts first. It tries the saved sync password, and asks for the password if the file was made with another one.
+
+### 5.5 Later
+- P2: scheduled local backups to a folder, keep last N.
+- P2: built-in Google Drive (OAuth) — section 6. The sync folder already covers Drive through Google Drive for desktop.
 
 ---
 
-## 6. Google Drive (manual, user's own account)
-- OAuth 2.0 **PKCE**, loopback redirect (`tauri-plugin-oauth`), scope `https://www.googleapis.com/auth/drive.appdata` only (hidden app folder; no sensitive-scope review).
-- Refresh token stored as a vault secret / keychain. Access token in memory.
-- Backup = upload `.rookerybackup` to appDataFolder as `rookery-<timestamp>.rookerybackup`; keep last 10 (configurable). Restore = list files → pick → download → import (asks backup password).
-- Never automatic unless the user enables "Backup after changes (debounced 10 min)". No background network otherwise.
+## 6. Built-in Google Drive (P2 — not needed for sync; see 5.3)
+- Only if users want Drive without the desktop app: OAuth 2.0 **PKCE**, loopback redirect, scope `drive.appdata` (hidden app folder). Needs a Google Cloud OAuth client.
+- It would upload / download the same per-device files as the sync folder; the merge is identical.
+- The refresh token goes in the vault; the access token stays in memory. Nothing runs in the background unless the user turns it on.
 
 ---
 

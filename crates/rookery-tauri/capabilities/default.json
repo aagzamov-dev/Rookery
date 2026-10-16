@@ -1,8 +1,10 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Main window: core events, app commands, clipboard, file dialogs, opening edited files",
-  "windows": ["main"],
+  "description": "Main window: core events, app commands, clipboard, file dialogs, opening files, self-update",
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:default",
     "clipboard-manager:allow-read-text",
@@ -12,13 +14,26 @@
     "notification:default",
     "core:window:allow-set-fullscreen",
     "core:window:allow-is-fullscreen",
+    "updater:default",
+    "process:allow-restart",
     {
       "identifier": "opener:allow-open-path",
-      "allow": [{ "path": "$DATA/Rookery/cache/**" }]
+      "allow": [
+        {
+          "path": "$DATA/Rookery/cache/**"
+        },
+        {
+          "path": "$DATA/Rookery/logs/**"
+        }
+      ]
     },
     {
       "identifier": "opener:allow-reveal-item-in-dir",
-      "allow": [{ "path": "**" }]
+      "allow": [
+        {
+          "path": "**"
+        }
+      ]
     }
   ]
 }

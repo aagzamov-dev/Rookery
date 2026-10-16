@@ -7,15 +7,15 @@ Every section says **when it loads**, **what it keeps**, and **what it costs the
 ## 1. App shell
 
 ### 1.1 Title bar
-- Logo + name, quick-connect/search field (center), backup status chip ("Backed up to Drive · 2h ago" / "Not backed up"), native window controls.
-- Backup chip click → Settings › Backup.
+- Logo + name, quick-connect/search field (center), sync status chip ("Synced 2 min ago" / "Syncing…" / "Synced · 3 added" / "Sync problem" / "Local only · not backed up"), native window controls.
+- Chip click → Backup & sync page tab.
 
 ### 1.2 Quick connect / search (Ctrl+K also opens the palette)
 - `user@host[:port]` + Enter → creates a temporary host (not saved unless the user clicks "Save") and opens a server tab.
 - Plain text → searches hosts, snippets, open tabs.
 
 ### 1.3 Icon rail (always visible)
-Hosts · Dashboard · Snippets · Tunnels · Hosts & identities · Keyboard shortcuts · (spacer) · Lock · Settings.
+Hosts · Dashboard · Snippets · Tunnels · Hosts & identities · Keyboard shortcuts · Backup & sync · (spacer) · Lock · Settings.
 - Hosts toggles the host list panel. Others open/focus their **page tab**.
 
 ### 1.4 Host list panel (collapsible, remembers width)

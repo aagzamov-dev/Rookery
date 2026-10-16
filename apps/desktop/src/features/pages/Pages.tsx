@@ -10,6 +10,7 @@ import { SnippetsPage } from "../snippets/SnippetsPage";
 import { SettingsPage } from "../settings/SettingsPage";
 import { ShortcutsPage } from "../shortcuts/ShortcutsPage";
 import { DashboardPage } from "../dashboard/DashboardPage";
+import { BackupPage } from "../backup/BackupPage";
 
 /** Page tabs. None of them touch the network on open. */
 export function PageTab({ page, active, onEditHost }: { page: PageKind; active: boolean; onEditHost: (h: Host) => void }) {
@@ -21,6 +22,7 @@ export function PageTab({ page, active, onEditHost }: { page: PageKind; active: 
       {page === "tunnels" && <Soon title="Tunnels" version="v0.5" text="Port forwarding with on/off switches. Each tunnel keeps its server session alive." />}
       {page === "settings" && <SettingsPage />}
       {page === "shortcuts" && <ShortcutsPage />}
+      {page === "backup" && <BackupPage />}
     </div>
   );
 }

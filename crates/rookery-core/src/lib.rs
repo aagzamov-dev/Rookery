@@ -10,6 +10,7 @@
 //! - collectors run only while there is an active subscription for them.
 
 pub mod actions;
+pub mod backup;
 pub mod collectors;
 pub mod db;
 pub mod error;
@@ -47,6 +48,7 @@ pub struct Core {
     pub subscriptions: Arc<subscriptions::Subscriptions>,
     pub sftp: Arc<sftp::Sftp>,
     pub sync: Arc<sync::SyncEngine>,
+    pub backup: Arc<backup::Backup>,
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     pub local: Arc<local::LocalTerminals>,
     pub events: broadcast::Sender<CoreEvent>,
@@ -77,6 +79,7 @@ impl Core {
         ));
         let sftp = Arc::new(sftp::Sftp::new(connections.clone(), events.clone(), data_dir.join("cache")));
         let sync = Arc::new(sync::SyncEngine::new(db.clone(), vault.clone(), connections.clone(), events.clone()));
+        let backup = Arc::new(backup::Backup::new(db.clone(), vault.clone(), events.clone()));
 
         Ok(Self {
             data_dir,
@@ -87,6 +90,7 @@ impl Core {
             subscriptions,
             sftp,
             sync,
+            backup,
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             local: Arc::new(local::LocalTerminals::new(events.clone())),
             events,
@@ -107,6 +111,7 @@ impl Core {
     /// Lock the vault, stop every subscription and (optionally) close sessions.
     pub async fn lock(&self, close_sessions: bool) {
         self.sync.cancel_all();
+        self.backup.lock();
         self.subscriptions.stop_all().await;
         if close_sessions {
             self.terminals.close_all().await;

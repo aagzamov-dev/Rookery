@@ -8,6 +8,7 @@ import { useSessions } from "../stores/sessions";
 import { useMetrics } from "../stores/metrics";
 import { useVault } from "../stores/vault";
 import { useSync } from "../stores/sync";
+import { onDataChanged, useBackup } from "../stores/backup";
 import { terminalRegistry } from "../features/server-tab/terminal/registry";
 
 let started = false;
@@ -70,6 +71,12 @@ export function dispatch(ev: CoreEvent) {
       });
       break;
     }
+    case "backup_status":
+      useBackup.getState().setStatus(ev.status);
+      break;
+    case "data_changed":
+      void onDataChanged(ev.summary);
+      break;
     case "sync_progress":
       useSync.getState().onProgress(ev.job_id, ev.host_id, ev.state, ev.snapshot);
       break;

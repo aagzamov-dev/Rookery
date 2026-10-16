@@ -111,6 +111,18 @@ const MIGRATIONS: &[&str] = &[
     UPDATE server_snapshots SET state = CASE WHEN ok = 1 THEN 'ok' ELSE 'failed' END,
         last_ok_at = CASE WHEN ok = 1 THEN taken_at END, docker_json = NULL;
     "#,
+    // v5: device sync — every synced record has a version time; deletions leave a tombstone
+    r#"
+    ALTER TABLE groups ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE identities ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE settings ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0;
+    CREATE TABLE tombstones (
+        kind TEXT NOT NULL,
+        id TEXT NOT NULL,
+        deleted_at INTEGER NOT NULL,
+        PRIMARY KEY (kind, id)
+    );
+    "#,
 ];
 
 pub struct Db {
@@ -144,7 +156,7 @@ impl Db {
         let c = self.conn.lock();
         let mut st = c.prepare(
             "SELECT id, parent_id, name, color, sort, identity_id, jump_host_id, theme, start_folder,
-                    refresh_json, auto_sync_enabled
+                    refresh_json, auto_sync_enabled, updated_at
              FROM groups ORDER BY sort, name",
         )?;
         let rows = st.query_map([], row_group)?;
@@ -155,7 +167,7 @@ impl Db {
         let c = self.conn.lock();
         Ok(c.query_row(
             "SELECT id, parent_id, name, color, sort, identity_id, jump_host_id, theme, start_folder,
-                    refresh_json, auto_sync_enabled
+                    refresh_json, auto_sync_enabled, updated_at
              FROM groups WHERE id = ?1",
             [id],
             row_group,
@@ -167,16 +179,23 @@ impl Db {
         if g.id.is_empty() {
             g.id = new_id();
         }
+        g.updated_at = now_ms();
+        self.put_group(&g)?;
+        Ok(g)
+    }
+
+    /// Write a group as is, keeping `updated_at` (device sync / backup import).
+    pub fn put_group(&self, g: &Group) -> Result<()> {
         let c = self.conn.lock();
         c.execute(
             "INSERT INTO groups (id, parent_id, name, color, sort, identity_id, jump_host_id, theme,
-                                 start_folder, refresh_json, auto_sync_enabled)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                                 start_folder, refresh_json, auto_sync_enabled, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(id) DO UPDATE SET
                 parent_id=excluded.parent_id, name=excluded.name, color=excluded.color, sort=excluded.sort,
                 identity_id=excluded.identity_id, jump_host_id=excluded.jump_host_id, theme=excluded.theme,
                 start_folder=excluded.start_folder, refresh_json=excluded.refresh_json,
-                auto_sync_enabled=excluded.auto_sync_enabled",
+                auto_sync_enabled=excluded.auto_sync_enabled, updated_at=excluded.updated_at",
             params![
                 g.id,
                 g.parent_id,
@@ -189,14 +208,14 @@ impl Db {
                 g.start_folder,
                 serde_json::to_string(&g.refresh)?,
                 g.auto_sync_enabled as i64,
+                g.updated_at,
             ],
         )?;
-        Ok(g)
+        Ok(())
     }
 
     pub fn delete_group(&self, id: &str) -> Result<()> {
-        self.conn.lock().execute("DELETE FROM groups WHERE id = ?1", [id])?;
-        Ok(())
+        self.delete_tracked("groups", "id", "group", id)
     }
 
     // ----------------------------------------------------------------- hosts
@@ -225,6 +244,12 @@ impl Db {
             h.created_at = now;
         }
         h.updated_at = now;
+        self.put_host(&h)?;
+        Ok(h)
+    }
+
+    /// Write a host as is, keeping its timestamps (device sync / backup import).
+    pub fn put_host(&self, h: &Host) -> Result<()> {
         let c = self.conn.lock();
         c.execute(
             "INSERT INTO hosts (id, group_id, name, address, port, env_label, tags_json, identity_id,
@@ -260,19 +285,18 @@ impl Db {
                 h.updated_at,
             ],
         )?;
-        Ok(h)
+        Ok(())
     }
 
     pub fn delete_host(&self, id: &str) -> Result<()> {
-        self.conn.lock().execute("DELETE FROM hosts WHERE id = ?1", [id])?;
-        Ok(())
+        self.delete_tracked("hosts", "id", "host", id)
     }
 
     // ------------------------------------------------------------ identities
 
     pub fn list_identities(&self) -> Result<Vec<Identity>> {
         let c = self.conn.lock();
-        let mut st = c.prepare("SELECT id, name, username, auth, key_path FROM identities ORDER BY name")?;
+        let mut st = c.prepare("SELECT id, name, username, auth, key_path, updated_at FROM identities ORDER BY name")?;
         let rows = st.query_map([], row_identity)?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
@@ -280,7 +304,7 @@ impl Db {
     pub fn get_identity(&self, id: &str) -> Result<Identity> {
         let c = self.conn.lock();
         c.query_row(
-            "SELECT id, name, username, auth, key_path FROM identities WHERE id = ?1",
+            "SELECT id, name, username, auth, key_path, updated_at FROM identities WHERE id = ?1",
             [id],
             row_identity,
         )
@@ -292,18 +316,24 @@ impl Db {
         if i.id.is_empty() {
             i.id = new_id();
         }
-        self.conn.lock().execute(
-            "INSERT INTO identities (id, name, username, auth, key_path) VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(id) DO UPDATE SET name=excluded.name, username=excluded.username,
-                auth=excluded.auth, key_path=excluded.key_path",
-            params![i.id, i.name, i.username, enum_str(&i.auth)?, i.key_path],
-        )?;
+        i.updated_at = now_ms();
+        self.put_identity(&i)?;
         Ok(i)
     }
 
-    pub fn delete_identity(&self, id: &str) -> Result<()> {
-        self.conn.lock().execute("DELETE FROM identities WHERE id = ?1", [id])?;
+    /// Write an identity as is, keeping `updated_at` (device sync / backup import).
+    pub fn put_identity(&self, i: &Identity) -> Result<()> {
+        self.conn.lock().execute(
+            "INSERT INTO identities (id, name, username, auth, key_path, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id) DO UPDATE SET name=excluded.name, username=excluded.username,
+                auth=excluded.auth, key_path=excluded.key_path, updated_at=excluded.updated_at",
+            params![i.id, i.name, i.username, enum_str(&i.auth)?, i.key_path, i.updated_at],
+        )?;
         Ok(())
+    }
+
+    pub fn delete_identity(&self, id: &str) -> Result<()> {
+        self.delete_tracked("identities", "id", "identity", id)
     }
 
     // ----------------------------------------------------------- known hosts
@@ -335,6 +365,20 @@ impl Db {
                 fingerprint=excluded.fingerprint, first_seen=excluded.first_seen, last_seen=excluded.last_seen",
             params![host_id, key_type, fingerprint, now],
         )?;
+        self.clear_tombstone("known_host", host_id)?;
+        Ok(())
+    }
+
+    /// Write a trusted key as is (device sync). Its version is `first_seen` (when it was trusted).
+    pub fn put_known_host(&self, k: &KnownHost) -> Result<()> {
+        self.conn.lock().execute(
+            "INSERT INTO known_hosts (host_id, key_type, fingerprint, first_seen, last_seen)
+             SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (SELECT 1 FROM hosts WHERE id = ?1)
+             ON CONFLICT(host_id) DO UPDATE SET key_type=excluded.key_type,
+                fingerprint=excluded.fingerprint, first_seen=excluded.first_seen,
+                last_seen=max(last_seen, excluded.last_seen)",
+            params![k.host_id, k.key_type, k.fingerprint, k.first_seen, k.last_seen],
+        )?;
         Ok(())
     }
 
@@ -355,8 +399,7 @@ impl Db {
 
     /// Forget a trusted key: the next connection asks again.
     pub fn forget_host_key(&self, host_id: &str) -> Result<()> {
-        self.conn.lock().execute("DELETE FROM known_hosts WHERE host_id = ?1", [host_id])?;
-        Ok(())
+        self.delete_tracked("known_hosts", "host_id", "known_host", host_id)
     }
 
     pub fn touch_known_host(&self, host_id: &str) -> Result<()> {
@@ -449,6 +492,13 @@ impl Db {
             s.created_at = now;
         }
         s.updated_at = now;
+        self.put_snippet(&s)?;
+        Ok(s)
+    }
+
+    /// Write a snippet as is, keeping its timestamps (device sync / backup import).
+    /// Fails if another snippet already uses the alias.
+    pub fn put_snippet(&self, s: &Snippet) -> Result<()> {
         self.conn.lock().execute(
             "INSERT INTO snippets (id, name, alias, command, vars_json, scope, scope_value, run_mode, hotkey,
                                    ask_prod, pack, sort, created_at, updated_at, steps_json, continue_on_error)
@@ -477,12 +527,11 @@ impl Db {
                 s.continue_on_error as i64,
             ],
         )?;
-        Ok(s)
+        Ok(())
     }
 
     pub fn delete_snippet(&self, id: &str) -> Result<()> {
-        self.conn.lock().execute("DELETE FROM snippets WHERE id = ?1", [id])?;
-        Ok(())
+        self.delete_tracked("snippets", "id", "snippet", id)
     }
 
     // -------------------------------------------------------------- settings
@@ -499,12 +548,130 @@ impl Db {
     }
 
     pub fn set_setting<T: serde::Serialize>(&self, key: &str, value: &T) -> Result<()> {
+        let json = serde_json::to_string(value)?;
+        // The version time only moves when the value really changes (no needless sync pushes).
         self.conn.lock().execute(
-            "INSERT INTO settings (key, value_json) VALUES (?1, ?2)
-             ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json",
-            params![key, serde_json::to_string(value)?],
+            "INSERT INTO settings (key, value_json, updated_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json,
+                updated_at = CASE WHEN value_json = excluded.value_json THEN updated_at ELSE excluded.updated_at END",
+            params![key, json, now_ms()],
         )?;
         Ok(())
+    }
+
+    /// Settings that travel between devices (everything except per-device keys).
+    pub fn list_synced_settings(&self) -> Result<Vec<SettingRecord>> {
+        let c = self.conn.lock();
+        let mut st = c.prepare("SELECT key, value_json, updated_at FROM settings")?;
+        let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (key, json, updated_at) = row?;
+            if !is_local_setting(&key) {
+                out.push(SettingRecord { key, value: serde_json::from_str(&json)?, updated_at });
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn put_setting(&self, s: &SettingRecord) -> Result<()> {
+        if is_local_setting(&s.key) {
+            return Ok(());
+        }
+        self.conn.lock().execute(
+            "INSERT INTO settings (key, value_json, updated_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at",
+            params![s.key, serde_json::to_string(&s.value)?, s.updated_at],
+        )?;
+        Ok(())
+    }
+
+    // ------------------------------------------------------------ tombstones
+
+    /// Delete a row and remember it, so the deletion reaches other devices.
+    fn delete_tracked(&self, table: &str, key_col: &str, kind: &str, id: &str) -> Result<()> {
+        let mut c = self.conn.lock();
+        let tx = c.transaction()?;
+        let n = tx.execute(&format!("DELETE FROM {table} WHERE {key_col} = ?1"), [id])?;
+        if n > 0 {
+            tx.execute(
+                "INSERT INTO tombstones (kind, id, deleted_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(kind, id) DO UPDATE SET deleted_at = excluded.deleted_at",
+                params![kind, id, now_ms()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Apply a deletion that came from another device (keeps its time).
+    pub fn apply_delete(&self, t: &Tombstone) -> Result<()> {
+        let (table, col) = match t.kind.as_str() {
+            "group" => ("groups", "id"),
+            "host" => ("hosts", "id"),
+            "identity" => ("identities", "id"),
+            "snippet" => ("snippets", "id"),
+            "known_host" => ("known_hosts", "host_id"),
+            _ => return Ok(()),
+        };
+        let mut c = self.conn.lock();
+        let tx = c.transaction()?;
+        tx.execute(&format!("DELETE FROM {table} WHERE {col} = ?1"), [&t.id])?;
+        tx.execute(
+            "INSERT INTO tombstones (kind, id, deleted_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(kind, id) DO UPDATE SET deleted_at = max(deleted_at, excluded.deleted_at)",
+            params![t.kind, t.id, t.deleted_at],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn list_tombstones(&self) -> Result<Vec<Tombstone>> {
+        let c = self.conn.lock();
+        let mut st = c.prepare("SELECT kind, id, deleted_at FROM tombstones")?;
+        let rows = st.query_map([], |r| Ok(Tombstone { kind: r.get(0)?, id: r.get(1)?, deleted_at: r.get(2)? }))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    pub fn clear_tombstone(&self, kind: &str, id: &str) -> Result<()> {
+        self.conn.lock().execute("DELETE FROM tombstones WHERE kind = ?1 AND id = ?2", params![kind, id])?;
+        Ok(())
+    }
+
+    /// Replace everything that syncs (backup "Replace all"). Snapshots and per-device settings stay.
+    pub fn wipe_synced(&self) -> Result<()> {
+        let mut c = self.conn.lock();
+        let tx = c.transaction()?;
+        let local: Vec<String> = LOCAL_SETTING_KEYS.iter().map(|k| format!("'{k}'")).collect();
+        tx.execute_batch(&format!(
+            "DELETE FROM known_hosts; DELETE FROM hosts; DELETE FROM groups; DELETE FROM identities;
+             DELETE FROM snippets; DELETE FROM tombstones;
+             DELETE FROM settings WHERE key NOT IN ({}) AND key NOT LIKE 'backup.%';",
+            local.join(",")
+        ))?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Changes whenever anything that syncs changes. Cheap: a few MAX / COUNT queries.
+    pub fn data_revision(&self) -> Result<String> {
+        let c = self.conn.lock();
+        let local: Vec<String> = LOCAL_SETTING_KEYS.iter().map(|k| format!("'{k}'")).collect();
+        let sql = format!(
+            "SELECT
+               (SELECT COALESCE(MAX(updated_at), 0) FROM groups),
+               (SELECT COALESCE(MAX(updated_at), 0) FROM hosts),
+               (SELECT COALESCE(MAX(updated_at), 0) FROM identities),
+               (SELECT COALESCE(MAX(updated_at), 0) FROM snippets),
+               (SELECT COALESCE(MAX(first_seen), 0) FROM known_hosts),
+               (SELECT COALESCE(MAX(updated_at), 0) FROM settings WHERE key NOT IN ({}) AND key NOT LIKE 'backup.%'),
+               (SELECT COALESCE(MAX(deleted_at), 0) FROM tombstones),
+               (SELECT COUNT(*) FROM groups) + (SELECT COUNT(*) FROM hosts) + (SELECT COUNT(*) FROM identities)
+                 + (SELECT COUNT(*) FROM snippets) + (SELECT COUNT(*) FROM known_hosts) + (SELECT COUNT(*) FROM tombstones)",
+            local.join(",")
+        );
+        let v: Vec<i64> = c.query_row(&sql, [], |r| (0..8).map(|i| r.get::<_, i64>(i)).collect())?;
+        Ok(v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(":"))
     }
 
     // -------------------------------------------------------- inheritance
@@ -607,6 +774,13 @@ const HOST_SELECT: &str = "SELECT id, group_id, name, address, port, env_label, 
     theme, start_view, start_folder, auto_reconnect, keepalive_s, log_session, refresh_json, sort,
     created_at, updated_at FROM hosts";
 
+/// Settings that stay on this device (open tabs, dashboard tab, sync / backup config).
+pub const LOCAL_SETTING_KEYS: &[&str] = &["ui.session", "ui.dashboard.tab", "sync.settings"];
+
+pub fn is_local_setting(key: &str) -> bool {
+    LOCAL_SETTING_KEYS.contains(&key) || key.starts_with("backup.")
+}
+
 const SNAPSHOT_SELECT: &str = "SELECT host_id, taken_at, state, error, last_ok_at, metrics_json, prev_cpu, os,
     docker_json, services_json, duration_ms FROM server_snapshots";
 
@@ -676,6 +850,7 @@ fn row_group(r: &Row) -> rusqlite::Result<Group> {
         start_folder: r.get(8)?,
         refresh: json_or_default(r.get(9)?),
         auto_sync_enabled: r.get::<_, i64>(10)? != 0,
+        updated_at: r.get(11)?,
     })
 }
 
@@ -714,6 +889,7 @@ fn row_identity(r: &Row) -> rusqlite::Result<Identity> {
         has_key: false,
         has_passphrase: false,
         has_sudo: false,
+        updated_at: r.get(5)?,
     })
 }
 
@@ -758,6 +934,7 @@ mod tests {
             start_folder: None,
             refresh: RefreshSetting::default(),
             auto_sync_enabled: false,
+            updated_at: 0,
         }
     }
 
@@ -787,6 +964,7 @@ mod tests {
                 has_key: false,
                 has_passphrase: false,
                 has_sudo: false,
+                updated_at: 0,
             })
             .unwrap();
         let mut parent = group("Clients", None);

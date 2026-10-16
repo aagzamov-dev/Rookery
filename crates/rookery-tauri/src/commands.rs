@@ -378,6 +378,89 @@ pub fn sync_window_visible(s: State<'_, AppState>, visible: bool) {
     s.core.sync.set_visible(visible);
 }
 
+// --------------------------------------------------------- backup & device sync
+
+/// Run blocking work (Argon2id, file IO) off the async workers.
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T> + Send + 'static) -> Result<T> {
+    tauri::async_runtime::spawn_blocking(f).await.map_err(|e| Error::Other(e.to_string()))?
+}
+
+#[tauri::command]
+pub fn backup_status(s: State<'_, AppState>) -> Result<BackupStatus> {
+    s.core.backup.status()
+}
+
+#[tauri::command]
+pub fn backup_set_config(s: State<'_, AppState>, folder: Option<String>, auto: bool, device_name: String) -> Result<BackupStatus> {
+    s.core.backup.set_config(folder, auto, device_name)
+}
+
+/// The secret goes straight into the vault; it never comes back to the webview.
+#[tauri::command]
+pub async fn backup_set_password(s: State<'_, AppState>, password: String) -> Result<()> {
+    let b = s.core.backup.clone();
+    blocking(move || b.set_password(&password)).await
+}
+
+#[tauri::command]
+pub async fn backup_sync_now(s: State<'_, AppState>) -> Result<BackupStatus> {
+    s.core.backup.sync_now(true).await
+}
+
+/// `password` None = the saved sync password.
+#[tauri::command]
+pub async fn backup_export(s: State<'_, AppState>, path: String, password: Option<String>) -> Result<()> {
+    let b = s.core.backup.clone();
+    blocking(move || b.export_file(std::path::Path::new(&path), password.as_deref())).await
+}
+
+#[tauri::command]
+pub async fn backup_inspect(s: State<'_, AppState>, path: String, password: Option<String>) -> Result<BackupInfo> {
+    let b = s.core.backup.clone();
+    blocking(move || b.inspect_file(std::path::Path::new(&path), password.as_deref())).await
+}
+
+#[tauri::command]
+pub async fn backup_import(s: State<'_, AppState>, path: String, password: Option<String>, mode: ImportMode) -> Result<MergeSummary> {
+    let b = s.core.backup.clone();
+    blocking(move || b.import_file(std::path::Path::new(&path), password.as_deref(), mode)).await
+}
+
+/// Put a file on the clipboard (paste it into Telegram, Explorer, mail…).
+#[tauri::command]
+pub async fn file_copy_to_clipboard(path: String) -> Result<()> {
+    if !std::path::Path::new(&path).is_file() {
+        return Err(Error::NotFound(path));
+    }
+    blocking(move || {
+        #[cfg(windows)]
+        let out = {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            let lit = path.replace('\'', "''");
+            std::process::Command::new("powershell")
+                .args(["-NoProfile", "-NonInteractive", "-Command", &format!("Set-Clipboard -LiteralPath '{lit}'")])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output()?
+        };
+        #[cfg(target_os = "macos")]
+        let out = {
+            let lit = path.replace('\\', "\\\\").replace('"', "\\\"");
+            std::process::Command::new("osascript")
+                .args(["-e", &format!("set the clipboard to (POSIX file \"{lit}\")")])
+                .output()?
+        };
+        #[cfg(not(any(windows, target_os = "macos")))]
+        let out: std::process::Output = return Err(Error::Other("copying files is not supported here; use Show in folder".into()));
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err(Error::Other(String::from_utf8_lossy(&out.stderr).trim().to_string()))
+        }
+    })
+    .await
+}
+
 // ---------------------------------------------------------------- snippets
 
 #[tauri::command]

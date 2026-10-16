@@ -2,7 +2,7 @@
 
 Local-first server manager: terminal, SFTP, Docker and monitoring for Windows and macOS (Android later).
 
-Specs: [01-ARCHITECTURE](01-ARCHITECTURE.md) · [02-ROADMAP](02-ROADMAP.md) · [03-DESKTOP-FEATURES](03-DESKTOP-FEATURES.md) · [04-DATA-SYNC-SECURITY](04-DATA-SYNC-SECURITY.md) · [05-MOBILE-TABLET](05-MOBILE-TABLET.md)
+Specs: [01-ARCHITECTURE](01-ARCHITECTURE.md) · [02-ROADMAP](02-ROADMAP.md) · [03-DESKTOP-FEATURES](03-DESKTOP-FEATURES.md) · [04-DATA-SYNC-SECURITY](04-DATA-SYNC-SECURITY.md) · [05-MOBILE-TABLET](05-MOBILE-TABLET.md) · [06-AUTO-UPDATE](06-AUTO-UPDATE.md)
 Design: https://claude.ai/artifact/B6ZbSxMVvfykQtpF5ojndo
 
 ## Layout
@@ -52,7 +52,9 @@ npm run build          # release bundle
 
 - Dashboard (v0.4): group tabs (All · each group · Ungrouped), cards from saved snapshots (opening it never connects), Sync for the selected tab or one card, Auto-sync switch per group with interval (On / Off / Mixed on All, with confirmation), needs-attention list (high CPU twice in a row, RAM, disk, restarting/unhealthy containers, failed services, offline > 1 h), right-click menus. Each sync is one command over one short connection (or the already-open session), max 3 servers at once, offline servers fail fast, 3 failures in a row double the interval (up to 30 min), and auto-sync pauses when the app is locked or minimised for a minute.
 
-Not yet: backup/Drive/jump hosts/agent auth/tunnels (v0.5).
+- Backup & sync (v0.5): one sync password (same on every device); a sync folder inside Google Drive / OneDrive / Dropbox keeps PC and laptop merged (newest edit wins, deletions sync, passwords included, encrypted); backup file with Save / Show in folder / Copy file (paste into Telegram) and Import with Merge or Replace.
+
+Not yet (v0.5): importers (~/.ssh/config, MobaXterm, PuTTY), tunnels, jump hosts, SSH agent login, key generator.
 
 ## Where data lives
 

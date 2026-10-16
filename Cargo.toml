@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/rookery-core", "crates/rookery-tauri"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.6.0"
 edition = "2021"
 license = "MIT"
 rust-version = "1.80"
@@ -25,3 +25,17 @@ lto = true
 opt-level = "s"
 panic = "abort"
 strip = true
+
+# Key derivation (vault unlock, backup files) must be fast in every build: optimise the crypto crates fully.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3
+[profile.dev.package.chacha20]
+opt-level = 3
+[profile.dev.package.poly1305]
+opt-level = 3
+[profile.release.package.argon2]
+opt-level = 3
+[profile.release.package.blake2]
+opt-level = 3

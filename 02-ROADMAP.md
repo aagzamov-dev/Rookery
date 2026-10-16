@@ -6,7 +6,7 @@ Priorities:
 - **P2** — nice to have.
 - **P3** — later / maybe.
 
-Each feature points to the file where it is specified: `[A]` 01-ARCHITECTURE, `[D]` 03-DESKTOP-FEATURES, `[S]` 04-DATA-SYNC-SECURITY, `[M]` 05-MOBILE-TABLET.
+Each feature points to the file where it is specified: `[A]` 01-ARCHITECTURE, `[D]` 03-DESKTOP-FEATURES, `[S]` 04-DATA-SYNC-SECURITY, `[M]` 05-MOBILE-TABLET, `[U]` 06-AUTO-UPDATE.
 
 ---
 
@@ -96,14 +96,15 @@ Done when: 20 hosts in the list cause **zero** connections; opening/closing/swit
 
 | P | Feature | Spec |
 |---|---|---|
-| P0 | Encrypted export/import `.rookerybackup` (Argon2id + XChaCha20) with version/migration | [S] §5 |
-| P0 | Google Drive manual backup/restore (OAuth PKCE, `drive.appdata`), refresh token in keychain | [S] §6 |
-| P0 | "Backed up to Drive · 2h ago" status in title bar; restore chooser | [D] §1.1 |
+| ✅ P0 | Encrypted backup file `.rookerybackup` (Argon2id + XChaCha20): Save / Show in folder / Copy file, Import with Merge or Replace | [S] §5 |
+| ✅ P0 | Device sync (PC ↔ laptop) through a cloud-synced folder (Google Drive / OneDrive / Dropbox): one file per device, newest wins, deletions travel, auto sync | [S] §5.3 |
+| P2 | Built-in Google Drive (OAuth) — only if the sync folder is not enough | [S] §6 |
+| ✅ P0 | Sync status chip in the title bar ("Synced 2 min ago", "Synced · 3 added") | [D] §1.1 |
 | P1 | Import from `~/.ssh/config`, MobaXterm `.mxtsessions`, PuTTY registry | [S] §7 |
 | P1 | Port-forwarding manager (Tunnels page) with on/off switches | [D] §10 |
 | P1 | Jump host / bastion | [S] §1, [D] §7 |
 | P1 | SSH key generator + "copy key to server" | [D] §7.4 |
-| P2 | Scheduled local backups to a folder | [S] §5.4 |
+| P2 | Scheduled local backups to a folder | [S] §5.5 |
 
 ---
 
@@ -111,7 +112,7 @@ Done when: 20 hosts in the list cause **zero** connections; opening/closing/swit
 
 | P | Feature | Spec |
 |---|---|---|
-| P0 | Code signing (Windows cert, Apple notarization), auto-update | [A] §2 |
+| P0 | Code signing (Windows cert, Apple notarization), auto-update (signed updates via GitHub Releases + `latest.json`) | [A] §2, [U] |
 | P0 | Settings page (global refresh defaults, theme, fonts, shortcuts, auto-lock) | [D] §11 |
 | P1 | Session logging to file | [D] §3.9 |
 | P1 | Triggers (highlight ERROR/WARN; optional notify) | [D] §3.10 |

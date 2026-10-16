@@ -42,7 +42,8 @@ function TextAsk({ req }: { req: TextRequest }) {
       >
         <Field label={req.label}>
           <TextInput
-            mono
+            mono={!req.secret}
+            type={req.secret ? "password" : "text"}
             autoFocus
             value={value}
             onChange={(e) => setValue(e.target.value)}

@@ -3,7 +3,7 @@
 use serde::Serialize;
 use ts_rs::TS;
 
-use crate::model::{Container, ContainerStats, MetricsSample, SessionInfo, Snapshot, SyncState, SyncSummary, Transfer};
+use crate::model::{BackupStatus, Container, ContainerStats, MergeSummary, MetricsSample, SessionInfo, Snapshot, SyncState, SyncSummary, Transfer};
 
 #[derive(Debug, Clone, Serialize, TS)]
 #[ts(export, export_to = "../../../apps/desktop/src/ipc/bindings/")]
@@ -35,6 +35,10 @@ pub enum CoreEvent {
     SyncProgress { job_id: String, host_id: String, state: SyncState, snapshot: Option<Snapshot> },
     /// A sync run finished. `auto` = started by the scheduler, not by the user.
     SyncDone { job_id: String, auto: bool, summary: SyncSummary },
+    /// Backup / device sync state changed.
+    BackupStatus { status: BackupStatus },
+    /// Data arrived from another device or a backup: reload hosts, snippets, settings.
+    DataChanged { summary: MergeSummary },
     VaultLocked,
     VaultUnlocked,
 }

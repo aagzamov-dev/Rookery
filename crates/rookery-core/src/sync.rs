@@ -449,6 +449,7 @@ mod tests {
             start_folder: None,
             refresh: RefreshSetting::default(),
             auto_sync_enabled: false,
+            updated_at: 0,
         };
         let groups = vec![g("a", None), g("b", Some("a")), g("c", Some("b")), g("d", None)];
         let t = subtree(&groups, "a");

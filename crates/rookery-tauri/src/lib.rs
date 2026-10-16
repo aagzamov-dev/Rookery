@@ -24,11 +24,19 @@ pub fn run() {
         )
         .init();
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_notification::init());
+    // Desktop only: self-update (signed, see 06-AUTO-UPDATE.md), relaunch, global show/hide hotkey.
+    #[cfg(desktop)]
+    let builder = builder
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build());
+
+    builder
         .setup(|app| {
             let core = Core::init(Core::default_data_dir()).map_err(|e| e.to_string())?;
 
@@ -50,6 +58,8 @@ pub fn run() {
 
             // Auto-sync scheduler: idle unless a group's Auto-sync switch is on.
             tauri::async_runtime::spawn(core.sync.clone().run_scheduler());
+            // Device sync: idle until a sync folder and password are set.
+            tauri::async_runtime::spawn(core.backup.clone().run_scheduler());
 
             app.manage(AppState { core, attachments: Mutex::new(HashMap::new()) });
             Ok(())
@@ -105,6 +115,14 @@ pub fn run() {
             commands::refresh_global_set,
             commands::sync_set_auto,
             commands::sync_window_visible,
+            commands::backup_status,
+            commands::backup_set_config,
+            commands::backup_set_password,
+            commands::backup_sync_now,
+            commands::backup_export,
+            commands::backup_inspect,
+            commands::backup_import,
+            commands::file_copy_to_clipboard,
             commands::snippets_list,
             commands::snippet_save,
             commands::snippet_delete,

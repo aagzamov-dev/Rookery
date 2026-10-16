@@ -1,7 +1,7 @@
 import { create } from "zustand";
 
 export type View = "overview" | "terminal" | "files" | "docker" | "services" | "processes" | "logs" | "settings";
-export type PageKind = "dashboard" | "snippets" | "hosts" | "tunnels" | "settings" | "shortcuts";
+export type PageKind = "dashboard" | "snippets" | "hosts" | "tunnels" | "settings" | "shortcuts" | "backup";
 
 export type Tab =
   | { id: string; kind: "server"; hostId: string }
