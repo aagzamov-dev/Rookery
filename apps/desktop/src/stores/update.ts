@@ -8,7 +8,7 @@ import { api } from "../ipc/api";
 import { useFiles } from "./files";
 import { useTabs } from "./tabs";
 
-export const RELEASES_URL = "https://github.com/aagzamov-dev/server-managment/releases";
+export const RELEASES_URL = "https://github.com/aagzamov-dev/Rookery/releases";
 const PREFS_KEY = "ui.update";
 const DAY = 24 * 60 * 60 * 1000;
 

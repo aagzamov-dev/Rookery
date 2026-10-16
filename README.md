@@ -1,68 +1,162 @@
-# Rookery
+<p align="center">
+  <img src="app-icon.svg" width="88" alt="Rookery icon" />
+</p>
 
-Local-first server manager: terminal, SFTP, Docker and monitoring for Windows and macOS (Android later).
+<h1 align="center">Rookery</h1>
 
-Specs: [01-ARCHITECTURE](01-ARCHITECTURE.md) · [02-ROADMAP](02-ROADMAP.md) · [03-DESKTOP-FEATURES](03-DESKTOP-FEATURES.md) · [04-DATA-SYNC-SECURITY](04-DATA-SYNC-SECURITY.md) · [05-MOBILE-TABLET](05-MOBILE-TABLET.md) · [06-AUTO-UPDATE](06-AUTO-UPDATE.md)
-Design: https://claude.ai/artifact/B6ZbSxMVvfykQtpF5ojndo
+<p align="center">
+  <b>A calm, fast server manager for people with many servers.</b><br />
+  Terminal, files, Docker, logs and a dashboard: one tab per server, everything stored on your own computer, encrypted.
+</p>
 
-## Layout
+<p align="center">
+  <a href="https://github.com/aagzamov-dev/Rookery/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/aagzamov-dev/Rookery?color=8AB4FF&label=download" /></a>
+  <img alt="Windows and macOS" src="https://img.shields.io/badge/Windows%20%7C%20macOS-1B2230?logo=tauri" />
+  <img alt="MIT license" src="https://img.shields.io/badge/license-MIT-57C994" />
+</p>
 
+<p align="center">
+  <img src="docs/screenshots/dashboard.png" alt="Rookery dashboard: servers grouped by environment with CPU, RAM, disk and a needs-attention list" width="100%" />
+</p>
+
+---
+
+## What is Rookery?
+
+Rookery is a desktop app for managing SSH servers: a lighter, cleaner alternative to MobaXterm or Termius.
+
+You add your servers once and group them (Production, Staging, Home lab, a client…). A click opens a server as a **tab**, and that tab holds everything about it: terminals, files, Docker containers with logs, systemd services, processes and log files.
+
+Everything stays on **your** computer: servers, logins, passwords and keys, snippets and shortcuts. Passwords and keys are encrypted in a vault you unlock with a 4-digit PIN. There is no account and no cloud service. When you want your laptop to match your PC, Rookery syncs through a folder **you** choose (Google Drive, OneDrive, Dropbox), still encrypted.
+
+## Why you might like it
+
+| | |
+|---|---|
+| 🔒 **Local and encrypted** | Vault: Argon2id + XChaCha20-Poly1305. The PIN unlocks it through the OS keychain. Secrets never reach the UI layer. |
+| 💤 **Nothing connects until you ask** | Opening the app or the dashboard makes no connection. A server connects when you open its tab, and views only collect data while they're on screen. Your servers aren't polled in the background. |
+| 🗂 **One tab per server** | Terminal, Files, Docker, Services, Processes, Logs, all in one place, and kept as you left them when you switch tabs. |
+| 🔁 **PC ↔ laptop sync without an account** | Each device writes its own encrypted file into your cloud folder. Newest edit wins, and deletions sync too. |
+| ⚡ **Small and fast** | Rust core plus a native webview. About a 4 MB installer, no Electron. |
+| ⌨️ **Keyboard first** | ~50 functions you can bind (MobaXterm / PuTTY, Windows Terminal and iTerm2 presets), a command palette, and snippets with aliases (`paserve` + Tab). |
+| 📥 **Easy to move to** | Import from MobaXterm, PuTTY or `~/.ssh/config` in a minute. |
+| 🔄 **Updates itself** | Signed updates from GitHub Releases: one click, and your data is kept. |
+
+## A quick tour
+
+### Terminal
+An iTerm-style terminal (xterm.js + WebGL): themes (10 built in, plus iTerm `.itermcolors` import), find, broadcast typing to several terminals, copy/paste the way you like (MobaXterm or Windows Terminal style). Also:
+- **Snippet bar:** one-click commands for this server, with `${variables}` and multi-step workflows. Production asks before running anything.
+- **Triggers:** lines with ERROR / WARN, or your own patterns, get a coloured band and a mark in the scrollbar.
+- **Sudo helper:** fills the sudo password from the vault; the webview never sees it.
+- **Notification** when a long command finishes while you're elsewhere.
+- **Session logs** to plain-text files, if you want them.
+- **Local shells** too: PowerShell, cmd, WSL, Git Bash, zsh.
+
+<img src="docs/screenshots/terminal.png" alt="Terminal tab with a snippet bar and ERROR / WARNING lines highlighted" width="100%" />
+
+### Docker, without typing `docker`
+- **Containers** grouped by compose project, with live CPU / memory.
+- **Actions:** start / stop / restart, shell into a container.
+- **Live logs** with error / warning filters and search.
+- **No polling:** the list updates from `docker events`.
+
+<img src="docs/screenshots/docker.png" alt="Docker view: compose project, live stats and a container's logs with errors highlighted" width="100%" />
+
+### Dashboard
+- **Every server at a glance:** CPU, RAM, disk, containers, "synced 2 min ago".
+- **Your choice of when:** it shows the last saved results, so opening it costs nothing. Press **Sync** for the selected group, or turn **Auto-sync** on per group with an interval.
+- **Needs attention:** high CPU twice in a row, full disks, unhealthy containers, offline servers. Click one to jump to the right view.
+
+### Backup & sync
+- **Sync folder:** pick a folder that Google Drive / OneDrive / Dropbox syncs, set the same sync password on each device, done.
+- **Backup file:** save one encrypted file, send it anywhere (Telegram, USB…), and import it with **Merge** or **Replace**.
+
+<img src="docs/screenshots/backup.png" alt="Backup and sync page with a sync folder and another device listed" width="100%" />
+
+### And more
+
+| Snippets | Shortcuts | Hosts |
+|---|---|---|
+| <img src="docs/screenshots/snippets.png" alt="Snippets page" /> | <img src="docs/screenshots/shortcuts.png" alt="Keyboard shortcuts page" /> | <img src="docs/screenshots/hosts.png" alt="Hosts table with bulk actions" /> |
+| Aliases, variables, workflows, scopes (all / tag / group / server / container), starter packs, import / export. | Every function bindable, several keys each, conflict warnings, presets, custom "type this text" keys. | Groups with inherited logins; bulk move / login / environment / tag; duplicate; trusted host keys. |
+
+Also included:
+- **Files (SFTP):** drag and drop, edit remotely in your own editor, with the panel following your terminal's `cd`.
+- **Services:** systemd services.
+- **Processes:** process list with kill.
+- **Log files:** follow any log file on the server.
+- **System-wide hotkey:** bring Rookery forward from any app.
+- **Auto-lock:** the app locks itself after the time you choose.
+
+## Download
+
+**[⬇ Latest release](https://github.com/aagzamov-dev/Rookery/releases/latest)**
+
+| | File | First start |
+|---|---|---|
+| **Windows 10 / 11** | `Rookery_x.y.z_x64-setup.exe` | Installs for your user only (no admin). SmartScreen may warn once because the app isn't code-signed yet: **More info → Run anyway**. |
+| **macOS** (Apple Silicon & Intel) | `Rookery_x.y.z_universal.dmg` | Drag to Applications. The app isn't notarized yet, so run `xattr -cr /Applications/Rookery.app` once if macOS says it's "damaged". |
+
+After that, Rookery updates itself (Settings › About). Updates are verified with Rookery's signature before they install.
+
+## How it works
+
+```mermaid
+flowchart LR
+  subgraph App["Rookery (one process)"]
+    UI["React UI<br/>tabs · terminal · views"]
+    T["Tauri shell<br/>commands + one event channel"]
+    subgraph Core["rookery-core (Rust)"]
+      V["Vault<br/>Argon2id · XChaCha20"]
+      DB[("SQLite<br/>servers, snippets, snapshots")]
+      S["SSH sessions<br/>shared per server, leased"]
+      C["Collectors<br/>metrics · docker · logs"]
+      SY["Dashboard sync"]
+      B["Backup & device sync"]
+    end
+  end
+  UI <--> T <--> Core
+  S <-->|SSH| SRV[(Your servers)]
+  B <-->|encrypted file| F[["Your cloud folder<br/>Drive / OneDrive / Dropbox"]]
 ```
-crates/rookery-core     all logic: vault, SQLite, SSH sessions + leases, terminals, collectors, subscriptions (no Tauri)
-crates/rookery-tauri    Tauri 2 shell: commands + event forwarding (thin)
-apps/desktop         React + TypeScript + Vite + Tailwind
-apps/desktop/src/ipc/bindings   TS types generated from rookery-core (ts-rs) — committed
-```
 
-## Prerequisites
+- **One SSH connection per server**, shared by all its terminals, file transfers and collectors. It closes 30 s after the last user lets go, and reconnects automatically if the network drops.
+- **Collectors run only while you're looking:** the stats bar while the tab is active and the window focused, Docker stats while the Docker view is open, logs while the log panel is visible. Leaving a view stops them on the server too (the remote process is closed).
+- **Secrets stay in Rust:** the UI never receives a password or key. The vault key is only in memory, wiped on lock, and the PIN is wrapped by the OS keychain.
+- **Network traffic Rookery starts on its own:** none to your servers. The only automatic request is a once-a-day update check of a small file on GitHub, and you can turn it off.
 
-- Rust (stable, via rustup)
-- Windows: Visual Studio 2022 Build Tools with "Desktop development with C++"; WebView2 (preinstalled on Windows 11)
-- macOS: Xcode command line tools
-- Node 20+
+Data lives in `%APPDATA%\Rookery` (Windows) or `~/Library/Application Support/Rookery` (macOS): `rookery.db` (no secrets), `vault.bin` (encrypted), and `logs/` if session logging is on.
 
-## Commands
+## Build from source
+
+Requirements: [Rust](https://rustup.rs) (stable), Node.js 20+, plus WebView2 on Windows (already on Windows 11) or Xcode command line tools on macOS.
 
 ```bash
-npm install            # once
-npm run icons          # once: generate app icons from app-icon.svg
-npm run bindings       # regenerate TS types after changing rookery-core/src/model.rs or events.rs
-npm run dev            # run the desktop app (Vite + Tauri)
-npm test               # Rust tests + frontend tests
-npm run build          # release bundle
+npm install
+npm run dev          # the app with hot reload
+npm test             # Rust + frontend tests
+npm run build        # installer in target/release/bundle
 ```
 
-## What works today (v0.1 – v0.6)
+- **Screenshots:** the images above are the real UI with made-up data. Run `npm --workspace apps/desktop run dev` and open `http://localhost:1420/demo.html?scene=dashboard` (scenes: `terminal`, `docker`, `backup`, `hosts`, `shortcuts`, `snippets`).
+- **Releasing:** push a tag `vX.Y.Z` and GitHub Actions builds Windows and macOS and publishes a signed release. See [06-AUTO-UPDATE.md](06-AUTO-UPDATE.md) §4.
 
-- Vault: master password (Argon2id + XChaCha20-Poly1305), 4–6 digit PIN stored wrapped in the OS keychain, auto-submit, attempt limits (5 → 30 s wait, 10 → disabled), auto-lock after 10 min idle.
-- Hosts, nested groups, reusable identities (password, key file, key in vault), identity inherited from group.
-- Shell: icon rail, host list, mixed server/page tabs. **Nothing connects until a server tab is opened.**
-- Server tab: one SSH session per host (leases, 30 s grace close, auto-reconnect with backoff), host-key trust on first connect and a warning when it changes, multiple terminals per server kept alive across tab/view switches, stats bar + Overview from one batched command every 3 s — only while that tab is active and the window is focused.
+```
+crates/rookery-core    Rust core: vault, SQLite, SSH, SFTP, collectors, sync, backup, importers (no UI deps)
+crates/rookery-tauri   Desktop shell: Tauri commands, events, plugins
+apps/desktop           React + TypeScript UI (Vite, Tailwind, zustand, xterm.js)
+```
 
-- Snippets: alias, `${variables}` with defaults, scope (all / tag / group / server), run mode, hotkey, PROD confirmation, starter packs (Laravel, Docker, Git, System). Run them from the snippet bar, the command palette, a hotkey, or by typing the alias and pressing Tab in a terminal.
-- Command palette: Ctrl+K (⌘K), or Ctrl+Shift+P inside a terminal. Enter runs, Ctrl+Enter types without running.
-- Terminal copy/paste: Ctrl+Shift+C / Ctrl+Shift+V, Shift+Insert, Ctrl+C copies a selection, Ctrl+V pastes, right-click copy/paste, warning before multi-line pastes. All options are in Settings.
-- Keyboard shortcuts page (keyboard icon in the rail): ~50 functions (select all, copy, paste, find, clear, zoom, tabs, views, files…), many unassigned so you choose the keys; presets for MobaXterm/PuTTY, Windows Terminal and iTerm2; custom keys that type text; import/export. Ctrl+letter shortcuts you set yourself also work inside terminals.
-- Terminal extras: themes (10 built in + iTerm `.itermcolors` import), fonts, find bar (F3), broadcast typing, long-command notifications, sudo password fill from the vault, local shells (PowerShell, cmd, WSL, Git Bash / zsh, bash).
-- Workflows (multi-step snippets), snippet import/export, quick commands per container, Processes view, folder upload, known-hosts list, session restore.
-- Files (SFTP): full view and a side panel next to the terminal; upload (picker or drag & drop), download, new folder, rename, delete, cd here; edit locally — saves upload back, with conflict protection; panel can follow `cd` after a one-click shell-integration install.
-- Docker: containers grouped by compose project, live CPU/memory, start/stop/restart/remove, logs panel (live, errors/warnings, search), shell into a container. List updates come from `docker events` — no polling.
-- Services (systemd) with start/stop/restart in a terminal (you type sudo), journal; Logs view follows any log file with `tail -F`.
-- Everything above runs only while its view is on screen and stops when you leave it.
+## Project docs
 
-- Dashboard (v0.4): group tabs (All · each group · Ungrouped), cards from saved snapshots (opening it never connects), Sync for the selected tab or one card, Auto-sync switch per group with interval (On / Off / Mixed on All, with confirmation), needs-attention list (high CPU twice in a row, RAM, disk, restarting/unhealthy containers, failed services, offline > 1 h), right-click menus. Each sync is one command over one short connection (or the already-open session), max 3 servers at once, offline servers fail fast, 3 failures in a row double the interval (up to 30 min), and auto-sync pauses when the app is locked or minimised for a minute.
+[Architecture](01-ARCHITECTURE.md) · [Roadmap](02-ROADMAP.md) · [Desktop features](03-DESKTOP-FEATURES.md) · [Data, sync & security](04-DATA-SYNC-SECURITY.md) · [Mobile & tablet](05-MOBILE-TABLET.md) · [Auto-update](06-AUTO-UPDATE.md) · [Changelog](CHANGELOG.md)
 
-- Backup & sync (v0.5): one sync password (same on every device); a sync folder inside Google Drive / OneDrive / Dropbox keeps PC and laptop merged (newest edit wins, deletions sync, passwords included, encrypted); backup file with Save / Show in folder / Copy file (paste into Telegram) and Import with Merge or Replace.
+## Roadmap
 
-- v0.6: auto-update from GitHub Releases (signed), import from MobaXterm / PuTTY / ~/.ssh/config with a first-run welcome, bulk edit / duplicate servers, terminal triggers (ERROR / WARN highlighting), session logs, system-wide show/hide hotkey, auto-lock time. See [CHANGELOG.md](CHANGELOG.md).
+- **Next:** tunnels (port forwarding with on/off switches), jump hosts, SSH agent login, SSH key generator.
+- **v1.0:** Android (then iOS), with the same core and a phone layout for checking servers and quick actions.
 
-Not yet: tunnels, jump hosts, SSH agent login, key generator (v0.5 leftovers); Android (v1.0).
+## License
 
-## Releasing
-
-Push a tag `vX.Y.Z`. GitHub Actions builds Windows + macOS, signs the update files and publishes a Release that installed apps update from. One-time secrets and the steps are in [06-AUTO-UPDATE.md](06-AUTO-UPDATE.md) §4.
-
-## Where data lives
-
-`%APPDATA%\Rookery` (Windows) · `~/Library/Application Support/Rookery` (macOS): `rookery.db` (no secrets), `vault.bin` (encrypted). The PIN entry is in the OS keychain.
-# server-managment
+[MIT](LICENSE)

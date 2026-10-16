@@ -20,20 +20,20 @@ jobs:
       id: ${{ steps.release.outputs.result }}
     steps:
       - uses: actions/checkout@v4
-      - name: Release notes from CHANGELOG.md
+      - name: Release notes (.github/release-notes.md + CHANGELOG.md)
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
           awk -v v="$version" '
             /^## / { if (found) exit; if (index($0, v)) { found = 1; next } }
             found { print }
-          ' CHANGELOG.md > notes.md
-          [ -s notes.md ] || echo "Rookery ${GITHUB_REF_NAME}" > notes.md
-          {
-            echo
-            echo "**Windows:** \`Rookery_${version}_x64-setup.exe\` · **macOS:** \`Rookery_${version}_universal.dmg\`"
-            echo
-            echo "Installed apps update themselves (Settings › About)."
-          } >> notes.md
+          ' CHANGELOG.md > changes.md
+          [ -s changes.md ] || echo "See CHANGELOG.md." > changes.md
+          awk -v version="$version" -v tag="$tag" '
+            /\{\{CHANGES\}\}/ { while ((getline line < "changes.md") > 0) print line; next }
+            { gsub(/\{\{VERSION\}\}/, version); gsub(/\{\{TAG\}\}/, tag); print }
+          ' .github/release-notes.md > notes.md
+          cat notes.md
       - id: release
         uses: actions/github-script@v7
         with:
