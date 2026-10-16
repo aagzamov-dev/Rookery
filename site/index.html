@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rookery: a calm SSH and server manager for Windows and macOS</title>
+<meta name="description" content="Rookery is a free, open-source SSH client and server manager for Windows and macOS: terminal, SFTP files, Docker, logs, PostgreSQL / MySQL and a safe file editor, one tab per server, stored encrypted on your computer.">
+<link rel="canonical" href="https://aagzamov-dev.github.io/Rookery/">
+<meta name="theme-color" content="#1B2230">
+<meta name="color-scheme" content="dark">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Rookery">
+<meta property="og:title" content="Rookery: all your servers in one calm app">
+<meta property="og:description" content="Free, open-source SSH client and server manager for Windows and macOS. Terminal, files, Docker, logs, databases and a safe file editor.">
+<meta property="og:url" content="https://aagzamov-dev.github.io/Rookery/">
+<meta property="og:image" content="https://aagzamov-dev.github.io/Rookery/screenshots/dashboard.png">
+<meta name="twitter:card" content="summary_large_image">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Rookery",
+  "description": "A calm, fast SSH client and server manager: terminal, SFTP files, Docker, logs, PostgreSQL and MySQL, and a safe remote file editor. One tab per server, everything stored encrypted on your own computer.",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "Windows 10, Windows 11, macOS",
+  "url": "https://aagzamov-dev.github.io/Rookery/",
+  "downloadUrl": "https://github.com/aagzamov-dev/Rookery/releases/latest",
+  "image": "https://aagzamov-dev.github.io/Rookery/screenshots/dashboard.png",
+  "license": "https://opensource.org/licenses/MIT",
+  "isAccessibleForFree": true,
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+  "codeRepository": "https://github.com/aagzamov-dev/Rookery"
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    { "@type": "Question", "name": "Is Rookery free?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. Rookery is free and open source under the MIT license." } },
+    { "@type": "Question", "name": "Does Rookery send my data anywhere?", "acceptedAnswer": { "@type": "Answer", "text": "No. It only connects to your own servers. Sync between your computers uses a folder you choose." } },
+    { "@type": "Question", "name": "Why does macOS say Rookery is damaged?", "acceptedAnswer": { "@type": "Answer", "text": "Apple shows this for apps without a paid Apple Developer account. Run xattr -dr com.apple.quarantine \"/Applications/Rookery.app\" once in Terminal and it opens normally." } },
+    { "@type": "Question", "name": "Can I import my servers from MobaXterm or PuTTY?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. The welcome screen imports MobaXterm sessions, PuTTY and ~/.ssh/config." } },
+    { "@type": "Question", "name": "Is there a Linux or phone version?", "acceptedAnswer": { "@type": "Answer", "text": "Not yet. Rookery runs on Windows 10 / 11 and macOS (Apple Silicon and Intel)." } }
+  ]
+}
+</script>
+<script src="main.js" defer></script>
+</head>
+<body>
+
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav">
+  <nav class="wrap nav-inner" aria-label="Main">
+    <a class="brand" href="#top">
+      <svg width="28" height="28" viewBox="0 0 1024 1024" aria-hidden="true"><rect width="1024" height="1024" rx="224" fill="#8AB4FF"/><path d="M300 340 L470 512 L300 684" fill="none" stroke="#0D0F12" stroke-width="88" stroke-linecap="round" stroke-linejoin="round"/><path d="M540 700 H740" fill="none" stroke="#0D0F12" stroke-width="88" stroke-linecap="round"/></svg>
+      Rookery
+    </a>
+    <div class="nav-links" id="nav-links">
+      <a href="#features">Features</a>
+      <a href="#install">Install</a>
+      <a href="#security">Security</a>
+      <a href="#faq">FAQ</a>
+      <a class="nav-gh" href="https://github.com/aagzamov-dev/Rookery">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.89 1.53 2.34 1.09 2.91.83.09-.65.35-1.09.63-1.34-2.22-.25-4.56-1.11-4.56-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.65 0 0 .84-.27 2.75 1.02a9.5 9.5 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.38.2 2.4.1 2.65.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.69-4.57 4.93.36.31.68.92.68 1.85v2.75c0 .27.18.58.69.48A10 10 0 0 0 12 2z"/></svg>
+        GitHub
+      </a>
+    </div>
+    <a class="btn btn-primary btn-sm nav-dl" href="#top">Download</a>
+    <button class="nav-menu" type="button" aria-label="Menu" aria-expanded="false" aria-controls="nav-links">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+    </button>
+  </nav>
+</header>
+
+<main id="main">
+
+<!-- Hero: the download -->
+<section class="hero wrap" id="top">
+  <p class="pill"><span class="dot" aria-hidden="true"></span>Free and open source · Windows and macOS</p>
+  <h1>All your servers in one calm app.</h1>
+  <p class="lead">Terminal, files, Docker, logs, databases and a safe file editor. One tab per server. Everything stays encrypted on your computer.</p>
+
+  <p class="phone-note" hidden>
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>
+    <span>Rookery is a desktop app. Open this page on your Windows or Mac computer to install it.</span>
+    <button class="btn btn-ghost btn-sm" type="button" data-copy-link>Copy link</button>
+  </p>
+
+  <div class="dl-buttons">
+    <a class="btn btn-primary btn-lg" data-dl="windows" href="https://github.com/aagzamov-dev/Rookery/releases/latest">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.5 10.5 4.4v7.1H3zM11.5 4.3 21 3v8.5h-9.5zM3 12.5h7.5v7.1L3 18.5zM11.5 12.5H21V21l-9.5-1.3z"/></svg>
+      Download for Windows
+    </a>
+    <a class="btn btn-primary btn-lg" data-dl="mac" href="https://github.com/aagzamov-dev/Rookery/releases/latest">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16.5 12.6c0-2.4 2-3.5 2.1-3.6-1.1-1.7-2.9-1.9-3.5-1.9-1.5-.2-2.9.9-3.7.9-.8 0-1.9-.9-3.2-.8-1.6 0-3.1 1-4 2.4-1.7 3-.4 7.4 1.2 9.8.8 1.2 1.8 2.5 3 2.4 1.2 0 1.7-.8 3.1-.8 1.5 0 1.9.8 3.2.8 1.3 0 2.1-1.2 2.9-2.4.9-1.4 1.3-2.7 1.3-2.8-.1 0-2.4-.9-2.4-3.6zM14.1 5.5c.7-.8 1.1-1.9 1-3-1 0-2.1.7-2.8 1.5-.6.7-1.2 1.8-1 2.9 1 .1 2.1-.6 2.8-1.4z"/></svg>
+      Download for macOS
+    </a>
+  </div>
+  <p class="meta"><span data-version>Latest version</span> · Windows 10 / 11 · macOS (Apple Silicon and Intel) · <a href="https://github.com/aagzamov-dev/Rookery/releases">All releases</a></p>
+</section>
+
+<!-- Slider: a tour of the app -->
+<section class="tour wrap" aria-roledescription="carousel" aria-label="A tour of Rookery">
+  <div class="tour-tabs" role="tablist" aria-label="Screens">
+    <button type="button" role="tab" aria-selected="true" data-slide="0">Server tab</button>
+    <button type="button" role="tab" aria-selected="false" data-slide="1">Dashboard</button>
+    <button type="button" role="tab" aria-selected="false" data-slide="2">Docker</button>
+    <button type="button" role="tab" aria-selected="false" data-slide="3">Editor</button>
+    <button type="button" role="tab" aria-selected="false" data-slide="4">Databases</button>
+    <button type="button" role="tab" aria-selected="false" data-slide="5">Snippets</button>
+  </div>
+  <div class="tour-frame">
+    <div class="tour-track" tabindex="0" aria-live="polite">
+      <figure class="slide" aria-roledescription="slide" aria-label="1 of 6">
+        <img src="screenshots/terminal.png" width="1440" height="900" alt="A server open in Rookery: terminal tabs with the server's views (files, editor, Docker, database, services, logs) one click away">
+        <figcaption><b>Open a server.</b> Terminal, files, editor, Docker, database and logs: all in its tab.</figcaption>
+      </figure>
+      <figure class="slide" aria-roledescription="slide" aria-label="2 of 6">
+        <img src="screenshots/dashboard.png" width="1440" height="900" alt="Rookery dashboard with servers grouped by environment, CPU, RAM, disk and a needs-attention list" loading="lazy">
+        <figcaption><b>See every server.</b> CPU, RAM, disk and what needs attention, grouped by environment.</figcaption>
+      </figure>
+      <figure class="slide" aria-roledescription="slide" aria-label="3 of 6">
+        <img src="screenshots/docker.png" width="1440" height="900" alt="Rookery Docker view: containers by compose project, live stats and a container's logs" loading="lazy">
+        <figcaption><b>Watch your containers.</b> Live stats and logs, with errors highlighted.</figcaption>
+      </figure>
+      <figure class="slide" aria-roledescription="slide" aria-label="4 of 6">
+        <img src="screenshots/editor.png" width="1440" height="900" alt="Rookery editor: folder tree, pinned files and a .env file with problems underlined" loading="lazy">
+        <figcaption><b>Edit files safely.</b> A merge instead of an overwrite when someone else changed them.</figcaption>
+      </figure>
+      <figure class="slide" aria-roledescription="slide" aria-label="5 of 6">
+        <img src="screenshots/sql-table.png" width="1440" height="900" alt="A database table in Rookery with sorting, filters and a row detail panel" loading="lazy">
+        <figcaption><b>Look into databases.</b> PostgreSQL and MySQL tables, read-only on production.</figcaption>
+      </figure>
+      <figure class="slide" aria-roledescription="slide" aria-label="6 of 6">
+        <img src="screenshots/snippets.png" width="1440" height="900" alt="Rookery snippets page with aliases, variables and scopes" loading="lazy">
+        <figcaption><b>Reuse your commands.</b> Snippets with variables, for one server or all.</figcaption>
+      </figure>
+    </div>
+    <button class="tour-arrow prev" type="button" aria-label="Previous screen">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>
+    </button>
+    <button class="tour-arrow next" type="button" aria-label="Next screen">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+    </button>
+  </div>
+</section>
+
+<!-- Features -->
+<section class="section wrap" id="features">
+  <div class="section-head">
+    <h2>Everything a server needs, in one tab.</h2>
+    <p>Open a server and its terminal, files, containers and logs are right there. Nothing connects until you click.</p>
+  </div>
+  <div class="cards">
+    <article class="card">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+      <h3>Terminal</h3>
+      <p>Fast SSH terminal with tabs, snippets, search and session logs.</p>
+    </article>
+    <article class="card">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+      <h3>Files</h3>
+      <p>Browse with SFTP, drag and drop, follow your terminal’s folder.</p>
+    </article>
+    <article class="card">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="14 3 14 9 20 9"/><polyline points="10 13 8 15 10 17"/><polyline points="14 13 16 15 14 17"/></svg>
+      <h3>Editor</h3>
+      <p>Edit .env, YAML, nginx and code. Never overwrites anyone’s changes.</p>
+    </article>
+    <article class="card">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><line x1="12" y1="13" x2="12" y2="21"/></svg>
+      <h3>Docker</h3>
+      <p>Containers by project, live stats, logs with errors highlighted.</p>
+    </article>
+    <article class="card">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg>
+      <h3>Databases</h3>
+      <p>PostgreSQL and MySQL tables like HeidiSQL. Read-only on PROD.</p>
+    </article>
+    <article class="card">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
+      <h3>Dashboard</h3>
+      <p>Every server at a glance: CPU, RAM, disk and what needs attention.</p>
+    </article>
+  </div>
+</section>
+
+<!-- Showcases -->
+<section class="show wrap">
+  <div class="show-text">
+    <span class="kicker">Editor</span>
+    <h2>Edit server files without breaking anything.</h2>
+    <ul class="checks">
+      <li>Someone changed it? You get a merge, not an overwrite.</li>
+      <li>A backup of every version on your computer.</li>
+      <li>Hide .env secrets on screen.</li>
+    </ul>
+  </div>
+  <div class="shot"><img src="screenshots/editor-merge.png" width="1440" height="900" alt="Rookery three-way merge: one conflict to choose, other changes combined" loading="lazy"></div>
+</section>
+
+<section class="show show-flip wrap">
+  <div class="show-text">
+    <span class="kicker">Databases</span>
+    <h2>Look into a database right next to the terminal.</h2>
+    <ul class="checks">
+      <li>Click a table: data, filters, structure.</li>
+      <li>Connects through the server’s SSH.</li>
+      <li>Nothing changes on PROD until you commit.</li>
+    </ul>
+  </div>
+  <div class="shot"><img src="screenshots/sql-structure.png" width="1440" height="900" alt="Table structure in Rookery: columns, indexes, foreign keys and the CREATE code" loading="lazy"></div>
+</section>
+
+<section class="show wrap">
+  <div class="show-text">
+    <span class="kicker">Docker</span>
+    <h2>Every container, live, without typing commands.</h2>
+    <ul class="checks">
+      <li>Containers grouped by compose project.</li>
+      <li>Live CPU and memory, logs with errors highlighted.</li>
+      <li>Start, stop, restart or open a shell in one click.</li>
+    </ul>
+  </div>
+  <div class="shot"><img src="screenshots/docker.png" width="1440" height="900" alt="Rookery Docker view with a compose project, live stats and a container's logs" loading="lazy"></div>
+</section>
+
+<!-- Install -->
+<section class="section wrap" id="install">
+  <div class="section-head">
+    <h2>Install in a minute.</h2>
+    <p>After that, Rookery updates itself.</p>
+  </div>
+  <div class="install">
+    <article class="panel">
+      <h3 class="os"><svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.5 10.5 4.4v7.1H3zM11.5 4.3 21 3v8.5h-9.5zM3 12.5h7.5v7.1L3 18.5zM11.5 12.5H21V21l-9.5-1.3z"/></svg>Windows 10 / 11</h3>
+      <ol class="steps">
+        <li>Download the installer.</li>
+        <li>Run it. No admin rights needed.</li>
+        <li>If Windows warns: <b>More info → Run anyway</b>.</li>
+      </ol>
+      <a class="btn btn-outline" data-dl="windows" href="https://github.com/aagzamov-dev/Rookery/releases/latest">Download for Windows</a>
+    </article>
+    <article class="panel">
+      <h3 class="os"><svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16.5 12.6c0-2.4 2-3.5 2.1-3.6-1.1-1.7-2.9-1.9-3.5-1.9-1.5-.2-2.9.9-3.7.9-.8 0-1.9-.9-3.2-.8-1.6 0-3.1 1-4 2.4-1.7 3-.4 7.4 1.2 9.8.8 1.2 1.8 2.5 3 2.4 1.2 0 1.7-.8 3.1-.8 1.5 0 1.9.8 3.2.8 1.3 0 2.1-1.2 2.9-2.4.9-1.4 1.3-2.7 1.3-2.8-.1 0-2.4-.9-2.4-3.6zM14.1 5.5c.7-.8 1.1-1.9 1-3-1 0-2.1.7-2.8 1.5-.6.7-1.2 1.8-1 2.9 1 .1 2.1-.6 2.8-1.4z"/></svg>macOS <span class="tag-warn">one extra step</span></h3>
+      <ol class="steps">
+        <li>Open the .dmg and drag Rookery to Applications.</li>
+        <li>Run this once in Terminal:
+          <div class="cmd"><code>xattr -dr com.apple.quarantine "/Applications/Rookery.app"</code><button class="btn btn-ghost btn-xs" type="button" data-copy-cmd>Copy</button></div>
+        </li>
+        <li>Open Rookery.</li>
+      </ol>
+      <p class="small">Why? Apple warns about apps without a paid developer account. Rookery doesn’t have one yet. The app is not damaged.</p>
+      <a class="btn btn-outline" data-dl="mac" href="https://github.com/aagzamov-dev/Rookery/releases/latest">Download for macOS</a>
+    </article>
+  </div>
+</section>
+
+<!-- Security -->
+<section class="section wrap" id="security">
+  <div class="section-head">
+    <h2>Your servers stay yours.</h2>
+    <p>No account, no cloud, no tracking.</p>
+  </div>
+  <div class="facts">
+    <div><h3>Local first</h3><p>Everything is stored on your computer.</p></div>
+    <div><h3>Encrypted vault</h3><p>Passwords and keys are locked with your master password.</p></div>
+    <div><h3>Open source</h3><p>MIT license. Every line is on GitHub.</p></div>
+    <div><h3>Signed updates</h3><p>Each update is checked before it installs.</p></div>
+  </div>
+</section>
+
+<!-- FAQ -->
+<section class="section wrap narrow" id="faq">
+  <h2>Questions</h2>
+  <div class="faq">
+    <details open><summary>Is Rookery free?</summary><p>Yes. Free and open source under the MIT license.</p></details>
+    <details><summary>Does it send my data anywhere?</summary><p>No. It only connects to your own servers. Sync between your computers uses a folder you choose.</p></details>
+    <details><summary>Why does macOS say the app is damaged?</summary><p>Apple shows this for apps without a paid developer account. Run the command from <a href="#install">Install</a> once and it opens normally.</p></details>
+    <details><summary>Can I bring my servers from MobaXterm or PuTTY?</summary><p>Yes. The welcome screen imports MobaXterm, PuTTY and ~/.ssh/config.</p></details>
+    <details><summary>Is there a Linux or phone version?</summary><p>Not yet. Windows and macOS for now.</p></details>
+  </div>
+</section>
+
+<!-- Final call -->
+<section class="section wrap">
+  <div class="cta">
+    <h2>Try Rookery today.</h2>
+    <p>Free. Takes a minute to install.</p>
+    <div class="dl-buttons">
+      <a class="btn btn-primary btn-lg" data-dl="windows" href="https://github.com/aagzamov-dev/Rookery/releases/latest">Download for Windows</a>
+      <a class="btn btn-primary btn-lg" data-dl="mac" href="https://github.com/aagzamov-dev/Rookery/releases/latest">Download for macOS</a>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot wrap">
+  <span class="brand">
+    <svg width="22" height="22" viewBox="0 0 1024 1024" aria-hidden="true"><rect width="1024" height="1024" rx="224" fill="#8AB4FF"/><path d="M300 340 L470 512 L300 684" fill="none" stroke="#0D0F12" stroke-width="88" stroke-linecap="round" stroke-linejoin="round"/><path d="M540 700 H740" fill="none" stroke="#0D0F12" stroke-width="88" stroke-linecap="round"/></svg>
+    Rookery
+  </span>
+  <span>Made for people with many servers.</span>
+  <span class="grow"></span>
+  <a href="https://github.com/aagzamov-dev/Rookery">GitHub</a>
+  <a href="https://github.com/aagzamov-dev/Rookery/releases">Releases</a>
+  <a href="https://github.com/aagzamov-dev/Rookery/blob/main/docs/CHANGELOG.md">Changelog</a>
+  <a href="https://github.com/aagzamov-dev/Rookery/blob/main/LICENSE">MIT license</a>
+</footer>
+
+<!-- After a download starts -->
+<dialog class="dlg" id="dlg-mac" aria-labelledby="dlg-mac-title">
+  <div class="dlg-head">
+    <span class="dlg-icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v12"/><path d="M7 11l5 5 5-5"/><path d="M5 20h14"/></svg></span>
+    <div class="grow">
+      <h2 id="dlg-mac-title">Your download has started</h2>
+      <p class="small"><span data-file="mac">Rookery for macOS (.dmg)</span> · <a data-dl-again="mac" href="https://github.com/aagzamov-dev/Rookery/releases/latest">Download again</a></p>
+    </div>
+    <button class="dlg-x" type="button" aria-label="Close" data-close><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+  </div>
+  <ol class="steps">
+    <li>Open the .dmg and drag <b>Rookery</b> to <b>Applications</b>.</li>
+    <li>Open <b>Terminal</b> and run this once:
+      <div class="cmd"><code>xattr -dr com.apple.quarantine "/Applications/Rookery.app"</code><button class="btn btn-primary btn-xs" type="button" data-copy-cmd>Copy</button></div>
+    </li>
+    <li>Open Rookery. Updates install by themselves after this.</li>
+  </ol>
+  <div class="why">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg>
+    <div>
+      <b>Why this step?</b>
+      <p>Apple warns about apps that aren’t signed with a paid Apple Developer account. Rookery doesn’t have one yet, so macOS may call it “damaged”. It isn’t.</p>
+      <p>The command only removes the “downloaded from the internet” mark from Rookery. Rookery is open source and built by GitHub from its public code.</p>
+    </div>
+  </div>
+  <div class="dlg-foot">
+    <a class="small" href="https://github.com/aagzamov-dev/Rookery">View the source on GitHub</a>
+    <span class="grow"></span>
+    <button class="btn btn-outline" type="button" data-close>Done</button>
+  </div>
+</dialog>
+
+<dialog class="dlg" id="dlg-windows" aria-labelledby="dlg-win-title">
+  <div class="dlg-head">
+    <span class="dlg-icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v12"/><path d="M7 11l5 5 5-5"/><path d="M5 20h14"/></svg></span>
+    <div class="grow">
+      <h2 id="dlg-win-title">Your download has started</h2>
+      <p class="small"><span data-file="windows">Rookery for Windows (.exe)</span> · <a data-dl-again="windows" href="https://github.com/aagzamov-dev/Rookery/releases/latest">Download again</a></p>
+    </div>
+    <button class="dlg-x" type="button" aria-label="Close" data-close><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+  </div>
+  <ol class="steps">
+    <li>Run the installer. No admin rights needed.</li>
+    <li>If you see “Windows protected your PC”, click <b>More info</b>, then <b>Run anyway</b>.</li>
+    <li>Open Rookery. Updates install by themselves after this.</li>
+  </ol>
+  <div class="why">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg>
+    <div>
+      <b>Why the warning?</b>
+      <p>Windows warns about new apps without a paid code-signing certificate. Rookery doesn’t have one yet. It is open source and built by GitHub from its public code.</p>
+    </div>
+  </div>
+  <div class="dlg-foot">
+    <a class="small" href="https://github.com/aagzamov-dev/Rookery">View the source on GitHub</a>
+    <span class="grow"></span>
+    <button class="btn btn-outline" type="button" data-close>Done</button>
+  </div>
+</dialog>
+
+<div class="toast" role="status" aria-live="polite" hidden></div>
+
+</body>
+</html>

@@ -4,9 +4,26 @@
     {
       "name": "demo",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["vite", "--port", "1420", "--strictPort"],
+      "runtimeArgs": [
+        "vite",
+        "--port",
+        "1420",
+        "--strictPort"
+      ],
       "cwd": "apps/desktop",
       "port": 1420
+    },
+    {
+      "name": "site",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "site",
+        "--port",
+        "4321",
+        "--strictPort"
+      ],
+      "port": 4321
     }
   ]
 }

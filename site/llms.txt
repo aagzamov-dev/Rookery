@@ -1,0 +1,37 @@
+# Rookery
+
+> Rookery is a free, open-source (MIT) SSH client and server manager for Windows 10 / 11 and macOS (Apple Silicon and Intel). One tab per server with its terminal, SFTP files, a safe remote file editor, Docker, logs, services, processes and databases. Everything is stored encrypted on the user's own computer: no account, no cloud, no tracking.
+
+- Website: https://aagzamov-dev.github.io/Rookery/
+- Source code: https://github.com/aagzamov-dev/Rookery
+- Downloads: https://github.com/aagzamov-dev/Rookery/releases/latest
+- Changelog: https://github.com/aagzamov-dev/Rookery/blob/main/docs/CHANGELOG.md
+
+## What it does
+
+- Terminal: fast SSH terminal with tabs, snippets with variables, search, session logs and highlighted ERROR / WARN lines.
+- Files: SFTP browser with drag and drop that can follow the terminal's current folder.
+- Editor: edit remote text files (.env, YAML, nginx, JSON, code) with highlighting, formatting and problem checks. Saving checks the file was not changed by someone else (SHA-256); if it was, a three-way merge is shown instead of overwriting. A backup of the previous version is kept locally. Can save with sudo.
+- Docker: containers grouped by compose project, live CPU and memory, logs, start / stop / restart, shell.
+- Databases: PostgreSQL, MySQL and MariaDB through the server's SSH session or directly. Tables open like HeidiSQL (data, filters, sorting, structure, foreign keys). Production connections are read-only until changes are allowed and committed.
+- Dashboard: all servers at a glance (CPU, RAM, disk, containers) with a needs-attention list.
+- Import servers from MobaXterm, PuTTY and ~/.ssh/config.
+- Backup and sync between your computers through an encrypted file in a folder you choose (for example Google Drive or Dropbox).
+
+## Security
+
+- Passwords, keys and tokens are kept in a local vault encrypted with the user's master password.
+- Rookery only connects to the user's own servers.
+- Updates are signed and verified before they install.
+
+## Install
+
+- Windows: download Rookery_x.y.z_x64-setup.exe from the latest release and run it (no admin rights). SmartScreen may warn because the app is not code-signed yet: More info → Run anyway.
+- macOS: download Rookery_x.y.z_universal.dmg, drag Rookery to Applications, then run once in Terminal:
+  xattr -dr com.apple.quarantine "/Applications/Rookery.app"
+  This is needed because Rookery is not signed with a paid Apple Developer account yet, so macOS reports it as "damaged". The command only removes the "downloaded from the internet" mark from Rookery.
+- After installing, Rookery updates itself.
+
+## Not available yet
+
+- Linux, Android and iOS versions.

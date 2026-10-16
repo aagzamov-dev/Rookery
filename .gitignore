@@ -19,3 +19,7 @@ Thumbs.db
 
 # Local data
 *.log
+
+# Website: the screenshots and icon are copied in when it is built or previewed (pages.yml)
+site/screenshots/
+site/icon.svg

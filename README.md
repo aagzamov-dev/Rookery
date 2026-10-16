@@ -10,9 +10,13 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/aagzamov-dev/Rookery/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/aagzamov-dev/Rookery?color=8AB4FF&label=download" /></a>
-  <a href="https://github.com/aagzamov-dev/Rookery/releases/download/v0.8.0/Rookery_0.8.0_x64-setup.exe"><img alt="Download for Windows" src="https://img.shields.io/badge/Windows-download-1B2230?logo=windows" /></a>
-  <a href="https://github.com/aagzamov-dev/Rookery/releases/download/v0.8.0/Rookery_0.8.0_universal.dmg"><img alt="Download for macOS" src="https://img.shields.io/badge/macOS-download-1B2230?logo=apple" /></a>
+  <a href="https://aagzamov-dev.github.io/Rookery/"><img alt="Download Rookery for Windows and macOS" src="https://img.shields.io/badge/Download-Windows%20%7C%20macOS-8AB4FF?style=for-the-badge" /></a>
+</p>
+
+<p align="center">
+  <a href="https://aagzamov-dev.github.io/Rookery/"><b>aagzamov-dev.github.io/Rookery</b></a>
+  ·
+  <a href="https://github.com/aagzamov-dev/Rookery/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/aagzamov-dev/Rookery?color=2B3F66&label=latest" /></a>
   <img alt="MIT license" src="https://img.shields.io/badge/license-MIT-57C994" />
 </p>
 
@@ -122,12 +126,12 @@ Also included:
 
 ## Download
 
-**[⬇ Latest release](https://github.com/aagzamov-dev/Rookery/releases/latest)**
+**[⬇ Download Rookery](https://aagzamov-dev.github.io/Rookery/)**: the site picks the latest version and shows the install steps for Windows and macOS. (All files: [GitHub Releases](https://github.com/aagzamov-dev/Rookery/releases/latest).)
 
-| | Download | First start |
-|---|---|---|
-| **Windows 10 / 11** | [Rookery_0.8.0_x64-setup.exe](https://github.com/aagzamov-dev/Rookery/releases/download/v0.8.0/Rookery_0.8.0_x64-setup.exe) | Installs for your user only (no admin). SmartScreen may warn once because the app isn't code-signed yet: **More info → Run anyway**. |
-| **macOS** (Apple Silicon & Intel) | [Rookery_0.8.0_universal.dmg](https://github.com/aagzamov-dev/Rookery/releases/download/v0.8.0/Rookery_0.8.0_universal.dmg) | Drag to Applications, then run the command below once (the app isn't signed by Apple yet, so macOS says it's "damaged"). |
+| | First start |
+|---|---|
+| **Windows 10 / 11** | Installs for your user only (no admin). SmartScreen may warn once because the app isn't code-signed yet: **More info → Run anyway**. |
+| **macOS** (Apple Silicon & Intel) | Drag to Applications, then run the command below once (the app isn't signed by Apple yet, so macOS says it's "damaged"). |
 
 **macOS, first start:** run this once in Terminal, then open Rookery. Updates afterwards install normally.
 
