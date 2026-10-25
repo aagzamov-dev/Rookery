@@ -1,4 +1,5 @@
 import clsx from "clsx";
+import { createPortal } from "react-dom";
 import { forwardRef, useEffect, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from "react";
 import { X } from "lucide-react";
 
@@ -81,14 +82,15 @@ export function Modal({
   width?: number;
 }) {
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && !e.defaultPrevented && onClose();
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4" onMouseDown={onClose}>
       <div
         role="dialog"
+        aria-modal="true"
         aria-label={title}
         className="flex max-h-[90vh] w-full flex-col rounded-xl border border-line bg-panel shadow-2xl"
         style={{ maxWidth: width }}
@@ -103,7 +105,8 @@ export function Modal({
         <div className="flex flex-col gap-4 overflow-auto px-5 py-4">{children}</div>
         {footer && <div className="flex justify-end gap-2 border-t border-line px-5 py-3">{footer}</div>}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

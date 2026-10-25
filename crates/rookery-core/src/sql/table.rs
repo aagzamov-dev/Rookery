@@ -1,8 +1,8 @@
-//! Table browser (docs/07 §10): the structure of one table, and paged data queries built
-//! here from filters / sort / search, so the UI never assembles SQL from user values.
+//! Table browser (docs/07 §10): structure, paged data queries, and parameterized cell edits.
+//! SQL is built here from catalog metadata so the UI never assembles SQL from user values.
 //!
 //! Safety: every identifier comes from the catalog and is quoted; every value is a quoted
-//! literal; a hand-written `WHERE` must leave exactly one read-only statement. The query then
+//! literal for reads or a bound parameter for edits; a hand-written `WHERE` must leave exactly one read-only statement. The query then
 //! runs through the normal session path (read-only guard, timeout, row cap, cancel).
 
 use serde::{Deserialize, Serialize};
@@ -16,6 +16,107 @@ use crate::{Error, Result};
 pub const MAX_PAGE: u32 = 5000;
 /// Search looks at this many text columns at most (keeps the OR list short).
 const SEARCH_COLUMNS: usize = 40;
+
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+#[ts(export, export_to = "../../../apps/desktop/src/ipc/bindings/")]
+pub struct TableCellUpdate {
+    pub schema: String,
+    pub table: String,
+    pub column: String,
+    pub keys: Vec<(String, String)>,
+    pub original: Option<String>,
+    pub value: Option<String>,
+}
+
+pub struct CellUpdatePlan {
+    pub sql: String,
+    pub values: Vec<Option<String>>,
+}
+
+pub fn editable_type(data_type: &str) -> Option<&'static str> {
+    let mut depth = 0;
+    let name: String = data_type.to_lowercase().chars().filter(|c| {
+        if *c == '(' { depth += 1; return false; }
+        if *c == ')' { depth -= 1; return false; }
+        depth == 0
+    }).collect();
+    match name.trim().trim_end_matches(" unsigned") {
+        "text" | "tinytext" | "mediumtext" | "longtext" => Some("text"),
+        "character varying" | "varchar" => Some("varchar"),
+        "character" | "char" => Some("char"),
+        "smallint" | "tinyint" => Some("smallint"),
+        "integer" | "int" | "mediumint" => Some("integer"),
+        "bigint" => Some("bigint"),
+        "numeric" | "decimal" => Some("numeric"),
+        "real" | "float" => Some("real"),
+        "double precision" | "double" => Some("double precision"),
+        "boolean" | "bool" => Some("boolean"),
+        "uuid" => Some("uuid"),
+        "json" => Some("json"),
+        "jsonb" => Some("jsonb"),
+        "date" => Some("date"),
+        "timestamp" | "timestamp without time zone" | "datetime" => Some("timestamp"),
+        "timestamp with time zone" => Some("timestamptz"),
+        "time" | "time without time zone" => Some("time"),
+        "time with time zone" => Some("timetz"),
+        _ => None,
+    }
+}
+
+pub fn cell_update_plan(engine: DbEngine, detail: &TableDetail, update: &TableCellUpdate) -> Result<CellUpdatePlan> {
+    let fail = |message: &str| Error::Other(message.into());
+    if !matches!(detail.kind.as_str(), "table" | "partitioned") {
+        return Err(fail("Only base tables can be edited"));
+    }
+    if engine == DbEngine::Mysql && !detail.engine.as_deref().is_some_and(|e| e.eq_ignore_ascii_case("InnoDB")) {
+        return Err(fail("Cell editing requires an InnoDB table so changes can be rolled back"));
+    }
+    let column = detail.columns.iter().find(|c| c.name == update.column).ok_or_else(|| fail("Column no longer exists"))?;
+    if column.extra.as_deref().is_some_and(|e| {
+        let extra = e.to_lowercase();
+        matches!(extra.as_str(), "generated" | "identity") || extra.contains("stored generated") || extra.contains("virtual generated")
+    }) {
+        return Err(fail("Generated and identity columns cannot be edited"));
+    }
+    let cast = editable_type(&column.data_type).ok_or_else(|| fail("This column type cannot be edited as text"))?;
+    if update.value.is_none() && !column.nullable {
+        return Err(fail("This column does not allow NULL"));
+    }
+    if update.original == update.value {
+        return Err(fail("No changes to apply"));
+    }
+    let key_valid = detail.indexes.iter().any(|i| (i.primary || i.unique) && !i.columns.is_empty()
+        && i.columns.len() == update.keys.len()
+        && i.columns.iter().all(|name| update.keys.iter().filter(|(n, _)| n == name).count() == 1)
+        && i.columns.iter().all(|name| detail.columns.iter().any(|c| &c.name == name && editable_type(&c.data_type).is_some())));
+    if !key_valid {
+        return Err(fail("A complete primary or unique key is required to edit this row"));
+    }
+    let mut values = vec![update.value.clone()];
+    let mut conditions = Vec::new();
+    for (name, value) in &update.keys {
+        values.push(Some(value.clone()));
+        let col = ident(engine, name);
+        conditions.push(match engine {
+            DbEngine::Postgres => format!("CAST({col} AS text) IS NOT DISTINCT FROM ${}::text", values.len()),
+            DbEngine::Mysql => format!("CAST({col} AS BINARY) <=> CAST(? AS BINARY)"),
+        });
+    }
+    values.push(update.original.clone());
+    let col = ident(engine, &column.name);
+    conditions.push(match engine {
+        DbEngine::Postgres => format!("CAST({col} AS text) IS NOT DISTINCT FROM ${}::text", values.len()),
+        DbEngine::Mysql => format!("CAST({col} AS BINARY) <=> CAST(? AS BINARY)"),
+    });
+    let value = match engine {
+        DbEngine::Postgres => format!("CAST($1::text AS {cast})"),
+        DbEngine::Mysql => "?".into(),
+    };
+    Ok(CellUpdatePlan {
+        sql: format!("UPDATE {} SET {col} = {value} WHERE {}", table_ref(engine, &detail.schema, &detail.name), conditions.join(" AND ")),
+        values,
+    })
+}
 
 // ------------------------------------------------------------------ types
 
@@ -298,6 +399,69 @@ fn check_single_read(engine: DbEngine, sql: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn editable_table() -> (TableDetail, TableCellUpdate) {
+        let detail = TableDetail {
+            schema: "public".into(), name: "users".into(), kind: "table".into(), engine: Some("InnoDB".into()),
+            columns: vec![ColumnDetail { name: "id".into(), data_type: "bigint".into(), ..Default::default() },
+                ColumnDetail { name: "name".into(), data_type: "text".into(), nullable: true, ..Default::default() }],
+            indexes: vec![super::super::IndexInfo { name: "pk".into(), columns: vec!["id".into()], primary: true, unique: true }],
+            ..Default::default()
+        };
+        let update = TableCellUpdate { schema: "public".into(), table: "users".into(), column: "name".into(), keys: vec![("id".into(), "1".into())], original: Some("before".into()), value: Some("after".into()) };
+        (detail, update)
+    }
+
+    #[test]
+    fn cell_updates_parameterize_values_and_check_original() {
+        let (detail, mut update) = editable_table();
+        update.value = Some("'; DROP TABLE users; --".into());
+        for engine in [DbEngine::Postgres, DbEngine::Mysql] {
+            let plan = cell_update_plan(engine, &detail, &update).unwrap();
+            assert!(!plan.sql.contains("DROP TABLE"));
+            assert_eq!(plan.values, vec![update.value.clone(), Some("1".into()), Some("before".into())]);
+            assert!(plan.sql.contains(if engine == DbEngine::Postgres { "IS NOT DISTINCT FROM $3::text" } else { "<=> CAST(? AS BINARY)" }));
+        }
+    }
+
+    #[test]
+    fn cell_updates_reject_unsafe_identity_and_types() {
+        let (mut detail, mut update) = editable_table();
+        update.keys.push(("id".into(), "2".into()));
+        assert!(cell_update_plan(DbEngine::Postgres, &detail, &update).is_err());
+        update.keys.pop();
+        detail.columns[1].extra = Some("STORED GENERATED".into());
+        assert!(cell_update_plan(DbEngine::Postgres, &detail, &update).is_err());
+        detail.columns[1].extra = None;
+        detail.columns[1].extra = Some("DEFAULT_GENERATED".into());
+        assert!(cell_update_plan(DbEngine::Postgres, &detail, &update).is_ok());
+        detail.columns[1].extra = None;
+        detail.columns[1].data_type = "bytea".into();
+        assert!(cell_update_plan(DbEngine::Postgres, &detail, &update).is_err());
+        detail.columns[1].data_type = "text".into();
+        detail.kind = "view".into();
+        assert!(cell_update_plan(DbEngine::Postgres, &detail, &update).is_err());
+        detail.kind = "table".into();
+        detail.engine = Some("MyISAM".into());
+        assert!(cell_update_plan(DbEngine::Mysql, &detail, &update).is_err());
+    }
+
+    #[test]
+    fn cell_updates_distinguish_null_and_empty() {
+        let (detail, mut update) = editable_table();
+        update.original = None;
+        update.value = Some(String::new());
+        let plan = cell_update_plan(DbEngine::Postgres, &detail, &update).unwrap();
+        assert_eq!(plan.values[0], Some(String::new()));
+        assert_eq!(plan.values[2], None);
+        update.column = "id".into();
+        update.value = None;
+        assert!(cell_update_plan(DbEngine::Postgres, &detail, &update).is_err());
+        assert_eq!(editable_type("numeric(10,2)"), Some("numeric"));
+        assert_eq!(editable_type("timestamp(6) with time zone"), Some("timestamptz"));
+        assert_eq!(editable_type("bigint unsigned"), Some("bigint"));
+        assert_eq!(editable_type("text[]"), None);
+    }
 
     fn cols() -> Vec<ColMeta<'static>> {
         vec![

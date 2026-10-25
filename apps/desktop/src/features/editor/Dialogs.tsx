@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
 import { MergeView } from "@codemirror/merge";
-import { EditorState, type Extension } from "@codemirror/state";
+import { EditorState, Prec, type Extension } from "@codemirror/state";
 import { EditorView, lineNumbers } from "@codemirror/view";
 import { syntaxHighlighting } from "@codemirror/language";
 import { History as HistoryIcon, Loader2, X } from "lucide-react";
@@ -34,7 +34,7 @@ const mergeTheme = EditorView.theme(
 );
 
 /** Side by side: left = before / server, right = after / yours (editable when `onRight` is set). */
-export function DiffView({ left, right, lang, onRight, rightVersion = 0 }: { left: string; right: string; lang: LangId; onRight?: (t: string) => void; rightVersion?: number }) {
+export function DiffView({ left, right, lang, onRight, rightVersion = 0, autoHeight = false }: { left: string; right: string; lang: LangId; onRight?: (t: string) => void; rightVersion?: number; autoHeight?: boolean }) {
   const host = useRef<HTMLDivElement>(null);
   const cb = useRef(onRight);
   cb.current = onRight;
@@ -49,7 +49,9 @@ export function DiffView({ left, right, lang, onRight, rightVersion = 0 }: { lef
   useEffect(() => {
     if (!host.current) return;
     // Same line rule as the editor: the merge result is saved, so a stray \r must stay as it is.
-    const common = [EditorState.lineSeparator.of("\n"), lineNumbers(), theme, mergeTheme, syntaxHighlighting(highlight), EditorView.lineWrapping, support ?? []];
+    const common = [EditorState.lineSeparator.of("\n"), lineNumbers(), theme, mergeTheme, syntaxHighlighting(highlight), EditorView.lineWrapping, support ?? [],
+      autoHeight ? Prec.high(EditorView.theme({ "&": { height: "auto", minHeight: "20vh" }, ".cm-scroller": { overflow: "visible" } })) : [],
+    ];
     const mv = new MergeView({
       parent: host.current,
       a: { doc: left, extensions: [...common, EditorState.readOnly.of(true)] },
@@ -64,8 +66,8 @@ export function DiffView({ left, right, lang, onRight, rightVersion = 0 }: { lef
     return () => mv.destroy();
     // `right` is applied when `rightVersion` changes (the editor owns it in between).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [left, rightVersion, support]);
-  return <div ref={host} className="ed-diff min-h-0 flex-1 overflow-auto rounded-lg border border-line bg-[#171D29]" />;
+  }, [left, rightVersion, support, autoHeight]);
+  return <div ref={host} className={clsx("ed-diff overflow-auto rounded-lg border border-line bg-[#171D29]", autoHeight ? "min-h-[20vh] max-h-[50vh]" : "min-h-0 flex-1")} />;
 }
 
 function Big({ title, sub, onClose, children, footer }: { title: string; sub?: ReactNode; onClose: () => void; children: ReactNode; footer: ReactNode }) {

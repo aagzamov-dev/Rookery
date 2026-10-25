@@ -709,6 +709,11 @@ pub async fn sql_table_count(s: State<'_, AppState>, session_id: String, query: 
 }
 
 #[tauri::command]
+pub async fn sql_table_update_cell(s: State<'_, AppState>, session_id: String, update: rookery_core::sql::table::TableCellUpdate) -> Result<()> {
+    s.core.sql.table_update_cell(&session_id, update).await
+}
+
+#[tauri::command]
 pub async fn sql_use(s: State<'_, AppState>, session_id: String, database: String) -> Result<()> {
     s.core.sql.use_database(&session_id, database).await
 }
@@ -768,6 +773,11 @@ pub async fn sql_history_clear(s: State<'_, AppState>, conn_key: String) -> Resu
 #[tauri::command]
 pub async fn sql_allow_writes(s: State<'_, AppState>, session_id: String, minutes: u32) -> Result<()> {
     s.core.sql.allow_writes(&session_id, minutes).await
+}
+
+#[tauri::command]
+pub async fn sql_set_edit_mode(s: State<'_, AppState>, session_id: String, enabled: bool) -> Result<()> {
+    s.core.sql.set_edit_mode(&session_id, enabled).await
 }
 
 // ------------------------------------------------------------- UI settings

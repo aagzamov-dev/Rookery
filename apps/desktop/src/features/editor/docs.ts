@@ -60,7 +60,7 @@ export const theme = EditorView.theme(
     ".cm-diagnostic-warning": { borderLeft: "3px solid #F2BA45" },
     ".cm-lintRange-error": { backgroundImage: "none", textDecoration: "underline wavy #FF7A7A", textUnderlineOffset: "3px" },
     ".cm-lintRange-warning": { backgroundImage: "none", textDecoration: "underline wavy #F2BA45", textUnderlineOffset: "3px" },
-    ".cm-panels": { backgroundColor: "#222A3A", color: "#E6EAF2", borderColor: "#364056" },
+    ".cm-panels": { backgroundColor: "#222A3A", color: "#E6EAF2", borderColor: "#364056", zIndex: 5 },
     ".cm-panels.cm-panels-bottom": { borderTop: "1px solid #364056" },
     ".cm-panel.cm-search": { padding: "6px 8px", fontFamily: "inherit", fontSize: "12px" },
     ".cm-panel.cm-search input, .cm-panel.cm-search button": { fontSize: "12px" },

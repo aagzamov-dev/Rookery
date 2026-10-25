@@ -2,6 +2,15 @@
 
 The release workflow copies the section for the version (e.g. `## 0.7.0`), plus any versions since the last published release, into the GitHub Release notes, which the in-app updater shows under "What's new".
 
+## 0.8.1
+
+- **SQL cell viewer and editing:** click to select a cell, copy its full value with Ctrl+C / Cmd+C, and double-click or press Enter to view it. The cell menu includes View, Copy, and Edit; F2 opens editing and can be reassigned in Shortcuts.
+- **Connection mode:** a Read-only / Edit mode dropdown replaces the countdown. Editing stays enabled until the connection closes or Read-only is selected. PROD still opens read-only and asks before enabling editing.
+- **Safe cell updates:** supported table columns with a primary or unique key can be edited in a searchable editor, with JSON validation and an explicit NULL option. Stale values are rejected, and edits remain uncommitted until Commit or Rollback.
+- **Production review:** inspect the original/updated diff before applying a PROD edit. A new Review button beside Commit and Rollback shows recorded cell diffs and SQL statements in execution order.
+- **Viewer usability:** dialogs stay centered even when the table is scrolled. Editors start compact, grow with their content, and scroll at their maximum height. NULL checkboxes and edit/apply buttons are larger.
+- **Search fixes:** editor Find/Replace panels stay inside their view and disappear when the app locks. SQL editors support Find, and Escape closes Find before closing a value viewer.
+
 ## 0.8.0
 
 - **Editor** (server tab → **Editor**, Ctrl+9): open any text file on the server, edit it comfortably, and save it without losing anyone's changes.

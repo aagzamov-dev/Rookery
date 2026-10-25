@@ -37,6 +37,7 @@ import type { SqlTarget } from "./bindings/SqlTarget";
 import type { SqlTestResult } from "./bindings/SqlTestResult";
 import type { TableDetail } from "./bindings/TableDetail";
 import type { TableQuery } from "./bindings/TableQuery";
+import type { TableCellUpdate } from "./bindings/TableCellUpdate";
 import type { TableRowsStarted } from "./bindings/TableRowsStarted";
 import type { TxAction } from "./bindings/TxAction";
 import type { EditorBackup } from "./bindings/EditorBackup";
@@ -237,11 +238,13 @@ export const api = {
   sqlTableDetail: (sessionId: string, schema: string, table: string) => invoke<TableDetail>("sql_table_detail", { sessionId, schema, table }),
   sqlTableRows: (sessionId: string, query: TableQuery) => invoke<TableRowsStarted>("sql_table_rows", { sessionId, query }),
   sqlTableCount: (sessionId: string, query: TableQuery) => invoke<number>("sql_table_count", { sessionId, query }),
+  sqlTableUpdateCell: (sessionId: string, update: TableCellUpdate) => invoke<void>("sql_table_update_cell", { sessionId, update }),
   /** Returns the query id; rows arrive as `sql_result` events. */
   sqlRun: (sessionId: string, sql: string, opts: SqlRunOpts = { row_limit: null }) => invoke<string>("sql_run", { sessionId, sql, opts }),
   sqlCancel: (queryId: string) => invoke<void>("sql_cancel", { queryId }),
   sqlTx: (sessionId: string, action: TxAction) => invoke<void>("sql_tx", { sessionId, action }),
   sqlAllowWrites: (sessionId: string, minutes: number) => invoke<void>("sql_allow_writes", { sessionId, minutes }),
+  sqlSetEditMode: (sessionId: string, enabled: boolean) => invoke<void>("sql_set_edit_mode", { sessionId, enabled }),
   /** Docker → Open in SQL: one `docker inspect` → prefill (never a password). */
   sqlDockerInspect: (hostId: string, container: string) => invoke<SqlPrefill>("sql_docker_inspect", { hostId, container }),
   /** Newest first; local only, SQL text without results. */

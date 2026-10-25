@@ -73,6 +73,14 @@ describe("palette search", () => {
   });
 });
 
+describe("SQL cell editing shortcut", () => {
+  it("defaults to F2 and can be reassigned or disabled", () => {
+    expect(resolveBindings({})["sql.editCell"]).toEqual(["F2"]);
+    expect(resolveBindings({ "sql.editCell": ["Ctrl+Shift+E"] })["sql.editCell"]).toEqual(["Ctrl+Shift+E"]);
+    expect(resolveBindings({ "sql.editCell": [] })["sql.editCell"]).toEqual([]);
+  });
+});
+
 describe("snippet scope", () => {
   it("matches tags case-insensitively and groups through parents", () => {
     const parent = { ...emptyGroup(), id: "g1", name: "Clients" };

@@ -25,7 +25,7 @@ Goal: **see what's in a database and fix a problem quickly**, safely, including 
 
 ### Out (not v0.7)
 - ER diagrams, schema designer, migrations, data import, user / permission management, query builder, charts.
-- Editing cells directly in the grid: later (v0.8). v0.7 is SQL-only for writes.
+- Cells can be edited through the full-value viewer (§10). Inline grid typing and inserting/deleting rows remain out of scope.
 - Other engines: SQLite, SQL Server, Redis, MongoDB. Keep the engine trait open for them (§4.2).
 
 ---
@@ -256,7 +256,7 @@ Name the module **`sql`**, not `db`: `db.rs` is Rookery's own SQLite store.
 | Rule | How |
 |---|---|
 | **Read-only by default** when `env_label = prod` (or the connection's "Open read-only") | Postgres: `SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY` + `SET default_transaction_read_only = on`. MySQL: `SET SESSION TRANSACTION READ ONLY`. The **server** enforces it, not just the UI. |
-| **Turning writes on** | The toolbar 🔒 menu → "Allow changes for 15 minutes" → confirm dialog naming the connection and env. Turns off by itself; the toolbar shows a countdown. |
+| **Turning writes on** | Select Edit mode in the connection toolbar dropdown. PROD asks for confirmation naming the connection. Editing stays enabled until the connection closes or Read-only is selected. |
 | **Writes always in a transaction** (when writes are on) | The first non-SELECT auto-`BEGIN`s. The banner shows "Uncommitted changes · 37 rows" with **Commit** / **Rollback**. Closing the tab, locking the app or switching database with an open tx asks (Commit / Rollback / Cancel). DDL in MySQL auto-commits: warn before running it ("ALTER/CREATE/DROP commit immediately on MySQL"). |
 | **Risky statements** | `classify.ts` before sending: `UPDATE`/`DELETE` without `WHERE`, `DROP`, `TRUNCATE`, `ALTER`, `GRANT`/`REVOKE`, multi-statement with any write → confirm dialog showing the statement. On PROD the confirm needs typing the database name. |
 | **Row cap** | Stream rows and stop at `row_limit` (default 500), then cancel the rest server-side. Show "500 rows (limit) · Load 500 more" (re-runs with a higher cap). No SQL rewriting. |
@@ -302,7 +302,7 @@ Every step: `cargo test -p rookery-core`, `cargo build -p rookery-tauri`, `npx t
 
 ## 9. Open questions — answered (2026-10-16)
 - Database tabs in the Dashboard? **No.**
-- Allow-changes duration: **15 min.**
+- Edit-mode duration: **until the connection closes or Read-only is selected**.
 - Password from a Laravel `.env`: **always ask** (v0.7.1).
 - Scope: **"simple core first"**: the §2.4 shortcuts and history move to v0.7.1.
 - Server view password: **Save makes a saved connection** (vault); unsaved views keep it in memory.
@@ -324,7 +324,7 @@ Every step: `cargo test -p rookery-core`, `cargo build -p rookery-tauri`, `npx t
 - **Commands**: `sql_open` server target also takes `address` and an optional `password`. `sql_set_read_only` is `sql_allow_writes(session_id, minutes)` (0 = read-only again; while writes are on it extends). Added `sql_use(session_id, database)` (both engines reconnect to switch database). `sql_schema(session_id, system)` loads the current database's schemas with columns and indexes in one call. `sql_history`, `sql_detect_local`, `sql_docker_inspect`, `sql_env_parse` are v0.7.1.
 - **Statements are split in Rust** (`lex.rs`) and run one by one; `SqlResult` has `stmt`, `error_pos` (char offset in the submitted text) and `finished` (last event of a run). `split.ts` is the same splitter for "statement at cursor" and risk checks.
 - **Read-only**: besides the server setting, Rust refuses statements that change data while read-only and anything that would switch read-only off (`SET … READ WRITE`, `default_transaction_read_only`, `transaction_read_only` / `tx_read_only`, `BEGIN / START TRANSACTION READ WRITE`, `RESET ALL`, `DISCARD`, `set_config(…)`).
-- **Auto-transaction** only on protected sessions (PROD / "Open read-only") while changes are allowed; ordinary connections autocommit. Postgres wraps each statement inside a transaction in a savepoint, so an error or a cut-off read doesn't lose the transaction.
+- **Auto-transaction** for SQL scripts only on protected sessions (PROD / "Open read-only") while changes are allowed; ordinary connections autocommit. Cell edits from the viewer always stay in a transaction until Commit/Rollback. Postgres wraps each script statement inside a transaction in a savepoint, so an error or a cut-off read doesn't lose the transaction.
 - **Timeout**: MariaDB uses `max_statement_time` (seconds); MySQL `max_execution_time`; plus a client-side watchdog that cancels after `timeout_s + 2`.
 - **Expiry with an open transaction**: further writes are refused at once; the server's read-only setting follows when the transaction ends.
 - **SQL tab session events**: `SqlSession.state` = connected | lost | closed (idle / tab closed); a run reconnects transparently.
@@ -376,7 +376,15 @@ Every step: `cargo test -p rookery-core`, `cargo build -p rookery-tauri`, `npx t
     - the query then runs through `run_inner`: read-only guard, timeout, row cap and cancel as usual.
   - Columns per table are cached in the session and cleared on schema reload / `USE`.
 - **Layouts:** `ui.sql.tables` (in `LOCAL_SETTING_KEYS`, not synced) keeps order / hidden / widths / page size per `<connKey>|<schema>.<table>`, the last 300 tables.
-- **Not yet:** editing cells, inserting and deleting rows (v0.8, with the same PROD rules), and structure changes.
+- **Cell actions:** click selects a cell; Ctrl+C / Cmd+C copies its complete value. A `⋯` button appears on hover or selection, with View full value, Copy value, and Edit value. Right-click offers the same actions alongside filters and foreign-key navigation.
+- **Full-value viewer:** double-click or Enter opens a searchable, resizable CodeMirror viewer. In Edit mode it offers an Edit button, JSON validation/highlighting, and an explicit NULL checkbox. F2 opens the selected cell directly for editing; change or disable `sql.editCell` in Shortcuts.
+- **Read-only / Edit mode:** the connection toolbar dropdown switches any session between Read-only and Edit mode. Editing stays enabled until the connection closes or the user selects Read-only; there is no countdown. PROD still opens read-only and requires confirmation to enable editing. Pending transactions keep Commit/Rollback available in Read-only mode. The UI uses `sql_set_edit_mode(session_id, enabled)`; switching to session-long editing invalidates any older write timer.
+- **Cell writes:** `sql_table_update_cell(session_id, update)` validates current catalog metadata, requires a complete primary/unique key, binds values as parameters, and checks the original cell value. Only supported scalar columns on base tables (InnoDB on MySQL) are editable; generated/identity and binary columns and arbitrary query results are read-only. Updates affecting anything other than one row are rolled back. Failed edits use a savepoint when a transaction is already open.
+- **PROD review:** the viewer shows an original/updated diff before applying the edit to the transaction. Applying is separate from Commit. Tables refresh after Apply, Commit, or Rollback.
+- **Transaction review:** Review beside Commit/Rollback lists applied cell diffs and SQL write statements in execution order. Details are kept in memory until the transaction ends; changes made before the review feature loaded have no recorded details. SQL statements are shown as executed rather than as row-level diffs.
+- **Viewer sizing:** the editor starts at 20vh, grows with its content up to 50vh, then scrolls. Cell diffs use the same limits. The NULL checkbox and edit/apply controls have larger click targets.
+- **Integration test:** `ROOKERY_TEST_MYSQL_URL`, `ROOKERY_TEST_PG_URL`, or `ROOKERY_TEST_MARIADB_URL` can point to a disposable test database for `cargo test -p rookery-core real_cell_edits -- --ignored`.
+- **Not yet:** inserting/deleting rows and structure changes.
 
 ### 10.5 Ideas for later
 - Show column types for Postgres results (the simple protocol only gives names; numbers are right-aligned by looking at the values).

@@ -97,6 +97,7 @@ function Palette({ onNewHost }: { onNewHost: () => void }) {
       });
     }
     for (const a of ACTIONS) {
+      if (a.sqlGridOnly) continue;
       if (a.id === "palette.open") continue;
       out.push({
         id: `a:${a.id}`,

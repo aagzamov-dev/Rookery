@@ -6,6 +6,7 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirro
 import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap } from "@codemirror/autocomplete";
 import { bracketMatching, HighlightStyle, indentOnInput, syntaxHighlighting } from "@codemirror/language";
 import { tags as t } from "@lezer/highlight";
+import { search, searchKeymap } from "@codemirror/search";
 import type { Dialect } from "./split";
 
 export interface SqlEditorHandle {
@@ -47,6 +48,9 @@ const theme = EditorView.theme(
     ".cm-tooltip-autocomplete > ul > li[aria-selected]": { backgroundColor: "#2B3F66", color: "#E6EAF2" },
     ".cm-completionDetail": { color: "#A3ADC2" },
     ".cm-sql-error": { textDecoration: "underline wavy #FF7A7A", textUnderlineOffset: "3px", backgroundColor: "#33232A" },
+    ".cm-panels": { backgroundColor: "#222A3A", color: "#E6EAF2", borderColor: "#364056", zIndex: 5 },
+    ".cm-textfield": { backgroundColor: "#1B2230", border: "1px solid #364056", color: "#E6EAF2" },
+    ".cm-button": { backgroundImage: "none", backgroundColor: "#2A3345", color: "#E6EAF2" },
   },
   { dark: true },
 );
@@ -106,9 +110,10 @@ export const SqlEditor = forwardRef<SqlEditorHandle, Props>(function SqlEditor({
           lang.current.of(language(dialect, schema, defaultSchema)),
           syntaxHighlighting(highlight),
           theme,
+          search({ top: true }),
           errorField,
           EditorView.lineWrapping,
-          keymap.of([...closeBracketsKeymap, ...completionKeymap, ...historyKeymap, indentWithTab, ...defaultKeymap]),
+          keymap.of([...closeBracketsKeymap, ...completionKeymap, ...searchKeymap, ...historyKeymap, indentWithTab, ...defaultKeymap]),
           EditorView.updateListener.of((u) => {
             if (u.docChanged) change.current(u.state.doc.toString());
           }),
@@ -163,5 +168,5 @@ export const SqlEditor = forwardRef<SqlEditorHandle, Props>(function SqlEditor({
     },
   }));
 
-  return <div ref={host} className="h-full min-h-0 overflow-hidden" style={{ ["--sql-font" as string]: fontFamily, ["--sql-size" as string]: `${fontSize}px` }} />;
+  return <div ref={host} className="relative isolate h-full min-h-0 overflow-hidden" style={{ ["--sql-font" as string]: fontFamily, ["--sql-size" as string]: `${fontSize}px` }} />;
 });

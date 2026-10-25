@@ -782,15 +782,23 @@ impl SqlManager {
 
     /// Writes on for `dur` (zero = read-only again now). Calling it while writes are on extends them.
     pub(crate) async fn allow_writes_for(self: &Arc<Self>, session_id: &str, dur: Duration) -> Result<()> {
+        self.set_writes(session_id, Some(dur)).await
+    }
+
+    pub async fn set_edit_mode(self: &Arc<Self>, session_id: &str, enabled: bool) -> Result<()> {
+        self.set_writes(session_id, if enabled { None } else { Some(Duration::ZERO) }).await
+    }
+
+    async fn set_writes(self: &Arc<Self>, session_id: &str, duration: Option<Duration>) -> Result<()> {
         let sess = self.session(session_id)?;
-        if !sess.st.lock().protected {
-            return Ok(()); // not a read-only connection: writes are always on
-        }
-        if dur.is_zero() {
+        sess.st.lock().protected = true;
+        if duration.is_some_and(|dur| dur.is_zero()) {
             let gen = sess.st.lock().writes_gen;
             self.expire_writes(&sess, gen).await;
             return Ok(());
         }
+        let mut guard = sess.conn.lock().await;
+        let conn = self.ensure_conn(&sess, &mut guard).await?;
         let (read_only, tx_open, server_ro) = {
             let st = sess.st.lock();
             (st.read_only, st.tx_open, st.server_read_only)
@@ -801,20 +809,19 @@ impl SqlManager {
             if tx_open {
                 return Err(Error::Other("finish the open transaction first (Commit or Rollback)".into()));
             }
-            let mut guard = sess.conn.lock().await;
-            let conn = self.ensure_conn(&sess, &mut guard).await?;
             conn.set_read_only(false).await?;
         }
-        let until = now_ms() + dur.as_millis().min(i64::MAX as u128) as i64;
+        let until = duration.map(|dur| now_ms() + dur.as_millis().min(i64::MAX as u128) as i64);
         let gen = {
             let mut st = sess.st.lock();
             st.read_only = false;
             st.server_read_only = false;
-            st.writes_until = Some(until);
+            st.writes_until = until;
             st.writes_gen += 1;
             st.writes_gen
         };
         self.emit(&sess, "connected", None);
+        let Some(until) = until else { return Ok(()) };
         let me = Arc::downgrade(self);
         let s = sess.clone();
         tokio::spawn(async move {
@@ -840,13 +847,19 @@ impl SqlManager {
         };
         if !tx_open {
             let mut guard = sess.conn.lock().await;
-            if let Some(conn) = guard.as_mut() {
-                if conn.set_read_only(true).await.is_ok() {
-                    sess.st.lock().server_read_only = true;
+            let current = {
+                let st = sess.st.lock();
+                st.writes_gen == gen && st.read_only && !st.tx_open
+            };
+            if current {
+                if let Some(conn) = guard.as_mut() {
+                    if conn.set_read_only(true).await.is_ok() {
+                        sess.st.lock().server_read_only = true;
+                    }
                 }
             }
         }
-        if !sess.closed.load(Ordering::SeqCst) {
+        if !sess.closed.load(Ordering::SeqCst) && sess.st.lock().writes_gen == gen {
             self.emit(sess, "connected", Some("Changes are off again (read-only)".into()));
         }
     }
@@ -885,6 +898,68 @@ impl SqlManager {
 // ------------------------------------------------------------ table browser
 
 impl SqlManager {
+    pub async fn table_update_cell(self: &Arc<Self>, session_id: &str, update: table::TableCellUpdate) -> Result<()> {
+        let sess = self.session(session_id)?;
+        let mut guard = sess.conn.try_lock().map_err(|_| Error::Other("A query is running; wait for it to finish".into()))?;
+        if sess.st.lock().running {
+            return Err(Error::Other("A query is running; wait for it to finish".into()));
+        }
+        let conn = self.ensure_conn(&sess, &mut guard).await?;
+        let detail = conn.table_detail(&update.schema, &update.table).await?;
+        let engine = sess.params.lock().engine;
+        let plan = table::cell_update_plan(engine, &detail, &update)?;
+        if sess.st.lock().read_only {
+            return Err(Error::Other("Read-only: enable edit mode before applying changes".into()));
+        }
+        let existing_tx = sess.st.lock().tx_open;
+        conn.tx(if existing_tx { "SAVEPOINT rookery_cell" } else { "BEGIN" }).await.map_err(|e| Error::Other(e.message))?;
+        let timeout_s = sess.params.lock().timeout_s;
+        let watchdog = sess.cancel.lock().clone().map(|c| tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(u64::from(timeout_s) + 2)).await;
+            c.cancel().await;
+        }));
+        let result = match conn {
+            Conn::Pg(c) => c.update_cell(&plan).await,
+            Conn::My(c, _) => c.update_cell(&plan).await,
+        };
+        if let Some(w) = watchdog { w.abort(); }
+        let result = match result {
+            Ok(1) => Ok(()),
+            Ok(0) => Err(Error::Other("The value changed or the row was deleted. Refresh the table and try again.".into())),
+            Ok(_) => Err(Error::Other("More than one row matched. The edit was rolled back.".into())),
+            Err(e) => Err(e),
+        };
+        let cleanup = if result.is_err() {
+            let undo = conn.tx(if existing_tx { "ROLLBACK TO SAVEPOINT rookery_cell" } else { "ROLLBACK" }).await;
+            if existing_tx && undo.is_ok() { conn.tx("RELEASE SAVEPOINT rookery_cell").await } else { undo }
+        } else if existing_tx {
+            conn.tx("RELEASE SAVEPOINT rookery_cell").await
+        } else {
+            Ok(())
+        };
+        if let Err(e) = cleanup {
+            sess.conn_gen.fetch_add(1, Ordering::SeqCst);
+            *guard = None;
+            let mut st = sess.st.lock();
+            st.tx_open = false;
+            st.tx_rows = 0;
+            drop(st);
+            self.emit(&sess, "lost", Some("Connection reset after an edit failed; uncommitted changes were rolled back".into()));
+            return Err(Error::Other(e.message));
+        }
+        {
+            let mut st = sess.st.lock();
+            st.tx_open = existing_tx || result.is_ok();
+            if result.is_ok() { st.tx_rows += 1; }
+            st.last_used = Instant::now();
+        }
+        if !sess.st.lock().tx_open {
+            self.after_tx_end(&sess, conn).await;
+        }
+        self.emit(&sess, "connected", None);
+        result
+    }
+
     /// Structure tab: columns, indexes, foreign keys (both ways), CREATE code, size.
     pub async fn table_detail(self: &Arc<Self>, session_id: &str, schema: &str, table: &str) -> Result<TableDetail> {
         let sess = self.session(session_id)?;
@@ -1190,6 +1265,77 @@ mod tests {
         }
         if ran == 0 {
             eprintln!("no ROOKERY_TEST_*_URL set; skipped");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore]
+    async fn real_cell_edits() {
+        for var in ["ROOKERY_TEST_PG_URL", "ROOKERY_TEST_MYSQL_URL", "ROOKERY_TEST_MARIADB_URL"] {
+            let Ok(url) = std::env::var(var) else { continue };
+            let tmp = tempfile::tempdir().unwrap();
+            let core = crate::Core::init(tmp.path()).unwrap();
+            core.vault.lock().create("test master").unwrap();
+            let target = SqlTarget::Url { url: url.clone(), password: None };
+            let opened = core.sql.open(target.clone()).await.unwrap();
+            let observer = core.sql.open(target).await.unwrap().session_id;
+            let sid = opened.session_id;
+            let params = parse_url(&url).unwrap().params;
+            let schema = if params.engine == DbEngine::Postgres { "public".into() } else { params.database.unwrap() };
+            let name = format!("rookery_cell_{}", new_id().replace('-', ""));
+            let table = table::table_ref(params.engine, &schema, &name);
+            raw_exec(&core, &sid, &format!("CREATE TABLE {table} (id bigint PRIMARY KEY, name text NULL, quantity integer NOT NULL); INSERT INTO {table} VALUES (1, 'before', 1), (2, 'second', 2)")).await.unwrap();
+            let update = |column: &str, original: Option<&str>, value: Option<&str>| table::TableCellUpdate {
+                schema: schema.clone(), table: name.clone(), column: column.into(), keys: vec![("id".into(), "1".into())],
+                original: original.map(String::from), value: value.map(String::from),
+            };
+            let select = format!("SELECT name FROM {table} WHERE id = 1");
+            core.sql.set_edit_mode(&sid, false).await.unwrap();
+            assert!(core.sql.table_update_cell(&sid, update("name", Some("before"), Some("after"))).await.is_err());
+            core.sql.allow_writes_for(&sid, Duration::from_secs(60)).await.unwrap();
+            let sess = core.sql.session(&sid).unwrap();
+            let old_timer = sess.st.lock().writes_gen;
+            core.sql.set_edit_mode(&sid, true).await.unwrap();
+            core.sql.expire_writes(&sess, old_timer).await;
+            assert!(!sess.st.lock().read_only, "an older timer cannot disable session-long editing");
+            assert_eq!(sess.st.lock().writes_until, None);
+            let value = "quote' and \\ slash; --";
+            core.sql.table_update_cell(&sid, update("name", Some("before"), Some(value))).await.unwrap();
+            assert!(core.sql.session(&sid).unwrap().st.lock().tx_open);
+            let read_name = |session: String, core: Arc<SqlManager>, select: String| async move {
+                let sess = core.session(&session).unwrap();
+                let mut guard = sess.conn.lock().await;
+                guard.as_mut().unwrap().scalar(&select).await.unwrap()
+            };
+            assert_eq!(read_name(sid.clone(), core.sql.clone(), select.clone()).await.as_deref(), Some(value));
+            assert_eq!(read_name(observer.clone(), core.sql.clone(), select.clone()).await.as_deref(), Some("before"));
+            core.sql.set_edit_mode(&sid, false).await.unwrap();
+            assert!(core.sql.table_update_cell(&sid, update("name", Some(value), Some("blocked"))).await.is_err());
+            core.sql.set_edit_mode(&sid, true).await.unwrap();
+            assert!(sess.st.lock().tx_open, "switching modes must preserve the pending transaction");
+            assert!(core.sql.table_update_cell(&sid, update("name", Some("before"), Some("stale"))).await.is_err());
+            assert!(core.sql.table_update_cell(&sid, update("quantity", Some("1"), Some("invalid integer"))).await.is_err());
+            core.sql.table_update_cell(&sid, update("quantity", Some("1"), Some("3"))).await.unwrap();
+            assert_eq!(core.sql.session(&sid).unwrap().st.lock().tx_rows, 2);
+            core.sql.tx(&sid, TxAction::Rollback).await.unwrap();
+            assert_eq!(read_name(sid.clone(), core.sql.clone(), select.clone()).await.as_deref(), Some("before"));
+            core.sql.table_update_cell(&sid, update("name", Some("before"), None)).await.unwrap();
+            core.sql.tx(&sid, TxAction::Commit).await.unwrap();
+            assert_eq!(read_name(observer.clone(), core.sql.clone(), select.clone()).await, None);
+            assert!(!sess.st.lock().read_only, "Commit must keep edit mode enabled");
+            core.sql.table_update_cell(&sid, update("name", None, Some(""))).await.unwrap();
+            core.sql.tx(&sid, TxAction::Commit).await.unwrap();
+            assert_eq!(read_name(observer.clone(), core.sql.clone(), select.clone()).await.as_deref(), Some(""));
+            raw_exec(&core, &observer, &format!("UPDATE {table} SET name = 'external' WHERE id = 1")).await.unwrap();
+            assert!(core.sql.table_update_cell(&sid, update("name", Some(""), Some("stale"))).await.is_err());
+            assert!(!core.sql.session(&sid).unwrap().st.lock().tx_open);
+            assert!(core.sql.table_update_cell(&sid, update("id", Some("1"), Some("2"))).await.is_err());
+            assert!(!core.sql.session(&sid).unwrap().st.lock().tx_open);
+            core.sql.set_edit_mode(&sid, false).await.unwrap();
+            assert!(core.sql.session(&sid).unwrap().st.lock().read_only);
+            raw_exec(&core, &observer, &format!("DROP TABLE {table}")).await.unwrap();
+            core.sql.close(&sid).await;
+            core.sql.close(&observer).await;
         }
     }
 

@@ -199,6 +199,12 @@ impl PgConn {
         self.client.batch_execute(sql).await.map_err(stmt_err)
     }
 
+    pub async fn update_cell(&self, plan: &super::table::CellUpdatePlan) -> Result<u64> {
+        let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = plan.values.iter()
+            .map(|v| v as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
+        self.client.execute(&plan.sql, &params).await.map_err(|e| Error::Other(stmt_err(e).message))
+    }
+
     pub fn take_notices(&mut self) -> Vec<String> {
         let mut out = Vec::new();
         while let Ok(n) = self.notices.try_recv() {

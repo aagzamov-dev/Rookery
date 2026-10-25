@@ -2,8 +2,9 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import clsx from "clsx";
 import { EditorView } from "@codemirror/view";
-import { openSearchPanel } from "@codemirror/search";
+import { closeSearchPanel, openSearchPanel } from "@codemirror/search";
 import { diagnosticCount } from "@codemirror/lint";
+import { useVault } from "../../stores/vault";
 import type { EditorState } from "@codemirror/state";
 import {
   AlertTriangle,
@@ -73,6 +74,7 @@ export function EditorWorkspace({ hostId, visible }: { hostId: string; visible: 
   const active = he?.active ?? null;
   const doc = docs.find((d) => d.key === active) ?? null;
   const isProd = host?.env_label === "prod";
+  const unlocked = useVault((s) => !!s.status?.unlocked);
 
   const [note, setNote] = useState<Note>(null);
   const [pos, setPos] = useState<Pos | null>(null);
@@ -99,6 +101,11 @@ export function EditorWorkspace({ hostId, visible }: { hostId: string; visible: 
       mounted.delete(hostId);
     };
   }, [hostId]);
+
+  useEffect(() => {
+    const view = mounted.get(hostId)?.view;
+    if (view && (!visible || !unlocked)) closeSearchPanel(view);
+  }, [hostId, visible, unlocked]);
 
   useEffect(() => {
     const m = mounted.get(hostId);
@@ -299,7 +306,7 @@ export function EditorWorkspace({ hostId, visible }: { hostId: string; visible: 
   const pinned = !!doc && (pins ?? []).includes(doc.path);
 
   return (
-    <div className="flex h-full min-h-0 bg-bg" onKeyDown={onKey}>
+    <div className="relative isolate flex h-full min-h-0 overflow-hidden bg-bg" onKeyDown={onKey}>
       <FileTree hostId={hostId} visible={visible} activePath={doc?.path ?? null} onOpen={(p) => void open(p)} onOpenPath={() => void openPath()} />
 
       <div className="flex min-w-0 flex-1 flex-col" style={{ ["--ed-font" as string]: fontFamily, ["--ed-size" as string]: `${fontSize}px` }}>

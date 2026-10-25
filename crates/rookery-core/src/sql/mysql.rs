@@ -194,6 +194,12 @@ impl MyConn {
         self.conn.query_drop(sql).await.map_err(stmt_err)
     }
 
+    pub async fn update_cell(&mut self, plan: &super::table::CellUpdatePlan) -> Result<u64> {
+        let params: Vec<Value> = plan.values.iter().map(|v| v.as_deref().map(Value::from).unwrap_or(Value::NULL)).collect();
+        self.conn.exec_drop(&plan.sql, params).await.map_err(other)?;
+        Ok(self.conn.affected_rows())
+    }
+
     pub async fn database(&mut self) -> Result<Option<String>> {
         Ok(self.rows("SELECT DATABASE()").await?.into_iter().next().and_then(|r| r.into_iter().next().flatten()))
     }

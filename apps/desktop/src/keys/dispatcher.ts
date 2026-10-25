@@ -60,6 +60,10 @@ export function activeTerminalKey(termKey: string | null): string | null {
 }
 
 export function runAction(id: ActionId, termKey: string | null) {
+  if (id === "sql.editCell") {
+    document.activeElement?.closest("[data-sql-grid]")?.dispatchEvent(new Event("sql-edit-cell"));
+    return;
+  }
   const tabs = useTabs.getState();
   const hostId = activeServerHostId();
   const term = activeTerminalKey(termKey);
@@ -360,6 +364,7 @@ export function installKeyDispatcher(): () => void {
     if (action) {
       if (ACTION_BY_ID[action].terminalOnly && !termKey) return; // text fields keep native copy/paste
       if (ACTION_BY_ID[action].sqlOnly && !sqlRegistry.activeKey()) return;
+      if (ACTION_BY_ID[action].sqlGridOnly && !document.activeElement?.matches("[data-sql-grid]")) return;
       stop(e);
       runAction(action, termKey);
       return;

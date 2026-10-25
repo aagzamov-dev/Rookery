@@ -74,7 +74,8 @@ export type ActionId =
   | "sql.run"
   | "sql.runAll"
   | "sql.cancel"
-  | "sql.toggleTree";
+  | "sql.toggleTree"
+  | "sql.editCell";
 
 export type ActionGroup = "App" | "Tabs" | "Server views" | "Terminal" | "Copy & paste" | "Scroll & find" | "Font size" | "Files" | "SQL";
 
@@ -90,6 +91,7 @@ export interface ActionDef {
   terminalOnly?: boolean;
   /** Only fires while a SQL editor is focused or visible. */
   sqlOnly?: boolean;
+  sqlGridOnly?: boolean;
   hint?: string;
 }
 
@@ -183,6 +185,7 @@ export const ACTIONS: ActionDef[] = [
   { id: "sql.runAll", label: "Run everything in the editor", group: "SQL", defaults: ["Mod+Shift+Enter"], sqlOnly: true },
   { id: "sql.cancel", label: "Cancel the running query", group: "SQL", defaults: ["Mod+."], sqlOnly: true },
   { id: "sql.toggleTree", label: "Show / hide the schema tree", group: "SQL", defaults: [], sqlOnly: true },
+  { id: "sql.editCell", label: "Edit selected cell", group: "SQL", defaults: ["F2"], sqlGridOnly: true },
 ];
 
 export const ACTION_BY_ID = Object.fromEntries(ACTIONS.map((a) => [a.id, a])) as Record<ActionId, ActionDef>;

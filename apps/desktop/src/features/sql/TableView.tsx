@@ -18,6 +18,8 @@ import { Button, IconButton, Select } from "../../ui/primitives";
 import { toCsv } from "./csv";
 import { DataGrid } from "./ResultsGrid";
 import { columnOrder, EMPTY_LAYOUT, moveColumn, PAGE_SIZES, useTableLayouts } from "./tableLayout";
+import { cellIdentity } from "./cellEdit";
+import { useTransactionReview } from "./transactionReview";
 
 export type TableSub = "data" | "structure";
 
@@ -27,6 +29,7 @@ export type OpenTable = (schema: string, table: string, opts?: { filter?: Column
 interface Props {
   sessionId: string;
   connKey: string;
+  env?: string;
   schema: string;
   table: string;
   /** From the schema tree (columns + indexes known at once, for the default sort). */
@@ -149,6 +152,8 @@ function DataPane(p: Props & { detail: TableDetail | null }) {
   const run = useSql((s) => (queryId ? s.runs[queryId] : undefined));
   const loading = !!queryId;
   const colsMenu = useContextMenu();
+  const meta = useSql((s) => s.sessions[p.sessionId]);
+  const wasInTx = useRef(meta?.txOpen ?? false);
 
   // A foreign-key jump into an already open tab replaces the filters.
   const nonce = p.initialFilter?.nonce;
@@ -221,6 +226,27 @@ function DataPane(p: Props & { detail: TableDetail | null }) {
   }, [run?.finished, queryId, run, append]);
 
   const names = useMemo(() => columns.map((c) => c.name), [columns]);
+  useEffect(() => {
+    const ended = wasInTx.current && !meta?.txOpen;
+    wasInTx.current = meta?.txOpen ?? false;
+    if (!ended) return;
+    loadedKey.current = null;
+    if (p.visible && !loading) { loadedKey.current = key; void load(false); }
+  }, [meta?.txOpen, p.visible, loading, key, load]);
+  const editReason = (row: (string | null)[], column: string) => {
+    if (!meta || meta.readOnly) return "Read-only: enable Edit mode in the connection toolbar to change values.";
+    if (loading) return "Wait for the table to finish loading.";
+    return cellIdentity(p.detail, meta.engine, names, row, column).reason;
+  };
+  const saveCell = async (row: (string | null)[], column: string, value: string | null) => {
+    const reason = editReason(row, column);
+    if (reason || !meta) throw new Error(reason ?? "Connection is unavailable.");
+    const identity = cellIdentity(p.detail, meta.engine, names, row, column);
+    const update = { schema: p.schema, table: p.table, column, keys: identity.keys, original: row[names.indexOf(column)], value };
+    await api.sqlTableUpdateCell(p.sessionId, update);
+    useTransactionReview.getState().recordCell(p.sessionId, update);
+    await load(false);
+  };
   const order = useMemo(() => columnOrder(names, layout), [names, layout]);
   const fkOut = useMemo(() => {
     const m = new Map<string, ForeignKey>();
@@ -484,6 +510,13 @@ function DataPane(p: Props & { detail: TableDetail | null }) {
             columns={columns}
             rows={rows}
             fontFamily={p.fontFamily}
+            valueTitle={`${p.schema}.${p.table}`}
+            rowIdentity={(row, column) => meta ? cellIdentity(p.detail, meta.engine, names, row, column).keys.map(([name, value]) => `${name} = ${JSON.stringify(value)}`).join(" · ") : ""}
+            prod={p.env === "prod"}
+            columnType={(name) => p.detail?.columns.find((c) => c.name === name)?.data_type ?? ""}
+            nullable={(name) => p.detail?.columns.find((c) => c.name === name)?.nullable ?? false}
+            editReason={editReason}
+            onSaveCell={saveCell}
             order={order}
             widths={layout.widths}
             onWidth={(name, w) => updateLayout(layoutKey, { widths: { ...layout.widths, [name]: w } })}
@@ -525,9 +558,6 @@ function DataPane(p: Props & { detail: TableDetail | null }) {
                       {linked.has(names[i]) && <Link2 size={10} className="text-accent" />}
                       <span className="font-semibold text-text">{names[i]}</span>
                       <span className="truncate">{p.info?.columns.find((c) => c.name === names[i])?.data_type}</span>
-                      <button aria-label={`Copy ${names[i]}`} className="ml-auto hidden text-muted hover:text-text group-hover/f:block" onClick={() => void api.clipboardWrite(row[i] ?? "")}>
-                        <Copy size={11} />
-                      </button>
                     </div>
                     <div
                       className={clsx("mt-0.5 max-h-48 overflow-auto rounded border border-[#303A4E] bg-term px-2 py-1 text-xs break-all whitespace-pre-wrap select-text", row[i] == null && "text-[#6B7690] italic")}

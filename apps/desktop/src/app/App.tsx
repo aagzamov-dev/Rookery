@@ -25,13 +25,14 @@ export function App() {
   }, [status?.unlocked, everUnlocked, loadHosts]);
 
   if (!status) return <div className="h-full bg-bg" />;
+  const locked = needsLockScreen(status, pinSkipped);
 
   // The shell stays mounted under the lock screen so tabs, terminals and
   // scrollback survive locking (subscriptions are stopped by the core).
   return (
     <>
-      {everUnlocked && <Shell />}
-      {needsLockScreen(status, pinSkipped) && <LockScreen />}
+      {everUnlocked && <div className={locked ? "hidden" : "relative isolate h-full"} aria-hidden={locked || undefined}><Shell /></div>}
+      {locked && <LockScreen />}
     </>
   );
 }

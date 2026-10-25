@@ -9,7 +9,6 @@ import { askConfirm } from "../../stores/dialogs";
 import { useKeys } from "../../stores/keys";
 import { useSql, type SqlResultSet, type SqlRun } from "../../stores/sql";
 import { Button, IconButton, Select } from "../../ui/primitives";
-import { useContextMenu, type MenuItem } from "../../ui/ContextMenu";
 import { classifySql } from "./classify";
 import { settleTransactions } from "./txGuard";
 import { toCsv } from "./csv";
@@ -21,6 +20,7 @@ import { SqlEditor, type SqlEditorHandle } from "./SqlEditor";
 import { charToIndex, splitSql, type Dialect } from "./split";
 import { TableView, type OpenTable, type TableSub } from "./TableView";
 import type { ColumnFilter } from "../../ipc/bindings/ColumnFilter";
+import { TransactionReviewDialog } from "./TransactionReviewDialog";
 
 /** A table opened as a tab inside the SQL tab. Unpinned = preview (the next single click replaces it). */
 interface OpenedTable {
@@ -44,59 +44,40 @@ interface Props {
 }
 
 const EMPTY: SqlResultSet[] = [];
-const ALLOW_MINUTES = 15;
-
-const mmss = (ms: number) => {
-  const s = Math.max(0, Math.round(ms / 1000));
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
-};
-
-/** Toolbar 🔒: read-only state, "Allow changes for 15 minutes", countdown. */
-function WritesButton({ sessionId, label, env }: { sessionId: string; label: string; env?: string }) {
+function ConnectionMode({ sessionId, label, env }: { sessionId: string; label: string; env?: string }) {
   const meta = useSql((s) => s.sessions[sessionId]);
-  const menu = useContextMenu();
-  const [now, setNow] = useState(Date.now());
-  const until = meta?.writesUntil ?? null;
-  useEffect(() => {
-    if (!until) return;
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, [until]);
+  const [busy, setBusy] = useState(false);
   if (!meta) return null;
-  const envText = env && env !== "none" ? ` (${env.toUpperCase()})` : "";
 
-  const allow = async () => {
-    const ok = await askConfirm({
-      title: `Allow changes on ${label}${envText}?`,
-      body: `Writes are allowed for ${ALLOW_MINUTES} minutes, then the connection is read-only again by itself. Every change goes into a transaction: nothing is saved until you press Commit.`,
-      confirmLabel: `Allow changes for ${ALLOW_MINUTES} minutes`,
-      danger: env === "prod",
-    });
-    if (ok) await api.sqlAllowWrites(sessionId, ALLOW_MINUTES).catch((e) => askConfirm({ title: "Could not allow changes", body: asCoreError(e).message, confirmLabel: "OK" }));
+  const changeMode = async (enabled: boolean) => {
+    if (busy || enabled === !meta.readOnly) return;
+    setBusy(true);
+    try {
+      if (enabled && env === "prod") {
+        const ok = await askConfirm({
+          title: `Enable edit mode on ${label} (PROD)?`,
+          body: "Editing stays enabled until you close this connection or select Read-only. Cell edits require diff review and remain in a transaction until Commit.",
+          confirmLabel: "Enable edit mode",
+          danger: true,
+        });
+        if (!ok) return;
+      }
+      await api.sqlSetEditMode(sessionId, enabled);
+    } catch (e) {
+      await askConfirm({ title: "Could not change connection mode", body: asCoreError(e).message, confirmLabel: "OK" });
+    } finally {
+      setBusy(false);
+    }
   };
-  const stop = () => void api.sqlAllowWrites(sessionId, 0);
 
-  const items: MenuItem[] = !meta.protected
-    ? [{ kind: "label", label: "This connection is not read-only. Turn on “Open read-only” (or label it PROD) to protect it." }]
-    : meta.readOnly
-      ? [{ label: `Allow changes for ${ALLOW_MINUTES} minutes…`, icon: <Unlock size={13} />, onClick: () => void allow() }]
-      : [
-          { label: "Read-only again now", icon: <Lock size={13} />, onClick: stop },
-          { label: `Extend to ${ALLOW_MINUTES} minutes from now`, onClick: () => void api.sqlAllowWrites(sessionId, ALLOW_MINUTES) },
-        ];
-  const writing = !meta.readOnly && meta.protected;
   return (
-    <>
-      <button
-        onClick={(e) => menu.open(items)(e)}
-        title={meta.readOnly ? "Read-only: the server refuses changes. Click to allow changes for a while." : "Changes are allowed"}
-        className={clsx("flex h-7 items-center gap-1 rounded-md px-2 text-xs hover:brightness-125", writing ? "bg-[#352F20] text-[#F7CB6A]" : "text-muted hover:text-text")}
-      >
-        {meta.readOnly ? <Lock size={12} /> : <Unlock size={12} />}
-        {meta.readOnly ? "Read-only" : meta.protected ? `Changes allowed · ${until ? mmss(until - now) : ""}` : "Read / write"}
-      </button>
-      {menu.node}
-    </>
+    <label className={clsx("flex items-center gap-1.5 text-xs", meta.readOnly ? "text-muted" : "text-warn")}>
+      {meta.readOnly ? <Lock size={12} /> : <Unlock size={12} />}
+      <Select aria-label="SQL connection mode" className="h-7 text-xs" value={meta.readOnly ? "read-only" : "edit"} disabled={busy} onChange={(e) => void changeMode(e.target.value === "edit")}>
+        <option value="read-only">Read-only</option>
+        <option value="edit">Edit mode</option>
+      </Select>
+    </label>
   );
 }
 
@@ -118,6 +99,8 @@ export function SqlTab({ tabKey, sessionId, extra, label, env }: Props) {
   const [runId, setRunId] = useState<string | null>(null);
   const [tab, setTab] = useState<number | "messages">("messages");
   const [notice, setNotice] = useState<string | null>(null);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  useEffect(() => { if (!meta?.txOpen) setReviewOpen(false); }, [meta?.txOpen]);
   const [panel, setPanel] = useState<SidePanelTab | null>(null);
   const [tables, setTables] = useState<OpenedTable[]>([]);
   const [active, setActive] = useState<string>("query");
@@ -404,7 +387,7 @@ export function SqlTab({ tabKey, sessionId, extra, label, env }: Props) {
             </option>
           ))}
         </Select>
-        <WritesButton sessionId={sessionId} label={label} env={env} />
+        <ConnectionMode sessionId={sessionId} label={label} env={env} />
         <span className="text-xs text-muted">Tx: {meta.txOpen ? <b className="text-warn">open</b> : "none"}</span>
         {running ? (
           <span className="flex items-center gap-1 text-xs text-accent">
@@ -430,14 +413,16 @@ export function SqlTab({ tabKey, sessionId, extra, label, env }: Props) {
           <span>
             Uncommitted changes{meta.txRows ? ` · ${meta.txRows} rows` : ""}
           </span>
-          <Button className="ml-auto h-7" variant="primary" onClick={() => void api.sqlTx(sessionId, "commit").catch((e) => setNotice(asCoreError(e).message))}>
+          <Button className="ml-auto h-9 px-4" disabled={running} onClick={() => setReviewOpen(true)}>Review</Button>
+          <Button className="h-9 px-4" variant="primary" onClick={() => void api.sqlTx(sessionId, "commit").catch((e) => setNotice(asCoreError(e).message))}>
             Commit
           </Button>
-          <Button className="h-7" onClick={() => void api.sqlTx(sessionId, "rollback").catch((e) => setNotice(asCoreError(e).message))}>
+          <Button className="h-9 px-4" onClick={() => void api.sqlTx(sessionId, "rollback").catch((e) => setNotice(asCoreError(e).message))}>
             Rollback
           </Button>
         </div>
       )}
+      {reviewOpen && meta.txOpen && <TransactionReviewDialog sessionId={sessionId} label={label} fontFamily={fontFamily} onClose={() => setReviewOpen(false)} />}
       {meta.state === "lost" && meta.message && (
         <div className="flex items-center gap-2 border-b border-[#5A2D33] bg-[#33232A] px-4 py-1.5 text-[13px] text-prod-fg">
           <AlertTriangle size={14} /> {meta.message}
@@ -516,6 +501,7 @@ export function SqlTab({ tabKey, sessionId, extra, label, env }: Props) {
             key={t.key}
             sessionId={sessionId}
             connKey={meta.connKey}
+            env={env}
             schema={t.schema}
             table={t.table}
             info={tableInfo(t.schema, t.table)}

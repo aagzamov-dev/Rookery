@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "re
 import { createPortal } from "react-dom";
 import clsx from "clsx";
 import { Check } from "lucide-react";
+import { useVault } from "../stores/vault";
 
 export type MenuItem =
   | { kind?: "item"; label: string; icon?: ReactNode; onClick: () => void; checked?: boolean; disabled?: boolean; danger?: boolean }
@@ -89,12 +90,14 @@ export function ContextMenu({ x, y, items, onClose }: { x: number; y: number; it
 /** `const menu = useContextMenu(); <div onContextMenu={menu.open(items)}>…{menu.node}` */
 export function useContextMenu() {
   const [state, setState] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null);
+  const unlocked = useVault((s) => !!s.status?.unlocked);
+  useEffect(() => { if (!unlocked) setState(null); }, [unlocked]);
   return {
     open: (items: MenuItem[] | (() => MenuItem[])) => (e: React.MouseEvent) => {
       e.preventDefault();
       e.stopPropagation();
       setState({ x: e.clientX, y: e.clientY, items: typeof items === "function" ? items() : items });
     },
-    node: state && <ContextMenu x={state.x} y={state.y} items={state.items} onClose={() => setState(null)} />,
+    node: state && unlocked && <ContextMenu x={state.x} y={state.y} items={state.items} onClose={() => setState(null)} />,
   };
 }
