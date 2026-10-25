@@ -72,7 +72,7 @@ export function DataGrid(p: DataGridProps) {
   const [live, setLive] = useState<{ name: string; w: number } | null>(null); // width while dragging
   const dragFrom = useRef<number | null>(null);
   const resized = useRef(false);
-  const menu = useContextMenu();
+  const menu = useContextMenu("w-max max-w-[min(360px,calc(100vw-16px))] [&_[role=menuitem]>span:first-child]:shrink-0 [&_[role=menuitem]>span:last-child]:min-w-0 [&_[role=menuitem]>span:last-child]:truncate");
   const [viewer, setViewer] = useState<{ row: (string | null)[]; column: ResultColumn; index: number; identity: string; edit: boolean; save?: (value: string | null) => Promise<void> } | null>(null);
   const shortcut = useKeys((s) => s.bindings["sql.editCell"][0]);
   const unlocked = useVault((s) => !!s.status?.unlocked);

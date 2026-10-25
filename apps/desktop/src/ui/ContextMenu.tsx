@@ -10,7 +10,7 @@ export type MenuItem =
   | { kind: "label"; label: string };
 
 /** Right-click menu at the pointer. Closes on outside click, Esc, scroll or blur. */
-export function ContextMenu({ x, y, items, onClose }: { x: number; y: number; items: MenuItem[]; onClose: () => void }) {
+export function ContextMenu({ x, y, items, onClose, className }: { x: number; y: number; items: MenuItem[]; onClose: () => void; className?: string }) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ x, y });
 
@@ -52,7 +52,7 @@ export function ContextMenu({ x, y, items, onClose }: { x: number; y: number; it
     <div
       ref={ref}
       role="menu"
-      className="fixed z-50 min-w-[200px] rounded-lg border border-line bg-panel p-1 shadow-xl"
+      className={clsx("fixed z-50 min-w-[200px] rounded-lg border border-line bg-panel p-1 shadow-xl", className)}
       style={{ left: pos.x, top: pos.y }}
       onContextMenu={(e) => e.preventDefault()}
     >
@@ -88,7 +88,7 @@ export function ContextMenu({ x, y, items, onClose }: { x: number; y: number; it
 }
 
 /** `const menu = useContextMenu(); <div onContextMenu={menu.open(items)}>…{menu.node}` */
-export function useContextMenu() {
+export function useContextMenu(className?: string) {
   const [state, setState] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null);
   const unlocked = useVault((s) => !!s.status?.unlocked);
   useEffect(() => { if (!unlocked) setState(null); }, [unlocked]);
@@ -98,6 +98,6 @@ export function useContextMenu() {
       e.stopPropagation();
       setState({ x: e.clientX, y: e.clientY, items: typeof items === "function" ? items() : items });
     },
-    node: state && unlocked && <ContextMenu x={state.x} y={state.y} items={state.items} onClose={() => setState(null)} />,
+    node: state && unlocked && <ContextMenu x={state.x} y={state.y} items={state.items} onClose={() => setState(null)} className={className} />,
   };
 }
