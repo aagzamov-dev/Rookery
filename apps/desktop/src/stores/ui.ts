@@ -4,23 +4,27 @@ interface UiState {
   /** Window visible and focused (with a short grace on blur). Gates every live subscription. */
   windowActive: boolean;
   hostListOpen: boolean;
+  hostListWidth: number;
   /** Sidebar list: servers (SSH) or database connections (SQL). Starts on SSH every time. */
   sidebar: "ssh" | "sql";
   paletteOpen: boolean;
   setSidebar: (v: "ssh" | "sql") => void;
   setWindowActive: (v: boolean) => void;
   toggleHostList: () => void;
+  setHostListWidth: (width: number) => void;
   setPaletteOpen: (v: boolean) => void;
 }
 
 export const useUi = create<UiState>((set) => ({
   windowActive: true,
   hostListOpen: true,
+  hostListWidth: 252,
   sidebar: "ssh",
   paletteOpen: false,
   setSidebar: (sidebar) => set({ sidebar }),
   setWindowActive: (windowActive) => set({ windowActive }),
   toggleHostList: () => set((s) => ({ hostListOpen: !s.hostListOpen })),
+  setHostListWidth: (width) => set({ hostListWidth: Math.max(252, Math.min(520, width)) }),
   setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
 }));
 

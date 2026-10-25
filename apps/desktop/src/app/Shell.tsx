@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
 import {
   ArrowLeftRight,
@@ -316,6 +316,9 @@ function HostList({
   const hosts = useHosts((s) => s.hosts);
   const groups = useHosts((s) => s.groups);
   const toggle = useUi((s) => s.toggleHostList);
+  const width = useUi((s) => s.hostListWidth);
+  const setWidth = useUi((s) => s.setHostListWidth);
+  const resize = useRef<{ pointerId: number; x: number; width: number } | null>(null);
   const mode = useUi((s) => s.sidebar);
   const setMode = useUi((s) => s.setSidebar);
   const [filter, setFilter] = useState("");
@@ -367,7 +370,36 @@ function HostList({
   const ungrouped = visible.filter((h) => !h.group_id || !groups.some((g) => g.id === h.group_id));
 
   return (
-    <nav aria-label="Hosts" className="flex w-[252px] flex-none flex-col gap-3 border-r border-line bg-panel px-2.5 py-3">
+    <nav aria-label="Hosts" className="relative flex flex-none flex-col gap-3 border-r border-line bg-panel px-2.5 py-3" style={{ width, maxWidth: "50%" }}>
+      <div
+        role="separator"
+        aria-label="Resize servers sidebar"
+        aria-orientation="vertical"
+        aria-valuemin={252}
+        aria-valuemax={520}
+        aria-valuenow={width}
+        tabIndex={0}
+        className="absolute inset-y-0 -right-[3px] z-20 w-[6px] cursor-col-resize touch-none select-none hover:bg-accent-line active:bg-accent-line"
+        onPointerDown={(e) => {
+          if (e.button !== 0) return;
+          e.preventDefault();
+          resize.current = { pointerId: e.pointerId, x: e.clientX, width: e.currentTarget.parentElement?.getBoundingClientRect().width ?? width };
+          e.currentTarget.setPointerCapture(e.pointerId);
+        }}
+        onPointerMove={(e) => {
+          const drag = resize.current;
+          if (drag?.pointerId === e.pointerId) setWidth(drag.width + e.clientX - drag.x);
+        }}
+        onPointerUp={(e) => {
+          if (resize.current?.pointerId === e.pointerId) e.currentTarget.releasePointerCapture(e.pointerId);
+        }}
+        onLostPointerCapture={() => { resize.current = null; }}
+        onKeyDown={(e) => {
+          if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+          e.preventDefault();
+          setWidth(width + (e.key === "ArrowRight" ? 16 : -16));
+        }}
+      />
       <div className="flex items-center gap-1 px-1">
         <div role="tablist" aria-label="Sidebar list" className="flex rounded-[7px] border border-line bg-bg p-0.5">
           {(["ssh", "sql"] as const).map((m) => (
