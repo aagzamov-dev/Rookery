@@ -296,18 +296,18 @@ export function ServerDbView({ hostId }: { hostId: string }) {
           Connects through this server's SSH session. The address is as seen from the server, so 127.0.0.1 means a database running on it.
           {host?.env_label === "prod" && " This is a PROD server: the database opens read-only."}
         </p>
-        <div className="grid grid-cols-[1fr_2fr_1fr] gap-3">
+        <div className="grid grid-cols-[minmax(0,1.5fr)_minmax(0,2fr)_80px] gap-3 [&>label]:min-w-0">
           <Field label="Engine">
-            <Select value={engine} onChange={(e) => pickEngine(e.target.value as DbEngine)}>
+            <Select className="min-w-0" value={engine} onChange={(e) => pickEngine(e.target.value as DbEngine)}>
               <option value="postgres">PostgreSQL</option>
               <option value="mysql">MySQL / MariaDB</option>
             </Select>
           </Field>
           <Field label="Address (from the server)">
-            <TextInput mono value={address} onChange={(e) => setAddress(e.target.value)} />
+            <TextInput className="min-w-0" mono value={address} onChange={(e) => setAddress(e.target.value)} />
           </Field>
           <Field label="Port">
-            <TextInput mono inputMode="numeric" value={port} onChange={(e) => setPort(e.target.value.replace(/\D/g, ""))} />
+            <TextInput className="min-w-0" mono inputMode="numeric" value={port} onChange={(e) => setPort(e.target.value.replace(/\D/g, ""))} />
           </Field>
         </div>
         <div className="grid grid-cols-2 gap-3">
