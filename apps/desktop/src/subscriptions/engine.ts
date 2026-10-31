@@ -71,6 +71,7 @@ export const defaultHooks: ReconcilerHooks = {
   paramsFor: (hostId, source, param) => {
     if (source === "docker.logs") {
       const lastTs = useLogs.getState().streams[streamKey(hostId, `docker:${param}`)]?.lastTs ?? null;
+      useLogs.getState().resume(hostId, `docker:${param}`);
       return { container: param, since: lastTs };
     }
     if (source === "file.tail") return { path: param };

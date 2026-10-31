@@ -26,6 +26,8 @@ export interface HostFiles {
   terminalCwd: string | null;
 }
 
+const requests = new Map<string, number>();
+
 const empty = (): HostFiles => ({
   path: null,
   home: null,
@@ -73,22 +75,27 @@ export const useFiles = create<FilesState>((set, get) => ({
   patch: (hostId, p) => set((s) => ({ byHost: { ...s.byHost, [hostId]: { ...(s.byHost[hostId] ?? empty()), ...p } } })),
 
   open: async (hostId, path, force = false) => {
+    const request = (requests.get(hostId) ?? 0) + 1;
+    requests.set(hostId, request);
     const st = get().byHost[hostId] ?? empty();
     let target = path ?? st.path;
     try {
       if (!target) {
         const home = st.home ?? (await api.sftpHome(hostId));
+        if (requests.get(hostId) !== request) return;
         get().patch(hostId, { home });
         target = home;
       }
       const cached = st.listings[target];
-      get().patch(hostId, { path: target, error: null });
+      get().patch(hostId, { path: target, error: null, loading: false });
       if (cached && !force && Date.now() - cached.at < FRESH_MS) return;
       get().patch(hostId, { loading: true });
       const entries = await api.sftpList(hostId, target);
+      if (requests.get(hostId) !== request) return;
       const cur = get().byHost[hostId] ?? empty();
-      get().patch(hostId, { loading: false, listings: { ...cur.listings, [target]: { entries, at: Date.now() } } });
+      get().patch(hostId, { loading: false, listings: Object.fromEntries(Object.entries({ ...cur.listings, [target]: { entries, at: Date.now() } }).sort((a, b) => b[1].at - a[1].at).slice(0, 20)) });
     } catch (e) {
+      if (requests.get(hostId) !== request) return;
       get().patch(hostId, { loading: false, error: asCoreError(e).message });
     }
   },
@@ -119,6 +126,7 @@ export const useFiles = create<FilesState>((set, get) => ({
     }),
   forget: (hostId) =>
     set((s) => {
+      requests.set(hostId, (requests.get(hostId) ?? 0) + 1);
       const byHost = { ...s.byHost };
       delete byHost[hostId];
       return {

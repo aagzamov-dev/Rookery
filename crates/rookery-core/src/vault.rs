@@ -21,6 +21,14 @@ use zeroize::Zeroizing;
 use crate::model::VaultStatus;
 use crate::{now_ms, Error, Result};
 
+#[derive(Deserialize, ts_rs::TS)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+#[ts(export, export_to = "../../../apps/desktop/src/ipc/bindings/")]
+pub enum PinCredential {
+    Pin(String),
+    Master(String),
+}
+
 /// Wrong PINs before a cooldown, and before the PIN is disabled.
 pub const PIN_COOLDOWN_AFTER: u32 = 5;
 pub const PIN_DISABLE_AFTER: u32 = 10;
@@ -123,6 +131,7 @@ pub struct Vault {
     file: Option<VaultFile>,
     vk: Option<Zeroizing<[u8; 32]>>,
     pins: Box<dyn PinStore>,
+    defer_save: bool,
 }
 
 impl Vault {
@@ -137,7 +146,7 @@ impl Vault {
         } else {
             None
         };
-        Ok(Self { path, file, vk: None, pins })
+        Ok(Self { path, file, vk: None, pins, defer_save: false })
     }
 
     pub fn is_initialised(&self) -> bool {
@@ -203,6 +212,27 @@ impl Vault {
 
     pub fn set_pin(&mut self, pin: &str) -> Result<()> {
         validate_pin(pin)?;
+        if self.pin_entry()?.is_some() {
+            return Err(Error::Other("Use Change PIN with your current PIN or master password to replace an existing PIN.".into()));
+        }
+        self.write_pin(pin)
+    }
+
+    pub fn change_pin(&mut self, pin: &str, credential: &PinCredential) -> Result<()> {
+        validate_pin(pin)?;
+        let previous_key = self.vk.clone();
+        let result = match credential {
+            PinCredential::Pin(current) => self.unlock_pin(current),
+            PinCredential::Master(master) => self.unlock_master(master),
+        }
+        .and_then(|_| self.write_pin(pin));
+        if result.is_err() {
+            self.vk = previous_key;
+        }
+        result
+    }
+
+    fn write_pin(&mut self, pin: &str) -> Result<()> {
         let vk = self.vk.as_ref().ok_or(Error::VaultLocked)?;
         let vault_id = self.vault_id()?.to_string();
         let salt = random::<16>();
@@ -335,6 +365,33 @@ impl Vault {
         self.save()
     }
 
+    pub(crate) fn restore_on_error<T>(&mut self, work: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        let before = self.file.clone();
+        let result = work(self);
+        if let Err(error) = &result {
+            self.file = before;
+            if let Err(restore) = self.save() {
+                return Err(Error::Other(format!("Import failed: {error}. Vault rollback could not be persisted: {restore}. Keep the original backup and retry after fixing storage access")));
+            }
+        }
+        result
+    }
+
+    pub(crate) fn atomic<T>(&mut self, work: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        if !self.is_unlocked() { return Err(Error::VaultLocked); }
+        let before = self.file.clone();
+        self.defer_save = true;
+        let result = work(self);
+        self.defer_save = false;
+        match result {
+            Ok(value) => match self.save() {
+                Ok(()) => Ok(value),
+                Err(error) => { self.file = before; Err(error) }
+            },
+            Err(error) => { self.file = before; Err(error) }
+        }
+    }
+
     // ---------------------------------------------------------- internal
 
     fn vault_id(&self) -> Result<&str> {
@@ -351,6 +408,7 @@ impl Vault {
 
     /// Atomic write: temp file + rename.
     fn save(&self) -> Result<()> {
+        if self.defer_save { return Ok(()); }
         let file = self.file.as_ref().ok_or(Error::VaultNotInitialised)?;
         let tmp = self.path.with_extension("bin.tmp");
         std::fs::write(&tmp, serde_json::to_vec_pretty(file)?)?;
@@ -435,6 +493,23 @@ mod tests {
     }
 
     #[test]
+    fn failed_batch_save_restores_in_memory_secrets() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut vault = new_vault(&dir, MemPins::default());
+        vault.create("master password").unwrap();
+        vault.set("old", "original").unwrap();
+        let original_path = vault.path.clone();
+        vault.path = dir.path().join("missing").join("vault.bin");
+        assert!(vault.atomic(|vault| { vault.delete("old")?; vault.set("new", "changed") }).is_err());
+        assert_eq!(vault.get("old").unwrap().unwrap().as_str(), "original");
+        assert!(!vault.has("new"));
+        vault.path = original_path;
+        vault.lock();
+        vault.unlock_master("master password").unwrap();
+        assert_eq!(vault.get("old").unwrap().unwrap().as_str(), "original");
+    }
+
+    #[test]
     fn master_roundtrip_and_secrets() {
         let dir = tempfile::tempdir().unwrap();
         let pins = MemPins::default();
@@ -498,7 +573,7 @@ mod tests {
 
         // Master password still works; setting the PIN again re-enables it.
         v.unlock_master("correct horse battery").unwrap();
-        v.set_pin("4321").unwrap();
+        v.change_pin("4321", &PinCredential::Master("correct horse battery".into())).unwrap();
         v.lock();
         v.unlock_pin("4321").unwrap();
     }
@@ -512,5 +587,99 @@ mod tests {
         assert!(v.set_pin("12a4").is_err());
         assert!(v.set_pin("1234567").is_err());
         assert!(v.set_pin("123456").is_ok());
+    }
+
+    #[test]
+    fn pin_change_requires_verification_and_preserves_saved_secrets() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut v = new_vault(&dir, MemPins::default());
+        v.create("correct horse battery").unwrap();
+        v.set("identity:a:password", "secret").unwrap();
+        v.set_pin("1234").unwrap();
+        let original = std::fs::read(&v.path).unwrap();
+        assert!(v.set_pin("4321").is_err());
+        assert!(matches!(v.change_pin("4321", &PinCredential::Pin("0000".into())), Err(Error::WrongPin { .. })));
+        assert!(v.is_unlocked());
+        assert!(matches!(v.change_pin("4321", &PinCredential::Master("wrong password".into())), Err(Error::WrongPassword)));
+        assert!(v.is_unlocked());
+        assert_eq!(v.get("identity:a:password").unwrap().unwrap().as_str(), "secret");
+        v.change_pin("43210", &PinCredential::Pin("1234".into())).unwrap();
+        assert_eq!(std::fs::read(&v.path).unwrap(), original);
+        v.lock();
+        assert!(matches!(v.unlock_pin("1234"), Err(Error::WrongPin { .. })));
+        v.unlock_pin("43210").unwrap();
+        assert_eq!(v.get("identity:a:password").unwrap().unwrap().as_str(), "secret");
+    }
+
+    #[test]
+    fn failed_pin_recovery_stays_locked_and_validates_new_pin_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut v = new_vault(&dir, MemPins::default());
+        v.create("correct horse battery").unwrap();
+        v.set_pin("1234").unwrap();
+        v.lock();
+        assert!(v.set_pin("4321").is_err());
+        assert!(v.change_pin("12a", &PinCredential::Pin("0000".into())).is_err());
+        assert_eq!(v.status().pin_attempts_left, Some(PIN_DISABLE_AFTER));
+        assert!(matches!(v.change_pin("4321", &PinCredential::Pin("0000".into())), Err(Error::WrongPin { .. })));
+        assert!(!v.is_unlocked());
+        assert_eq!(v.status().pin_attempts_left, Some(PIN_DISABLE_AFTER - 1));
+        assert!(matches!(v.change_pin("4321", &PinCredential::Master("wrong password".into())), Err(Error::WrongPassword)));
+        assert!(!v.is_unlocked());
+        v.unlock_pin("1234").unwrap();
+        v.lock();
+        v.change_pin("654321", &PinCredential::Master("correct horse battery".into())).unwrap();
+        assert!(v.is_unlocked());
+        v.lock();
+        v.unlock_pin("654321").unwrap();
+    }
+
+    #[test]
+    fn changing_pin_obeys_cooldown_and_master_recovers_disabled_pin() {
+        let dir = tempfile::tempdir().unwrap();
+        let pins = MemPins::default();
+        let mut v = new_vault(&dir, pins.clone());
+        v.create("correct horse battery").unwrap();
+        v.set_pin("1234").unwrap();
+        for _ in 0..PIN_COOLDOWN_AFTER {
+            assert!(matches!(v.change_pin("4321", &PinCredential::Pin("0000".into())), Err(Error::WrongPin { .. })));
+        }
+        assert!(matches!(v.change_pin("4321", &PinCredential::Pin("1234".into())), Err(Error::PinCooldown { .. })));
+        let id = v.vault_id().unwrap().to_string();
+        let mut entry: PinEntry = serde_json::from_str(&pins.get(&id).unwrap().unwrap()).unwrap();
+        entry.failures = PIN_DISABLE_AFTER;
+        pins.set(&id, &serde_json::to_string(&entry).unwrap()).unwrap();
+        v.lock();
+        assert!(matches!(v.change_pin("4321", &PinCredential::Pin("1234".into())), Err(Error::PinDisabled)));
+        assert!(!v.is_unlocked());
+        v.change_pin("4321", &PinCredential::Master("correct horse battery".into())).unwrap();
+        assert!(!v.status().pin_disabled);
+        assert_eq!(v.status().pin_attempts_left, Some(PIN_DISABLE_AFTER));
+        v.lock();
+        v.unlock_pin("4321").unwrap();
+    }
+
+    #[test]
+    fn pin_write_failure_keeps_existing_pin_and_lock_state() {
+        struct FailingPins { pins: MemPins, fail: Arc<std::sync::atomic::AtomicBool> }
+        impl PinStore for FailingPins {
+            fn get(&self, id: &str) -> Result<Option<String>> { self.pins.get(id) }
+            fn set(&self, id: &str, value: &str) -> Result<()> {
+                if self.fail.load(std::sync::atomic::Ordering::Relaxed) { return Err(Error::Keychain("unavailable".into())); }
+                self.pins.set(id, value)
+            }
+            fn delete(&self, id: &str) -> Result<()> { self.pins.delete(id) }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let fail = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut v = Vault::with_pin_store(dir.path().join("vault.bin"), Box::new(FailingPins { pins: MemPins::default(), fail: fail.clone() })).unwrap();
+        v.create("correct horse battery").unwrap();
+        v.set_pin("1234").unwrap();
+        v.lock();
+        fail.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(matches!(v.change_pin("4321", &PinCredential::Master("correct horse battery".into())), Err(Error::Keychain(_))));
+        assert!(!v.is_unlocked());
+        fail.store(false, std::sync::atomic::Ordering::Relaxed);
+        v.unlock_pin("1234").unwrap();
     }
 }

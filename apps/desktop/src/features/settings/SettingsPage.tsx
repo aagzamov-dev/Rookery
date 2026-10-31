@@ -1,3 +1,4 @@
+import { Diagnostics } from "./Diagnostics";
 import { useState } from "react";
 import clsx from "clsx";
 import { Keyboard, Trash2, Upload } from "lucide-react";
@@ -32,6 +33,7 @@ export function SettingsPage() {
       <SessionLogs />
       <GlobalHotkey />
       <DashboardSync />
+      <Diagnostics />
       <About />
     </div>
   );
@@ -89,6 +91,7 @@ function Row({ label, hint, children }: { label: string; hint?: string; children
 }
 
 function Appearance() {
+  const density = useKeys((s) => s.app.density);
   const t = useKeys((s) => s.terminal);
   const custom = useKeys((s) => s.customThemes);
   const set = useKeys((s) => s.setTerminal);
@@ -115,7 +118,12 @@ function Appearance() {
   };
 
   return (
-    <Section title="Terminal appearance">
+    <Section title="Appearance">
+      <Row label="Control density" hint="Comfortable adds space to buttons without changing editor text.">
+        <Select aria-label="Control density" value={density} onChange={(event) => void useKeys.getState().setApp({ density: event.target.value === "comfortable" ? "comfortable" : "compact" })}>
+          <option value="compact">Compact</option><option value="comfortable">Comfortable</option>
+        </Select>
+      </Row>
       <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-2 p-2">
         {names.map((n) => {
           const th = resolveTheme(n, custom);

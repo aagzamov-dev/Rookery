@@ -349,6 +349,7 @@ async fn log_loop(lease: Lease, events: broadcast::Sender<CoreEvent>, stream: St
                     }
                 }
                 Some(StreamChunk::Exit(code)) => {
+                    batch.extend(lines.finish());
                     flush(&mut batch);
                     return ended(match code {
                         Some(0) | None => "stream ended".into(),
@@ -356,6 +357,7 @@ async fn log_loop(lease: Lease, events: broadcast::Sender<CoreEvent>, stream: St
                     });
                 }
                 None => {
+                    batch.extend(lines.finish());
                     flush(&mut batch);
                     return ended("stream closed".into());
                 }

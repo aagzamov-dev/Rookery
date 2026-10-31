@@ -8,7 +8,11 @@ on:
 
 jobs:
   test:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -21,3 +25,46 @@ jobs:
       - run: npm run typecheck
       - run: npm --workspace apps/desktop run test
       - run: cargo test -p rookery-core
+      - run: npm --workspace apps/desktop run build
+      - run: cargo build -p rookery-tauri
+
+  sql-integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: rookery_test
+          POSTGRES_PASSWORD: rookery_test
+          POSTGRES_DB: rookery_test
+        ports: [5432:5432]
+        options: --health-cmd "pg_isready -U rookery_test" --health-interval 5s --health-timeout 5s --health-retries 20
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: rookery_test
+          MYSQL_DATABASE: rookery_test
+        ports: [3306:3306]
+        options: --health-cmd "mysqladmin ping -prookery_test" --health-interval 5s --health-timeout 5s --health-retries 30
+    env:
+      ROOKERY_TEST_PG_URL: postgres://rookery_test:rookery_test@127.0.0.1:5432/rookery_test
+      ROOKERY_TEST_MYSQL_URL: mysql://root:rookery_test@127.0.0.1:3306/rookery_test
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p rookery-core real_connection_recovery -- --ignored
+      - run: cargo test -p rookery-core real_servers_end_to_end -- --ignored
+      - run: cargo test -p rookery-core real_cell_edits -- --ignored
+      - run: docker build -t rookery-ssh-test -f scripts/fixtures/ssh.Dockerfile scripts/fixtures
+      - run: docker run -d --name rookery-ssh-test --network host rookery-ssh-test sh -c "ssh-keygen -A && exec /usr/sbin/sshd -D -e -o AllowTcpForwarding=yes -o PermitRootLogin=yes -o ListenAddress=127.0.0.1 -p 2222"
+      - name: SSH forwarding and staged SFTP uploads
+        env:
+          ROOKERY_TEST_SSH: root:rookery_test@127.0.0.1:2222
+          ROOKERY_TEST_SSH_DB: postgres://rookery_test:rookery_test@127.0.0.1:5432/rookery_test
+        run: |
+          for i in $(seq 1 30); do docker exec rookery-ssh-test sh -c 'test -s /var/run/sshd.pid' && break; sleep 1; done
+          cargo test -p rookery-core through_a_server_end_to_end -- --ignored
+      - if: always()
+        run: docker rm -f rookery-ssh-test || true

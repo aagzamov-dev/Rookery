@@ -1,6 +1,8 @@
 // Typed wrappers for Tauri commands (crates/rookery-tauri/src/commands.rs).
 // Tauri converts snake_case Rust argument names to camelCase on the JS side.
 import { invoke } from "@tauri-apps/api/core";
+import type { CoreEvent } from "./bindings/CoreEvent";
+import type { Transfer } from "./bindings/Transfer";
 import type { BackupInfo } from "./bindings/BackupInfo";
 import type { BackupStatus } from "./bindings/BackupStatus";
 import type { EffectiveRefresh } from "./bindings/EffectiveRefresh";
@@ -47,6 +49,11 @@ import type { FileStamp } from "./bindings/FileStamp";
 import type { FileVersion } from "./bindings/FileVersion";
 import type { SaveMode } from "./bindings/SaveMode";
 import type { SaveOutcome } from "./bindings/SaveOutcome";
+import type { GitStatus } from "./bindings/GitStatus";
+import type { GitFile } from "./bindings/GitFile";
+import type { GitDiff } from "./bindings/GitDiff";
+import type { GitAction } from "./bindings/GitAction";
+import type { PinCredential } from "./bindings/PinCredential";
 
 export type CoreErrorKind =
   | "db" | "io" | "json"
@@ -77,12 +84,17 @@ export interface IdentitySecrets {
 }
 
 export const api = {
+  gitStatus: (hostId: string, folder: string) => invoke<GitStatus>("git_status", { hostId, folder }),
+  gitDiscover: (hostId: string, folder: string) => invoke<string[]>("git_discover", { hostId, folder }),
+  gitDiff: (hostId: string, folder: string, file: GitFile, staged: boolean) => invoke<GitDiff>("git_diff", { hostId, folder, file, staged }),
+  gitAction: (hostId: string, folder: string, action: GitAction, confirmed: boolean) => invoke<string>("git_action", { hostId, folder, action, confirmed }),
   // vault
   vaultStatus: () => invoke<VaultStatus>("vault_status"),
   vaultCreate: (master: string) => invoke<VaultStatus>("vault_create", { master }),
   vaultUnlockMaster: (master: string) => invoke<VaultStatus>("vault_unlock_master", { master }),
   vaultUnlockPin: (pin: string) => invoke<VaultStatus>("vault_unlock_pin", { pin }),
   vaultSetPin: (pin: string) => invoke<VaultStatus>("vault_set_pin", { pin }),
+  vaultChangePin: (pin: string, credential: PinCredential) => invoke<VaultStatus>("vault_change_pin", { pin, credential }),
   vaultLock: (closeSessions = false) => invoke<VaultStatus>("vault_lock", { closeSessions }),
 
   // groups / hosts / identities
@@ -164,6 +176,7 @@ export const api = {
   sessionAttach: (hostId: string) => invoke<string>("session_attach", { hostId }),
   sessionDetach: (attachId: string) => invoke<void>("session_detach", { attachId }),
   sessionInfo: (hostId: string) => invoke<SessionInfo>("session_info", { hostId }),
+  transferStatus: () => invoke<Transfer[]>("transfer_status"),
   sessionsAll: () => invoke<SessionInfo[]>("sessions_all"),
 
   // terminals
@@ -187,13 +200,14 @@ export const api = {
   // editor (docs/08): content goes webview → Rust → server only; never logged
   editorOpen: (hostId: string, path: string) => invoke<EditorFile>("editor_open", { hostId, path }),
   editorStat: (hostId: string, path: string) => invoke<FileStamp>("editor_stat", { hostId, path }),
-  editorSave: (hostId: string, path: string, content: string, eol: Eol, bom: boolean, base: FileVersion, mode: SaveMode) =>
-    invoke<SaveOutcome>("editor_save", { hostId, path, content, eol, bom, base, mode }),
+  editorSave: (hostId: string, path: string, content: string, eol: Eol, bom: boolean, base: FileVersion, mode: SaveMode, confirmed = false) =>
+    invoke<SaveOutcome>("editor_save", { hostId, path, content, eol, bom, base, mode, confirmed }),
   editorBackups: (hostId: string, path: string) => invoke<EditorBackup[]>("editor_backups", { hostId, path }),
   editorBackupRead: (hostId: string, path: string, id: string) => invoke<string>("editor_backup_read", { hostId, path, id }),
 
   sftpList: (hostId: string, path: string) => invoke<FileEntry[]>("sftp_list", { hostId, path }),
   sftpMkdir: (hostId: string, path: string) => invoke<void>("sftp_mkdir", { hostId, path }),
+  sftpArchive: (hostId: string, path: string, name: string, extract: boolean) => invoke<void>("sftp_archive", { hostId, path, name, extract }),
   sftpRename: (hostId: string, from: string, to: string) => invoke<void>("sftp_rename", { hostId, from, to }),
   sftpDelete: (hostId: string, path: string, isDir: boolean, recursive: boolean) =>
     invoke<void>("sftp_delete", { hostId, path, isDir, recursive }),
@@ -231,6 +245,9 @@ export const api = {
   /** Laravel .env → prefill; DB_PASSWORD stays in Rust (`password_ref`). */
   sqlEnvImport: (source: EnvSource) => invoke<SqlPrefill>("sql_env_import", { source }),
   sqlOpen: (target: SqlTarget) => invoke<SqlOpened>("sql_open", { target }),
+  sqlSessionStates: () => invoke<CoreEvent[]>("sql_session_states"),
+  sqlActiveQueries: () => invoke<string[]>("sql_active_queries"),
+  sqlReconnect: (sessionId: string) => invoke<void>("sql_reconnect", { sessionId }),
   sqlClose: (sessionId: string) => invoke<void>("sql_close", { sessionId }),
   sqlSchema: (sessionId: string, system = false) => invoke<SchemaTree>("sql_schema", { sessionId, system }),
   sqlUse: (sessionId: string, database: string) => invoke<void>("sql_use", { sessionId, database }),

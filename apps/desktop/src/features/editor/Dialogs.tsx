@@ -3,7 +3,8 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
 import { MergeView } from "@codemirror/merge";
 import { EditorState, Prec, type Extension } from "@codemirror/state";
-import { EditorView, lineNumbers } from "@codemirror/view";
+import { EditorView, keymap, lineNumbers } from "@codemirror/view";
+import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { syntaxHighlighting } from "@codemirror/language";
 import { History as HistoryIcon, Loader2, X } from "lucide-react";
 import { api, asCoreError } from "../../ipc/api";
@@ -17,6 +18,8 @@ import { highlight, theme } from "./docs";
 import type { LangId } from "./lang";
 import { supportFor } from "./languages";
 import { hasMarkers, resolve, threeWay, type Pick } from "./merge";
+import { clampSplitRatio, saveNumber, storedNumber } from "../../ui/panelSize";
+import { applyDiffRatio } from "./diffLayout";
 
 const mergeTheme = EditorView.theme(
   {
@@ -34,10 +37,27 @@ const mergeTheme = EditorView.theme(
 );
 
 /** Side by side: left = before / server, right = after / yours (editable when `onRight` is set). */
-export function DiffView({ left, right, lang, onRight, rightVersion = 0, autoHeight = false }: { left: string; right: string; lang: LangId; onRight?: (t: string) => void; rightVersion?: number; autoHeight?: boolean }) {
+export function DiffView({ left, right, lang, onRight, rightVersion = 0, autoHeight = false, resizeId, labels }: { left: string; right: string; lang: LangId; onRight?: (t: string) => void; rightVersion?: number; autoHeight?: boolean; resizeId?: string; labels?: { left: string; right: string } }) {
   const host = useRef<HTMLDivElement>(null);
+  const merge = useRef<MergeView | null>(null);
+  const applyingRight = useRef(false);
+  const [ratio, setRatio] = useState(() => clampSplitRatio(resizeId ? storedNumber(`ui.split.${resizeId}`, 0.5) : 0.5));
+  const ratioRef = useRef(ratio);
+  ratioRef.current = ratio;
+  const resize = (value: number) => {
+    const next = clampSplitRatio(value);
+    setRatio(next);
+    if (resizeId) saveNumber(`ui.split.${resizeId}`, next);
+  };
   const cb = useRef(onRight);
   cb.current = onRight;
+  const editable = !!onRight;
+  const latestRight = useRef(right);
+  const input = useRef({ right, rightVersion });
+  if (input.current.right !== right || input.current.rightVersion !== rightVersion) {
+    latestRight.current = right;
+    input.current = { right, rightVersion };
+  }
   const [support, setSupport] = useState<Extension | null>(null);
   useEffect(() => {
     let live = true;
@@ -56,18 +76,46 @@ export function DiffView({ left, right, lang, onRight, rightVersion = 0, autoHei
       parent: host.current,
       a: { doc: left, extensions: [...common, EditorState.readOnly.of(true)] },
       b: {
-        doc: right,
-        extensions: [...common, EditorState.readOnly.of(!cb.current), EditorView.updateListener.of((u) => u.docChanged && cb.current?.(u.state.doc.toString()))],
+        doc: latestRight.current,
+        extensions: [...common, EditorState.readOnly.of(!editable), EditorView.editable.of(editable), ...(editable ? [history(), keymap.of([...defaultKeymap, ...historyKeymap])] : []), EditorView.updateListener.of((u) => {
+          if (!u.docChanged) return;
+          latestRight.current = u.state.doc.toString();
+          if (!applyingRight.current) cb.current?.(latestRight.current);
+        })],
       },
       collapseUnchanged: { margin: 3, minSize: 6 },
       gutter: true,
       highlightChanges: true,
     });
-    return () => mv.destroy();
+    merge.current = mv;
+    if (resizeId) applyDiffRatio(mv, ratioRef.current);
+    return () => { merge.current = null; mv.destroy(); };
     // `right` is applied when `rightVersion` changes (the editor owns it in between).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [left, rightVersion, support, autoHeight]);
-  return <div ref={host} className={clsx("ed-diff overflow-auto rounded-lg border border-line bg-[#171D29]", autoHeight ? "min-h-[20vh] max-h-[50vh]" : "min-h-0 flex-1")} />;
+  }, [left, rightVersion, support, autoHeight, editable, resizeId]);
+  useEffect(() => {
+    if (resizeId && merge.current) applyDiffRatio(merge.current, ratio);
+  }, [ratio, resizeId]);
+  useEffect(() => {
+    const view = merge.current?.b;
+    if (!view || view.state.doc.toString() === right) return;
+    applyingRight.current = true;
+    try { view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: right } }); }
+    finally { applyingRight.current = false; }
+  }, [right, rightVersion]);
+  const editors = <div ref={host} className={clsx("ed-diff overflow-auto rounded-lg border border-line bg-[#171D29]", autoHeight ? "min-h-[20vh] max-h-[50vh]" : "min-h-0 flex-1")} />;
+  if (!resizeId) return editors;
+  return <div className="relative flex min-h-0 flex-1 flex-col gap-1">
+    {labels && <div className="grid shrink-0 text-[11px] text-muted" style={{ gridTemplateColumns: `${ratio}fr ${1 - ratio}fr` }}><span className="truncate px-2" title={labels.left}>{labels.left}</span><span className="truncate px-2" title={labels.right}>{labels.right}</span></div>}
+    {editors}
+    <div role="separator" aria-label="Resize diff panes" aria-orientation="vertical" aria-valuemin={20} aria-valuemax={80} aria-valuenow={Math.round(ratio * 100)} tabIndex={0} className="absolute inset-y-0 z-20 w-2 -translate-x-1/2 cursor-col-resize touch-none hover:bg-accent-line/60 focus:bg-accent-line/60 focus:outline-none" style={{ left: `${ratio * 100}%` }}
+      onPointerDown={(event) => { if (event.button === 0) { event.preventDefault(); event.currentTarget.setPointerCapture(event.pointerId); } }}
+      onPointerMove={(event) => { if (!event.currentTarget.hasPointerCapture(event.pointerId)) return; const bounds = event.currentTarget.parentElement!.getBoundingClientRect(); if (bounds.width > 0) resize((event.clientX - bounds.left) / bounds.width); }}
+      onPointerUp={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }}
+      onDoubleClick={() => resize(0.5)}
+      onKeyDown={(event) => { if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return; event.preventDefault(); resize(event.key === "Home" ? 0.2 : event.key === "End" ? 0.8 : ratio + (event.key === "ArrowRight" ? 0.02 : -0.02)); }}
+    />
+  </div>;
 }
 
 function Big({ title, sub, onClose, children, footer }: { title: string; sub?: ReactNode; onClose: () => void; children: ReactNode; footer: ReactNode }) {

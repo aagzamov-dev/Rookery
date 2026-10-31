@@ -62,15 +62,31 @@ struct Connector {
 
 impl Connector {
     async fn connect(&self, host_id: &str) -> Result<(Arc<SshHandle>, u32)> {
+        tokio::time::timeout(Duration::from_secs(25), self.connect_inner(host_id)).await
+            .map_err(|_| Error::Ssh("Connection or authentication timed out; check the network and retry".into()))?
+    }
+
+    async fn connect_inner(&self, host_id: &str) -> Result<(Arc<SshHandle>, u32)> {
         let host = self.db.get_host(host_id)?;
         if host.jump_host_id.is_some() {
-            tracing::warn!(host = %host.name, "jump hosts arrive in v0.5; connecting directly");
+            return Err(Error::Other("Jump hosts are not supported yet; this connection was not attempted directly".into()));
         }
+        let mut group_id = host.group_id.clone();
+        for _ in 0..32 {
+            let Some(id) = group_id.take() else { break };
+            let Some(group) = self.db.get_group(&id)? else { break };
+            if group.jump_host_id.is_some() {
+                return Err(Error::Other("This group requires an unsupported jump host; no direct connection was attempted".into()));
+            }
+            group_id = group.parent_id;
+        }
+        if group_id.is_some() { return Err(Error::Other("Group ancestry is cyclic or too deep; check the configured route".into())); }
         let identity_id = self
             .db
             .resolve_identity_id(&host)?
             .ok_or_else(|| Error::SecretRequired("no login identity set for this host or its group".into()))?;
         let ident = self.db.get_identity(&identity_id)?;
+        if ident.auth == AuthKind::Agent { return Err(Error::Other("SSH-agent authentication is not supported yet; choose a password or private key".into())); }
 
         // Copy secrets out of the vault before any `.await` (never hold the lock across awaits).
         let (password, key_text, passphrase) = {
@@ -287,7 +303,7 @@ impl Entry {
             w.abort();
         }
         if let Some(h) = self.handle.lock().await.take() {
-            let _ = h.disconnect(Disconnect::ByApplication, "", "en").await;
+            let _ = tokio::time::timeout(Duration::from_secs(2), h.disconnect(Disconnect::ByApplication, "", "en")).await;
         }
         self.set_state(SessionState::Idle, None, None);
     }
@@ -503,6 +519,10 @@ pub struct LineSplitter {
 }
 
 impl LineSplitter {
+    pub fn finish(&mut self) -> Option<String> {
+        if self.buf.is_empty() { None } else { Some(clean_line(&std::mem::take(&mut self.buf))) }
+    }
+
     pub fn push(&mut self, bytes: &[u8]) -> Vec<String> {
         self.buf.extend_from_slice(bytes);
         let mut out = Vec::new();
@@ -513,7 +533,7 @@ impl LineSplitter {
         // Guard against a producer that never sends a newline.
         if self.buf.len() > 256 * 1024 {
             let line: Vec<u8> = std::mem::take(&mut self.buf);
-            out.push(clean_line(&line));
+            out.push(format!("{} [line split at buffer limit]", clean_line(&line)));
         }
         out
     }
@@ -631,6 +651,16 @@ pub async fn exec_with_input(handle: &SshHandle, cmd: &str, input: &[u8], timeou
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preserves_split_utf8_and_final_unterminated_line() {
+        let mut splitter = LineSplitter::default();
+        let text = "hello 🌍".as_bytes();
+        assert!(splitter.push(&text[..8]).is_empty());
+        assert!(splitter.push(&text[8..]).is_empty());
+        assert_eq!(splitter.finish().as_deref(), Some("hello 🌍"));
+        assert!(splitter.finish().is_none());
+    }
 
     #[test]
     fn splits_lines_and_strips_escapes() {

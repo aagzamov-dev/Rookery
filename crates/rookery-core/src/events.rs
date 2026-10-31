@@ -10,6 +10,7 @@ use crate::model::{BackupStatus, Container, ContainerStats, MergeSummary, Metric
 #[ts(export, export_to = "../../../apps/desktop/src/ipc/bindings/")]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CoreEvent {
+    EventsLost { count: u32 },
     /// Session state changed for a host.
     Session { info: SessionInfo },
     /// Terminal output; `data` is base64 to keep the IPC payload compact.
@@ -62,6 +63,8 @@ pub enum CoreEvent {
     },
     /// SQL session state. `state` = connected | lost | closed (idle / tab closed; a run reconnects).
     SqlSession {
+        #[ts(type = "number")]
+        revision: u64,
         session_id: String,
         state: String,
         tx_open: bool,

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Database, Loader2 } from "lucide-react";
 import { api, asCoreError } from "../../ipc/api";
 import type { DbConnection } from "../../ipc/bindings/DbConnection";
@@ -8,7 +8,7 @@ import { useSql } from "../../stores/sql";
 import { useTabs, type DbTarget, type Tab } from "../../stores/tabs";
 import { Button, TextInput } from "../../ui/primitives";
 import { useConnDialog } from "./connDialog";
-import { SqlTab } from "./SqlTab";
+const SqlTab = lazy(() => import("./SqlTab").then((module) => ({ default: module.SqlTab })));
 import { stripUrlPassword } from "./url";
 
 export { isDbUrl } from "./url";
@@ -117,7 +117,9 @@ export function DbTab({ tab, active }: { tab: Extract<Tab, { kind: "db" }>; acti
   if (sessionId && meta) {
     return (
       <div className="absolute inset-0" style={{ display: active ? "block" : "none" }}>
-        <SqlTab
+        <Suspense fallback={<div role="status" className="p-4 text-muted">Loading database editor…</div>}>
+      <SqlTab
+        visible={active}
           tabKey={tab.id}
           sessionId={sessionId}
           label={conn?.name ?? tab.title}
@@ -136,6 +138,7 @@ export function DbTab({ tab, active }: { tab: Extract<Tab, { kind: "db" }>; acti
             )
           }
         />
+      </Suspense>
       </div>
     );
   }

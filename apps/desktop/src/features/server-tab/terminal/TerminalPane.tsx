@@ -8,24 +8,28 @@ interface Props {
   termKey: string;
   hostId: string;
   visible: boolean;
+  active?: boolean;
   opts: TermOptions;
 }
 
 /** Hosts one registry terminal. Stays mounted while its tab exists. */
-export function TerminalPane({ termKey, hostId, visible, opts }: Props) {
+export function TerminalPane({ termKey, hostId, visible, active = visible, opts }: Props) {
   const ref = useRef<HTMLDivElement>(null);
+  const attached = useRef(false);
   const sudo = useTermUi((s) => !!s.sudoPrompt[termKey]);
   const findOpen = useTermUi((s) => !!s.findOpen[termKey]);
 
   useEffect(() => {
-    if (ref.current) terminalRegistry.attach(termKey, hostId, ref.current, opts);
+    if (!active || attached.current || !ref.current) return;
+    terminalRegistry.attach(termKey, hostId, ref.current, opts);
+    attached.current = true;
     // Disposal happens when the slot or tab is closed, not on unmount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [termKey, hostId]);
+  }, [termKey, hostId, active]);
 
   useEffect(() => {
-    terminalRegistry.setVisible(termKey, visible);
-    if (!visible) return;
+    terminalRegistry.setVisible(termKey, active);
+    if (!active) return;
     const raf = requestAnimationFrame(() => {
       terminalRegistry.fit(termKey);
       if (!useTermUi.getState().findOpen[termKey]) terminalRegistry.focus(termKey);
@@ -36,7 +40,7 @@ export function TerminalPane({ termKey, hostId, visible, opts }: Props) {
       cancelAnimationFrame(raf);
       ro.disconnect();
     };
-  }, [visible, termKey]);
+  }, [active, termKey]);
 
   return (
     <div className="absolute inset-0" style={{ display: visible ? "block" : "none" }}>

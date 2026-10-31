@@ -12,6 +12,7 @@ type SqlResultEv = Extract<CoreEvent, { type: "sql_result" }>;
 type SqlSessionEv = Extract<CoreEvent, { type: "sql_session" }>;
 
 export interface SqlSessionMeta {
+  revision?: number;
   sessionId: string;
   /** The SQL tab / view that owns it (`host:<id>` or a database tab id). */
   tabKey?: string;
@@ -85,10 +86,19 @@ interface SqlState {
 }
 
 /** Result events may arrive before `startRun` (the invoke returns after the task started). */
-const early: Record<string, SqlResultEv[]> = {};
+const early = new Map<string, SqlResultEv[]>();
+const discarded = new Set<string>();
+const MAX_EARLY_RUNS = 32;
+const MAX_EARLY_EVENTS = 64;
+function discardRun(queryId: string) {
+  early.delete(queryId);
+  discarded.add(queryId);
+  if (discarded.size > 256) discarded.delete(discarded.values().next().value!);
+}
 
 function applyResult(run: SqlRun, ev: SqlResultEv): SqlRun {
-  if (ev.notice) return { ...run, notices: [...run.notices, ev.notice] };
+  if (run.finished) return run;
+  if (ev.notice) return { ...run, notices: [...run.notices.slice(-199), ev.notice.slice(0, 32_768)] };
   if (ev.finished) return { ...run, finished: true };
   const sets = run.sets.slice();
   let i = sets.findIndex((s) => s.index === ev.index);
@@ -178,12 +188,13 @@ export const useSql = create<SqlState>((set, get) => ({
   onSession: (ev) =>
     set((s) => {
       const cur = s.sessions[ev.session_id];
-      if (!cur) return s; // closed tab / another page's session
+      if (!cur || (ev.revision ?? 0) < (cur.revision ?? 0)) return s;
       return {
         sessions: {
           ...s.sessions,
           [ev.session_id]: {
             ...cur,
+            revision: ev.revision ?? 0,
             state: ev.state,
             readOnly: ev.read_only,
             protected: ev.protected,
@@ -199,15 +210,25 @@ export const useSql = create<SqlState>((set, get) => ({
 
   startRun: (r) => {
     let run: SqlRun = { ...r, sets: [], notices: [], finished: false, startedAt: Date.now() };
-    for (const ev of early[r.queryId] ?? []) run = applyResult(run, ev);
-    delete early[r.queryId];
+    for (const ev of early.get(r.queryId) ?? []) run = applyResult(run, ev);
+    early.delete(r.queryId);
+    discarded.delete(r.queryId);
     set((s) => ({ runs: { ...s.runs, [r.queryId]: run } }));
   },
 
   onResult: (ev) => {
     const run = get().runs[ev.query_id];
     if (!run) {
-      (early[ev.query_id] ??= []).push(ev);
+      if (discarded.has(ev.query_id)) return;
+      const pending = early.get(ev.query_id) ?? [];
+      if (pending.some((event) => event.finished)) return;
+      if (pending.length >= MAX_EARLY_EVENTS) {
+        early.set(ev.query_id, [{ ...ev, rows: [], columns: null, error: "Result delivery overflowed; run the query again if safe", notice: null, done: true, finished: false }, { ...ev, rows: [], columns: null, notice: null, finished: true }]);
+        return;
+      }
+      pending.push(ev);
+      early.set(ev.query_id, pending);
+      if (early.size > MAX_EARLY_RUNS) early.delete(early.keys().next().value!);
       return;
     }
     set((s) => ({ runs: { ...s.runs, [ev.query_id]: applyResult(run, ev) } }));
@@ -217,13 +238,18 @@ export const useSql = create<SqlState>((set, get) => ({
     set((s) => {
       const sessions = { ...s.sessions };
       delete sessions[sessionId];
-      return { sessions };
+      const runs = { ...s.runs };
+      for (const [id, run] of Object.entries(runs)) {
+        if (run.sessionId === sessionId) { discardRun(id); delete runs[id]; }
+      }
+      return { sessions, runs };
     }),
 
   forgetRun: (queryId) =>
     set((s) => {
       const runs = { ...s.runs };
       delete runs[queryId];
+      discardRun(queryId);
       return { runs };
     }),
 

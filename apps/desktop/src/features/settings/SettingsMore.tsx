@@ -7,7 +7,9 @@ import { api, asCoreError } from "../../ipc/api";
 import { isMac, normalizeChord } from "../../keys/chord";
 import { DEFAULT_TRIGGERS, useKeys, type Trigger, type TriggerColor } from "../../stores/keys";
 import { RELEASES_URL, useUpdate } from "../../stores/update";
-import { Button, Select, TextInput } from "../../ui/primitives";
+import { useVault } from "../../stores/vault";
+import { Button, Modal, Select, TextInput } from "../../ui/primitives";
+import { PinChangeForm } from "../security/PinChangeForm";
 import { ShortcutRecorder } from "../../ui/ShortcutRecorder";
 import { blend, TRIGGER_COLORS, triggerError } from "../server-tab/terminal/triggers";
 
@@ -47,8 +49,15 @@ function Check({ checked, onChange, label, hint }: { checked: boolean; onChange:
 export function Security() {
   const app = useKeys((s) => s.app);
   const setApp = useKeys((s) => s.setApp);
+  const status = useVault((s) => s.status);
+  const [changingPin, setChangingPin] = useState(false);
+  const [pinChanged, setPinChanged] = useState(false);
   return (
     <Section title="Security">
+      <Row label="Device PIN" hint={pinChanged ? "Your PIN was updated." : status?.pin_disabled ? "PIN disabled. Reset it with your master password." : "Change your PIN using your current PIN or master password."}>
+        <Button onClick={() => { setPinChanged(false); setChangingPin(true); }}>{status?.pin_set ? "Change PIN" : "Set PIN"}</Button>
+      </Row>
+      {changingPin && status?.unlocked && <Modal title={status.pin_set ? "Change PIN" : "Set PIN"} onClose={() => setChangingPin(false)} width={440}><PinChangeForm onCancel={() => setChangingPin(false)} onDone={(updated) => { useVault.getState().setStatus(updated); setChangingPin(false); setPinChanged(true); }} /></Modal>}
       <Row label="Lock after" hint="No mouse or keyboard input for this long locks Rookery. Unlock with your PIN.">
         <Select className="w-36" value={app.autoLockMin} onChange={(e) => void setApp({ autoLockMin: Number(e.target.value) })}>
           {[1, 5, 10, 15, 30, 60, 120].map((m) => (

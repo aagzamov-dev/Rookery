@@ -63,7 +63,7 @@ interface EditorState {
   togglePin: (hostId: string, path: string) => void;
   setRoot: (hostId: string, path: string) => void;
   /** Add (or refresh) a doc from a freshly opened file; makes it active. */
-  put: (hostId: string, f: EditorFile) => EditorDoc;
+  put: (hostId: string, f: EditorFile, activate?: boolean) => EditorDoc;
   patch: (key: string, p: Partial<EditorDoc>) => void;
   activate: (hostId: string, key: string) => void;
   remove: (key: string) => void;
@@ -110,7 +110,7 @@ export const useEditor = create<EditorState>((set, get) => ({
     set({ roots });
     void api.settingSet(ROOTS_KEY, roots).catch(() => {});
   },
-  put(hostId, f) {
+  put(hostId, f, activate = true) {
     const key = docKey(hostId, f.real_path);
     const doc: EditorDoc = {
       key,
@@ -136,7 +136,7 @@ export const useEditor = create<EditorState>((set, get) => ({
       const h = s.byHost[hostId] ?? { docs: [], active: null };
       const i = h.docs.findIndex((d) => d.key === key);
       const docs = i >= 0 ? h.docs.map((d, j) => (j === i ? doc : d)) : [...h.docs, doc];
-      return { byHost: { ...s.byHost, [hostId]: { docs, active: key } } };
+      return { byHost: { ...s.byHost, [hostId]: { docs, active: activate ? key : h.active } } };
     });
     return doc;
   },

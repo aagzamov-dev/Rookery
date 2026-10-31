@@ -2,6 +2,27 @@
 
 The release workflow copies the section for the version (e.g. `## 0.7.0`), plus any versions since the last published release, into the GitHub Release notes, which the in-app updater shows under "What's new".
 
+## 0.9.0
+
+- **Git refresh:** editor saves, completed remote terminal commands and reconnects mark cached repositories stale. Git refreshes the visible clean repository on demand or after returning to a stale cache, without polling or hidden requests; dirty drafts and failed requests stay protected. React/CodeMirror interaction tests cover folder actions, production confirmation, visibility, refresh races and draft preservation.
+
+- **Git layout:** persisted drag resizing for the changes panel and both diff panes; compact collapsible folder tree with Staged first and a remembered flat-list toggle; larger repository-add button. Diff resizing retains drafts, selection and editor state. The servers sidebar now remembers its width down to 104 px with compact labels and production markers.
+
+- **Git workspace:** repository dropdown/+ dialog, compact commit message above one changes list, larger stage controls and collapsed stashes at the bottom. Edit working-tree diffs inline, save safely or save then stage; staged diffs remain read-only and drafts survive switching views. First open discovers repositories only within two levels of the configured start folder, with strict limits and a persisted once-only marker.
+
+- **PIN recovery:** Settings → Security now changes the device PIN after verifying the current PIN or master password. The lock screen has Forgot PIN recovery with the master password; verification, cooldowns and replacement are enforced in Rust.
+
+- **Git:** lazy per-server Git view with saved repository folders, remote browsing/manual paths, cached status, CodeMirror diffs, staging, commits, local branches, fetch/fast-forward pull/push/publish, stashes and editor-based conflict resolution with merge/rebase abort and rebase continuation. Every production mutation requires confirmation, enforced in Rust; production editor saves enforce the existing review as well.
+- **Lazy views:** restored hidden views and terminal slots wait for their first actual display; hidden database/schema/table work and Docker logs pause with the window/view visibility.
+
+- **Reliability:** interruptible SQL reconnect/disconnect after network stalls, bounded cancellation, MySQL health detection, PostgreSQL transaction/metadata recovery, accurate connection state, and no automatic SQL replay.
+- **SSH/files:** reject unsupported routes; close owned forwarded streams; reopen stale SFTP channels; stage private uploads safely with conflict checks, unique partial downloads, cancellation status and bounded concurrency.
+- **Performance/UI:** virtualized file/log lists, incremental log parsing, lazy editors, bounded buffers, stale-navigation protection, accessible modal focus, keyboard file actions, resizable SQL panels, density setting and narrow Docker layout.
+- **Recovery/diagnostics:** event-gap reporting with status refresh, runtime rollback for failed backup restores, reviewed diagnostic JSON export, expanded CI and database/SSH regression fixtures. See [Priority 1 validation and limits](09-PRIORITY-1-STABILIZE-AND-OPTIMIZE.md#implementation-record--2026-10-25).
+
+- **Logs:** browse server folders and click a log file to save and follow it; manual paths and common logs remain available.
+- **Files:** select a file for toolbar download, ZIP a file or folder, or unzip a selected ZIP into a new sibling folder. Archive operations require Python 3 on the server, refuse existing destinations, and reject symbolic links and unsafe archive paths.
+
 ## 0.8.1
 
 - **SQL cell viewer and editing:** click to select a cell, copy its full value with Ctrl+C / Cmd+C, and double-click or press Enter to view it. The cell menu includes View, Copy, and Edit; F2 opens editing and can be reassigned in Shortcuts.

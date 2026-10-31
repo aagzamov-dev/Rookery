@@ -187,7 +187,7 @@ export function EditorWorkspace({ hostId, visible }: { hostId: string; visible: 
     setSaving(key);
     let out;
     try {
-      out = await saveRaw(key, text, mode);
+      out = await saveRaw(key, text, mode, reviewed);
     } catch (e) {
       setNote({ kind: "error", text: `Not saved: ${asCoreError(e).message}` });
       return false;

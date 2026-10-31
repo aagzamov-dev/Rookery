@@ -2,6 +2,8 @@
 
 Every section says **when it loads**, **what it keeps**, and **what it costs the server**. If a section does not say "loads on open", it loads only when the user opens it.
 
+Implemented stabilization: SQL Reconnect interrupts stalled work without replaying it; file/log lists are virtualized, SQL sidebars are resizable, Settings offers control density and reviewed diagnostics, and uploads use private staged files. See [validation, budgets, and platform limits](09-PRIORITY-1-STABILIZE-AND-OPTIMIZE.md#implementation-record--2026-10-25).
+
 ---
 
 ## 1. App shell
@@ -19,6 +21,8 @@ Hosts · Dashboard · Snippets · Tunnels · Hosts & identities · Keyboard shor
 - Hosts toggles the host list panel. Others open/focus their **page tab**.
 
 ### 1.4 Host list panel (collapsible, remembers width)
+
+Drag the sidebar edge or focus it and use Left/Right to resize. Width is saved on this device; the minimum is 104 px (default 252 px). Narrow sidebars wrap their toolbar and truncate labels while retaining host tooltips and a production marker.
 - Groups (nested, collapsible) with color square and count; hosts with status dot.
 - Status dot = **last known** state from the DB (`server_snapshots`) or live session state if a tab is open. **No pinging** in the list.
 - Click host → open/focus its server tab. Double-click → same but forces Terminal view.
@@ -39,7 +43,7 @@ Hosts · Dashboard · Snippets · Tunnels · Hosts & identities · Keyboard shor
 ## 2. Server tab
 
 ### 2.1 View bar
-`Overview · Terminal (n) · Files · Docker (•) · Services · Logs · Settings` + right side: terminal switcher (shell 1 / shop-app-1 / +), Split, Files panel toggle.
+`Overview · Terminal (n) · Files · Editor · Git · Docker (•) · Database · Services · Processes · Logs · Settings` + right side: terminal switcher (shell 1 / shop-app-1 / +), Split, Files panel toggle.
 - Views are **lazy-mounted on first click and kept mounted hidden** afterwards.
 - Start view per server/group setting (default Terminal).
 - Docker dot: amber/red if last known state had problems (from snapshot or live events).
@@ -115,6 +119,7 @@ Hosts · Dashboard · Snippets · Tunnels · Hosts & identities · Keyboard shor
 ### 4.2 UI
 - Panel (right of terminal, resizable) and full view share one component. Columns: name, size, modified, perms (view only). Virtualised. Breadcrumb path, hidden files toggle, sort.
 - Actions: upload (drag-drop, picker), download, new folder, rename, delete (confirm), chmod, copy path, open in terminal (cd), edit.
+- Selecting a regular file shows Download in the toolbar. Selecting a file or folder shows ZIP; a selected `.zip` shows Unzip instead. Name the new sibling archive or extraction folder; existing destinations are refused. These operations run over SSH with Python 3 on the server. Symbolic links, special files, and unsafe extraction paths are refused; failures can leave partial output for inspection.
 - Transfers queue with progress, pause/cancel; resumable where SFTP allows.
 
 ### 4.3 Follow terminal
@@ -134,6 +139,19 @@ Hosts · Dashboard · Snippets · Tunnels · Hosts & identities · Keyboard shor
 ---
 
 ## 5. Docker, Services, Logs, Processes (all inside the server tab)
+
+### Git view (unreleased)
+
+- Opens only when selected. A repository dropdown replaces the folder sidebar; **+** opens a dialog for a manual server path, remote folder browsing or removal of the current saved entry. Saved folders remain separate per server and canonical repository roots are deduplicated.
+- On the first Git open per server, check the configured start folder. If it is not a working tree, inspect only its child/grandchild directories, skipping symlinks and dependency/build/cache folders. Discovery stops after 120 directory probes, 24 repositories or 15 seconds; it does not descend into repositories. A persisted marker prevents repeating discovery on later opens/reloads, including empty or failed attempts. Existing saved folders are preserved.
+- Status and diffs stay cached until Reload or a Git mutation; there are no Git timers, subscriptions or automatic fetches. Hidden views do not start requests. Normal reads have a 30-second timeout and 4 MB output cap.
+- One changes panel has a compact commit message at the top (grows from one to three lines) and a collapsed stashes section pinned at the bottom. Larger plus/minus buttons stage/unstage individual files; the wide diff remains the main work area.
+- The changes panel and the divider between diff panes can be dragged or adjusted with the keyboard; widths/ratio survive app restarts. Resizing updates the existing CodeMirror panes, preserving editor state. The panel leaves room for the diff even with a wide servers sidebar.
+- Changes default to a compact folder tree with collapsible **Staged**, **Conflicts** (when present) and **Changes** sections. Folder rows expand/collapse, file rows show basenames and full-path tooltips. The tree/list toggle beside Commit restores the previous flat-path view and remembers the choice. Actions remain scoped to their staged/working-tree section, including files present in both.
+- The green working-tree side is editable before staging. **Save** writes through the existing version-aware editor backend; **Save & stage** saves successfully before staging. BOM and line-ending metadata are preserved. Staged diffs are strictly read-only. Drafts share the existing Editor buffers and survive file/repository/view switches; dirty drafts block reload and mutations that could use or replace their content. A stale-version save writes nothing and retains the draft for resolution in Editor. Every production save and staging action requires its own confirmation.
+- Switch local branches, create a branch from HEAD, fetch, pull with fast-forward only, push, or publish a new branch to a configured remote. Uses the server's configured Git authentication; interactive credential prompts are disabled. Git 2.23+ is required for switch/restore.
+- List/create/apply/pop/drop stashes (creation includes untracked files). Conflicts show ours/theirs; open in the existing editor, save, return and Reload, then Resolve to stage the file. Existing unsaved editor buffers are preserved and must be saved or closed before mutations that use/change repository files. Finish a merge by committing; continue or abort a rebase, or abort a merge.
+- Every production Git mutation, including stage, fetch and stash actions, asks for confirmation and Rust validates the saved host environment before execution. Production editor saves enforce the existing review server-side. No force push, hard reset or implicit conflict overwrite.
 
 ### 5.1 Docker view — loads on first open
 - First open: `docker ps -a --format json` + compose grouping (`com.docker.compose.project` label; `docker inspect` batch once, cached).
@@ -161,6 +179,7 @@ Hosts · Dashboard · Snippets · Tunnels · Hosts & identities · Keyboard shor
 - Start / stop / restart open a new terminal in the server tab running `sudo systemctl …` so the user types the sudo password there (never stored or sent in the background); PROD asks first. "Journal" opens `journalctl -u <svc> -f` in a new terminal.
 
 ### 5.7 Logs view (server log files)
+- Browse files opens an SFTP folder picker. Open folders or enter an absolute folder path, then click a regular file to save its path and start following it. The picker starts beside the current log, in the server's start folder, or in `/var/log`.
 - Favorites per server (e.g. `storage/logs/laravel.log`, `/var/log/nginx/error.log`) + browse via SFTP. `tail -n 200 -f` only while visible, same gap-fill logic as 5.3 (by byte offset). Same highlighting/search UI.
 
 ### 5.8 Processes view — loads on open
@@ -253,6 +272,8 @@ Hosts · Dashboard · Snippets · Tunnels · Hosts & identities · Keyboard shor
 ---
 
 ## 9. Lock screen
+
+**Forgot PIN?** resets the device PIN with the master password and unlocks only after successful replacement. Disabled PINs require master recovery. New PINs use 4–6 digits and must be repeated; saved logins and the master password are unchanged.
 - One PIN field, autofocus on show, numeric only, unlocks on the last digit, no Enter. Wrong → shake, clear, refocus, "n tries left". 5 wrong → 30 s wait; 10 → PIN disabled, master password required.
 - Buttons: Windows Hello / Touch ID; "Use master password".
 - Triggers: manual (Ctrl+L / rail), idle timeout, OS lock/sleep, app start. While locked all subscriptions are stopped and sessions stay open (configurable: close sessions on lock).
@@ -265,6 +286,8 @@ Hosts · Dashboard · Snippets · Tunnels · Hosts & identities · Keyboard shor
 ---
 
 ## 11. Settings page tab
+
+**Security → Change PIN** verifies with the current PIN or master password before replacing the PIN. Current-PIN verification shares the existing attempt limits and cooldown. The legacy setup command cannot replace an existing PIN.
 - General: theme, fonts, start page, restore tabs, auto-connect restored tabs.
 - Security: PIN length, biometrics, auto-lock idle, lock on sleep, close sessions on lock, clipboard clear.
 - Refresh (global defaults): mode, interval, what to collect, concurrency, timeout, master pause.

@@ -21,6 +21,13 @@ pub struct PgConn {
     client: Client,
     notices: mpsc::UnboundedReceiver<String>,
     pub cancel: PgCancel,
+    driver: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for PgConn {
+    fn drop(&mut self) {
+        self.driver.abort();
+    }
 }
 
 #[derive(Clone)]
@@ -67,7 +74,7 @@ pub async fn connect(p: &ConnParams) -> Result<(PgConn, String, oneshot::Receive
     // Drive the connection here (instead of `tokio::spawn(connection)`) to catch NOTICEs.
     let (ntx, notices) = mpsc::unbounded_channel();
     let (etx, ended) = oneshot::channel();
-    tokio::spawn(async move {
+    let driver = tokio::spawn(async move {
         let end = loop {
             match std::future::poll_fn(|cx| connection.poll_message(cx)).await {
                 Some(Ok(AsyncMessage::Notice(n))) => {
@@ -82,7 +89,7 @@ pub async fn connect(p: &ConnParams) -> Result<(PgConn, String, oneshot::Receive
     });
 
     let cancel = PgCancel { token: client.cancel_token(), tls };
-    let conn = PgConn { client, notices, cancel };
+    let conn = PgConn { client, notices, cancel, driver };
     let version = conn.first_value("SHOW server_version").await?.unwrap_or_default();
     let version = format!("PostgreSQL {}", version.split_whitespace().next().unwrap_or(&version));
     let ms = u64::from(p.timeout_s.max(1)) * 1000;

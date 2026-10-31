@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import clsx from "clsx";
 import {
   ArrowUp,
@@ -21,6 +22,8 @@ import {
   Upload,
   FileEdit,
   FileCode2,
+  Archive,
+  ArchiveRestore,
 } from "lucide-react";
 import { openInEditor } from "../editor/actions";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -68,6 +71,8 @@ export function FileBrowser({ hostId, visible, variant }: Props) {
   const [dropping, setDropping] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
+  const [selection, setSelection] = useState<{ directory: string; path: string } | null>(null);
+  const [archiving, setArchiving] = useState(false);
 
   /** Copies the plain path (no `cd`, no quotes) so you can type `cd ` and paste. */
   const copyPath = async (p: string) => {
@@ -98,6 +103,7 @@ export function FileBrowser({ hostId, visible, variant }: Props) {
   useEffect(() => {
     if (!visible) return;
     let off: (() => void) | undefined;
+    let disposed = false;
     const inside = (pos: { x: number; y: number }) => {
       const r = rootRef.current?.getBoundingClientRect();
       if (!r) return false;
@@ -116,11 +122,15 @@ export function FileBrowser({ hostId, visible, variant }: Props) {
           if (dir && inside(p.position) && p.paths.length) void api.sftpUpload(hostId, p.paths, dir).catch((x) => setNote(asCoreError(x).message));
         }
       })
-      .then((u) => (off = u));
-    return () => off?.();
+      .then((u) => { if (disposed) u(); else off = u; });
+    return () => { disposed = true; off?.(); };
   }, [visible, hostId]);
 
   const entries = useMemo(() => (listing?.entries ?? []).filter((e) => showHidden || !e.name.startsWith(".")), [listing, showHidden]);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const virtual = useVirtualizer({ count: entries.length, getScrollElement: () => scrollRef.current, estimateSize: () => panel ? 28 : 32, overscan: 10 });
+  const selected = selection?.directory === path ? entries.find((e) => e.path === selection.path) : undefined;
+  const selectedZip = selected?.kind === "file" && selected.name.toLowerCase().endsWith(".zip");
 
   const go = (p: string) => void openDir(hostId, p);
   const refresh = () => path && void openDir(hostId, path, true);
@@ -169,6 +179,34 @@ export function FileBrowser({ hostId, visible, variant }: Props) {
     const target = await saveDialog({ defaultPath: e.name, title: `Download ${e.name}` });
     if (!target) return;
     await api.sftpDownload(hostId, e.path, target).catch((x) => setNote(asCoreError(x).message));
+  };
+
+  const archive = async (entry: FileEntry, extract: boolean) => {
+    const name = await askText({
+      title: extract ? `Unzip ${entry.name}` : `ZIP ${entry.name}`,
+      label: extract ? "Extract into a new folder beside this archive" : "ZIP filename in this folder",
+      value: extract ? entry.name.slice(0, -4) || "extracted" : `${entry.name}.zip`,
+      confirmLabel: extract ? "Unzip" : "Create ZIP",
+    });
+    if (!name) return;
+    const destination = !extract && !name.toLowerCase().endsWith(".zip") ? `${name}.zip` : name;
+    if (destination === "." || destination === ".." || /[/\\\0]/.test(destination)) {
+      setNote("Enter a filename without folder separators.");
+      return;
+    }
+    setArchiving(true);
+    setNote(null);
+    try {
+      await api.sftpArchive(hostId, entry.path, destination, extract);
+      const directory = parentPath(entry.path);
+      await openDir(hostId, directory, true);
+      setSelection({ directory, path: joinPath(directory, destination) });
+    } catch (error) {
+      setNote(asCoreError(error).message);
+      await openDir(hostId, parentPath(entry.path), true);
+    } finally {
+      setArchiving(false);
+    }
   };
 
   const upload = async (directory = false) => {
@@ -280,6 +318,17 @@ export function FileBrowser({ hostId, visible, variant }: Props) {
         <Tool label={showHidden ? "Hide hidden files" : "Show hidden files"} onClick={() => patch(hostId, { showHidden: !showHidden })}>
           {showHidden ? <EyeOff size={14} /> : <Eye size={14} />}
         </Tool>
+        {selected?.kind === "file" && (
+          <Tool label={`Download ${selected.name}`} onClick={() => void download(selected)} disabled={archiving}>
+            <Download size={14} />
+          </Tool>
+        )}
+        {selected && (selected.kind === "file" || selected.kind === "dir") && (
+          <Tool label={selectedZip ? `Unzip ${selected.name}` : `ZIP ${selected.name}`} onClick={() => void archive(selected, !!selectedZip)} disabled={archiving}>
+            {archiving ? <Loader2 size={14} className="animate-spin" /> : selectedZip ? <ArchiveRestore size={14} /> : <Archive size={14} />}
+          </Tool>
+        )}
+        {archiving && <span role="status" className="px-1 text-xs text-muted">Working on archive…</span>}
         {panel && (
           <label className="ml-auto flex items-center gap-1.5 text-xs text-muted" title="Follow the folder of this server's terminal">
             <input type="checkbox" checked={st?.follow ?? true} onChange={(e) => patch(hostId, { follow: e.target.checked })} className="accent-accent" />
@@ -328,7 +377,7 @@ export function FileBrowser({ hostId, visible, variant }: Props) {
       {st?.error ? (
         <div className="p-4 text-xs text-[#FFA8A8]">{st.error}</div>
       ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto p-1" role="grid" aria-label="Files">
+        <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto p-1" role="grid" aria-label="Files" aria-rowcount={entries.length}>
           {!panel && (
             <div className="grid grid-cols-[minmax(0,1fr)_90px_110px_100px_120px] gap-x-3 px-2.5 py-1.5 text-[11px] tracking-wider text-muted uppercase">
               <span>Name</span>
@@ -338,15 +387,32 @@ export function FileBrowser({ hostId, visible, variant }: Props) {
               <span />
             </div>
           )}
-          {entries.map((e) => (
+          <div style={{ height: virtual.getTotalSize(), position: "relative", minWidth: panel ? undefined : 640 }}>
+          {virtual.getVirtualItems().map((item) => {
+            const e = entries[item.index];
+            return (
             <div
               key={e.path}
+              style={{ position: "absolute", top: 0, left: 0, width: "100%", transform: `translateY(${item.start}px)` }}
               role="row"
+              aria-rowindex={item.index + 1}
+              aria-selected={selected?.path === e.path}
               tabIndex={0}
+              onClick={() => path && setSelection({ directory: path, path: e.path })}
+              onFocus={() => path && setSelection({ directory: path, path: e.path })}
               onDoubleClick={() => void activate(e)}
-              onKeyDown={(k) => k.key === "Enter" && void activate(e)}
+              onKeyDown={(k) => {
+                if (k.key === "Enter") void activate(e);
+                if (k.key === "ArrowDown" || k.key === "ArrowUp") {
+                  k.preventDefault();
+                  const next = Math.max(0, Math.min(entries.length - 1, item.index + (k.key === "ArrowDown" ? 1 : -1)));
+                  virtual.scrollToIndex(next);
+                  requestAnimationFrame(() => scrollRef.current?.querySelector<HTMLElement>(`[aria-rowindex="${next + 1}"]`)?.focus());
+                }
+              }}
               className={clsx(
                 "group/r items-center gap-x-3 rounded-[5px] px-2 hover:bg-panel2 focus:bg-accent-bg focus:outline-none",
+                selected?.path === e.path && "bg-accent-bg",
                 panel ? "flex h-7" : "grid h-8 grid-cols-[minmax(0,1fr)_90px_110px_100px_120px]",
               )}
             >
@@ -363,7 +429,7 @@ export function FileBrowser({ hostId, visible, variant }: Props) {
               <span className={clsx("text-right text-xs text-muted", panel && "w-16 flex-none group-hover/r:hidden")}>{e.kind === "dir" ? "" : bytes(e.size)}</span>
               {!panel && <span className="text-right text-xs text-muted">{fmtDate(e.mtime)}</span>}
               {!panel && <span className="font-mono text-[11px] text-muted">{fmtMode(e.mode)}</span>}
-              <span className={clsx("flex justify-end gap-0.5", panel ? "hidden flex-none group-hover/r:flex" : "invisible group-hover/r:visible")}>
+              <span className={clsx("flex justify-end gap-0.5", panel ? "hidden flex-none group-hover/r:flex group-focus-within/r:flex" : "invisible group-hover/r:visible group-focus-within/r:visible")}>
                 {e.kind === "dir" ? (
                   <RowBtn label="cd here in terminal" onClick={() => cdInTerminal(e.path)}>
                     <SquareTerminal size={13} />
@@ -392,7 +458,8 @@ export function FileBrowser({ hostId, visible, variant }: Props) {
                 </RowBtn>
               </span>
             </div>
-          ))}
+          ); })}
+          </div>
           {listing && entries.length === 0 && <div className="px-3 py-4 text-xs text-muted">Empty folder</div>}
           {!listing && st?.loading && (
             <div className="flex items-center gap-2 px-3 py-4 text-xs text-muted">

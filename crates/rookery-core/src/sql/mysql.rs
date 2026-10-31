@@ -180,6 +180,10 @@ fn my_fk(r: &TextRow) -> ForeignKey {
 }
 
 impl MyConn {
+    pub fn is_closed(&self) -> bool {
+        self.conn.is_disconnected()
+    }
+
     async fn rows(&mut self, sql: &str) -> Result<Vec<TextRow>> {
         let rows: Vec<Row> = self.conn.query(sql).await.map_err(other)?;
         Ok(rows.into_iter().map(|r| r.unwrap_raw().into_iter().map(text).collect()).collect())

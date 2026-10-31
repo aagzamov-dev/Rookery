@@ -23,7 +23,7 @@ type Act = "start" | "stop" | "restart" | "kill" | "remove";
  * Loads on first open (docker ps), then updates only from `docker events`.
  * Live CPU/RAM and the logs panel run only while this view is visible.
  */
-export function DockerView({ hostId }: { hostId: string }) {
+export function DockerView({ hostId, visible: active = true }: { hostId: string; visible?: boolean }) {
   const d = useDocker((s) => s.byHost[hostId]);
   const select = useDocker((s) => s.select);
   const host = useHosts((s) => s.hosts.find((h) => h.id === hostId));
@@ -52,7 +52,7 @@ export function DockerView({ hostId }: { hostId: string }) {
   const prod = host?.env_label === "prod";
 
   const act = async (c: Container, a: Act) => {
-    const dangerous = a === "remove" || a === "kill" || (prod && a !== "start");
+    const dangerous = a === "remove" || a === "kill" || prod;
     if (dangerous) {
       const ok = await askConfirm({
         title: `${a === "remove" ? "Remove" : a[0].toUpperCase() + a.slice(1)} ${c.name}?`,
@@ -121,7 +121,7 @@ export function DockerView({ hostId }: { hostId: string }) {
   }
 
   return (
-    <div className="flex h-full min-h-0 gap-3 bg-bg p-3">
+    <div className="flex h-full min-h-0 flex-col gap-3 bg-bg p-3 min-[1250px]:flex-row">
       <section aria-label="Containers" className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-line bg-panel">
         <div className="flex flex-wrap items-center gap-2.5 border-b border-line px-3.5 py-2.5">
           <h2 className="m-0 text-sm font-semibold">Containers</h2>
@@ -221,8 +221,8 @@ export function DockerView({ hostId }: { hostId: string }) {
         </div>
       </section>
 
-      {selected && (
-        <div className="flex w-[44%] min-w-[340px] flex-col overflow-hidden rounded-xl border border-line">
+      {selected && active && (
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-line min-[1250px]:w-[44%] min-[1250px]:flex-none">
           <ContainerLogs hostId={hostId} container={selected} onClose={() => select(hostId, null)} />
         </div>
       )}
@@ -281,6 +281,7 @@ function ContainerLogs({ hostId, container, onClose }: { hostId: string; contain
       }
       lines={stream?.lines ?? []}
       ended={stream?.ended ?? null}
+      dropped={stream?.dropped ?? 0}
       live
       onClear={() => clear(hostId, `docker:${container.id}`)}
       actions={

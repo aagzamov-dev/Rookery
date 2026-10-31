@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import clsx from "clsx";
 import { ArrowDownToLine, Copy, Eraser, Search, WrapText } from "lucide-react";
 import { copyText } from "../../ipc/clipboard";
 import { levelOf, splitTs, type Level } from "../../stores/logs";
 
-const RENDER_MAX = 2_000;
 
 interface Props {
   title: ReactNode;
@@ -13,21 +13,29 @@ interface Props {
   live: boolean;
   onClear?: () => void;
   actions?: ReactNode;
+  dropped?: number;
 }
 
 type Filter = "all" | "error" | "warn";
 
-export function LogViewer({ title, lines, ended, live, onClear, actions }: Props) {
+export function LogViewer({ title, lines, ended, live, onClear, actions, dropped = 0 }: Props) {
   const [filter, setFilter] = useState<Filter>("all");
   const [q, setQ] = useState("");
   const [wrap, setWrap] = useState(false);
   const [stick, setStick] = useState(true);
   const boxRef = useRef<HTMLDivElement>(null);
 
-  const parsed = useMemo(
-    () => lines.map((raw) => ({ raw, level: levelOf(raw) as Level, ...splitTs(raw) })),
-    [lines],
-  );
+  const parsedCache = useRef(new Map<string, { raw: string; level: Level; time: string | null; text: string }>());
+  const parsed = useMemo(() => {
+    const next = new Map<string, { raw: string; level: Level; time: string | null; text: string }>();
+    const result = lines.map((raw) => {
+      const value = parsedCache.current.get(raw) ?? { raw, level: levelOf(raw), ...splitTs(raw) };
+      next.set(raw, value);
+      return value;
+    });
+    parsedCache.current = next;
+    return result;
+  }, [lines]);
   const counts = useMemo(() => {
     let e = 0;
     let w = 0;
@@ -41,14 +49,18 @@ export function LogViewer({ title, lines, ended, live, onClear, actions }: Props
   const needle = q.trim().toLowerCase();
   const shown = useMemo(() => {
     const f = parsed.filter((p) => (filter === "all" || p.level === filter) && (!needle || p.raw.toLowerCase().includes(needle)));
-    return f.length > RENDER_MAX ? f.slice(f.length - RENDER_MAX) : f;
+    return f;
   }, [parsed, filter, needle]);
+
+  const virtual = useVirtualizer({ count: shown.length, getScrollElement: () => boxRef.current, estimateSize: () => 21, overscan: 12 });
+  const totalSize = virtual.getTotalSize();
+  useEffect(() => { virtual.measure(); }, [wrap, virtual]);
 
   // Auto-scroll to the newest line unless the user scrolled up to read.
   useEffect(() => {
     const el = boxRef.current;
     if (el && stick) el.scrollTop = el.scrollHeight;
-  }, [shown, stick]);
+  }, [shown, stick, totalSize]);
 
   const onScroll = () => {
     const el = boxRef.current;
@@ -65,6 +77,7 @@ export function LogViewer({ title, lines, ended, live, onClear, actions }: Props
             <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-ok" /> Live
           </span>
         )}
+        {!live && !ended && <span className="text-[11px] text-muted">Paused</span>}
         {ended && <span className="text-[11px] text-[#F7CB6A]">{ended}</span>}
         <div className="ml-auto flex items-center gap-1">
           {actions}
@@ -96,10 +109,17 @@ export function LogViewer({ title, lines, ended, live, onClear, actions }: Props
           <input aria-label="Search logs" placeholder="Search" value={q} onChange={(e) => setQ(e.target.value)} className="w-28 bg-transparent text-xs text-text outline-none" />
         </label>
       </div>
+      {dropped > 0 && <div className="px-3 py-1 text-xs text-warn">History is incomplete: {dropped} lines trimmed, shortened, or delivery gaps detected.</div>}
       <div ref={boxRef} onScroll={onScroll} className="relative min-h-0 flex-1 overflow-auto px-2 py-1.5 font-mono text-xs leading-[1.7] text-[#D3D9E4]">
-        {shown.map((p, i) => (
+        <div style={{ height: totalSize, position: "relative", minWidth: "100%", width: wrap ? "100%" : "max-content" }}>
+        {virtual.getVirtualItems().map((item) => {
+          const p = shown[item.index];
+          return (
           <div
-            key={i}
+            key={item.key}
+            data-index={item.index}
+            ref={virtual.measureElement}
+            style={{ position: "absolute", top: 0, left: 0, minWidth: "100%", width: wrap ? "100%" : undefined, transform: `translateY(${item.start}px)` }}
             className={clsx(
               "flex gap-2.5 rounded px-1.5",
               wrap ? "whitespace-pre-wrap break-all" : "whitespace-pre",
@@ -110,7 +130,8 @@ export function LogViewer({ title, lines, ended, live, onClear, actions }: Props
             {p.time && <span className="flex-none text-[#8390A8]">{p.time}</span>}
             <span>{needle ? highlight(p.text, needle) : p.text}</span>
           </div>
-        ))}
+        ); })}
+        </div>
         {lines.length === 0 && <div className="px-1.5 py-2 text-muted">{live ? "Waiting for log lines…" : "No lines yet."}</div>}
       </div>
       {!stick && (

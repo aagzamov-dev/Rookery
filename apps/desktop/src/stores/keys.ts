@@ -65,6 +65,7 @@ export const DEFAULT_TERMINAL_PREFS: TerminalPrefs = {
 };
 
 export interface AppPrefs {
+  density: "compact" | "comfortable";
   /** Reopen last session's tabs on start (server tabs wait for a click to connect). */
   restoreTabs: boolean;
   /** Connect restored server tabs right away instead of waiting for a click. */
@@ -80,6 +81,7 @@ export interface AppPrefs {
 }
 
 export const DEFAULT_APP_PREFS: AppPrefs = {
+  density: "compact",
   restoreTabs: true,
   autoConnectRestored: false,
   autoLockMin: 10,

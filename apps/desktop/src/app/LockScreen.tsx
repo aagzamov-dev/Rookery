@@ -3,8 +3,9 @@ import clsx from "clsx";
 import { api, asCoreError } from "../ipc/api";
 import { useVault } from "../stores/vault";
 import { Button, TextInput } from "../ui/primitives";
+import { PinChangeForm } from "../features/security/PinChangeForm";
 
-type Mode = "create" | "pin" | "master" | "set-pin";
+type Mode = "create" | "pin" | "master" | "set-pin" | "reset-pin";
 
 /** First run: create vault → set PIN. Later: PIN (auto-submit on last digit) or master password. */
 export function LockScreen() {
@@ -15,30 +16,35 @@ export function LockScreen() {
     ? "create"
     : status.unlocked && !status.pin_set
       ? "set-pin"
-      : status.pin_set && !status.pin_disabled
-        ? "pin"
-        : "master";
+      : status.pin_disabled
+        ? "reset-pin"
+        : status.pin_set
+          ? "pin"
+          : "master";
   const [mode, setMode] = useState<Mode>(initial);
 
   useEffect(() => setMode(initial), [initial]);
 
   return (
-    <div className="fixed inset-0 z-[100] grid place-items-center bg-bg p-4">
-      <div className="flex w-full max-w-[360px] flex-col items-center gap-5 rounded-2xl border border-line bg-panel px-8 pt-9 pb-7">
+    <div className="fixed inset-0 z-[100] flex flex-col overflow-y-auto bg-bg p-4">
+      <div className="m-auto flex w-full max-w-[360px] shrink-0 flex-col items-center gap-5 rounded-2xl border border-line bg-panel px-8 pt-9 pb-7">
         <span aria-hidden className="grid h-12 w-12 place-items-center rounded-xl bg-accent font-mono text-lg font-bold text-bg">
           &gt;_
         </span>
         {mode === "create" && <CreateVault onDone={(s) => { setStatus(s); setMode("set-pin"); }} />}
         {mode === "set-pin" && <SetPin onDone={setStatus} onSkip={skipPin} />}
-        {mode === "pin" && <PinUnlock pinLength={status.pin_length ?? 4} onDone={setStatus} onUseMaster={() => setMode("master")} />}
+        {mode === "pin" && <PinUnlock pinLength={status.pin_length ?? 4} onDone={setStatus} onUseMaster={() => setMode("master")} onReset={() => setMode("reset-pin")} />}
+        {mode === "reset-pin" && <><Title title="Reset your PIN" sub="Use your master password if you forgot your PIN." /><PinChangeForm recovery onDone={setStatus} onCancel={() => setMode(status.pin_disabled ? "master" : "pin")} />{status.unlocked && <Button type="button" variant="ghost" onClick={skipPin}>Continue without resetting PIN</Button>}</>}
         {mode === "master" && (
           <MasterUnlock
             disabledPin={status.pin_disabled}
             onDone={(s) => {
               setStatus(s);
-              if (!s.pin_set || s.pin_disabled) setMode("set-pin");
+              if (!s.pin_set) setMode("set-pin");
+              else if (s.pin_disabled) setMode("reset-pin");
             }}
             onUsePin={status.pin_set && !status.pin_disabled ? () => setMode("pin") : undefined}
+            onReset={status.pin_set ? () => setMode("reset-pin") : undefined}
           />
         )}
       </div>
@@ -117,10 +123,12 @@ function PinUnlock({
   pinLength,
   onDone,
   onUseMaster,
+  onReset,
 }: {
   pinLength: number;
   onDone: (s: Awaited<ReturnType<typeof api.vaultUnlockPin>>) => void;
   onUseMaster: () => void;
+  onReset: () => void;
 }) {
   const [pin, setPin] = useState("");
   const [msg, setMsg] = useState<{ text: string; bad: boolean } | null>(null);
@@ -170,6 +178,7 @@ function PinUnlock({
       <Button variant="ghost" onClick={onUseMaster} className="text-accent">
         Use master password
       </Button>
+      <button type="button" disabled={busy} className="text-xs text-accent hover:underline" onClick={onReset}>Forgot PIN? Reset with master password</button>
     </div>
   );
 }
@@ -178,10 +187,12 @@ function MasterUnlock({
   disabledPin,
   onDone,
   onUsePin,
+  onReset,
 }: {
   disabledPin: boolean;
   onDone: (s: Awaited<ReturnType<typeof api.vaultUnlockMaster>>) => void;
   onUsePin?: () => void;
+  onReset?: () => void;
 }) {
   const [pw, setPw] = useState("");
   const [err, setErr] = useState<string | null>(null);
@@ -211,6 +222,7 @@ function MasterUnlock({
           Use PIN instead
         </Button>
       )}
+      {onReset && <button type="button" disabled={busy} className="text-xs text-accent hover:underline" onClick={onReset}>Reset forgotten PIN</button>}
     </form>
   );
 }

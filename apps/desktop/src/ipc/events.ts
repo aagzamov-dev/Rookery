@@ -1,4 +1,5 @@
 // Single event channel from the core (`core`), dispatched into stores / terminals.
+import { api } from "./api";
 import { listen } from "@tauri-apps/api/event";
 import type { CoreEvent } from "./bindings/CoreEvent";
 import { useDocker } from "../stores/docker";
@@ -10,6 +11,7 @@ import { useVault } from "../stores/vault";
 import { useSync } from "../stores/sync";
 import { onDataChanged, useBackup } from "../stores/backup";
 import { useSql } from "../stores/sql";
+import { useGit } from "../stores/git";
 import { terminalRegistry } from "../features/server-tab/terminal/registry";
 
 let started = false;
@@ -22,7 +24,11 @@ export function startCoreEvents() {
 
 export function dispatch(ev: CoreEvent) {
   switch (ev.type) {
+    case "events_lost":
+      void recoverEventLoss(ev.count);
+      break;
     case "session":
+      if (ev.info.state === "connected" && useSessions.getState().byHost[ev.info.host_id]?.state !== "connected") useGit.getState().invalidate(ev.info.host_id);
       useSessions.getState().setInfo(ev.info);
       break;
     case "term_data":
@@ -95,5 +101,25 @@ export function dispatch(ev: CoreEvent) {
       break;
     case "vault_unlocked":
       break;
+  }
+}
+
+async function recoverEventLoss(count: number) {
+  terminalRegistry.markEventGap();
+  const warning = `${count} application events were missed. Results may be incomplete; no operation was replayed.`;
+  useLogs.setState((state) => ({ streams: Object.fromEntries(Object.entries(state.streams).map(([key, stream]) => [key, { ...stream, dropped: (stream.dropped ?? 0) + 1 }])) }));
+  useSql.setState((state) => ({ runs: Object.fromEntries(Object.entries(state.runs).map(([id, run]) => [id, run.finished ? run : { ...run, notices: [...run.notices.slice(-199), warning] }])) }));
+  const pending = Object.keys(useSql.getState().runs);
+  try {
+    const active = new Set(await api.sqlActiveQueries());
+    useSql.setState((state) => ({ runs: Object.fromEntries(Object.entries(state.runs).map(([id, run]) => [id, pending.includes(id) && !active.has(id) ? { ...run, finished: true } : run])) }));
+    for (const state of await api.sqlSessionStates()) if (state.type === "sql_session") useSql.getState().onSession(state);
+    await Promise.all([useSync.getState().load(), useBackup.getState().load()]);
+    for (const transfer of await api.transferStatus()) {
+      if (useFiles.getState().transfers[transfer.id]?.state === "running") useFiles.getState().setTransfer(transfer);
+    }
+    for (const info of await api.sessionsAll()) useSessions.getState().setInfo(info);
+  } catch {
+    useSql.setState((state) => ({ sessions: Object.fromEntries(Object.entries(state.sessions).map(([id, session]) => [id, { ...session, state: "lost", message: "Status could not be refreshed. Reconnect before continuing." }])) }));
   }
 }

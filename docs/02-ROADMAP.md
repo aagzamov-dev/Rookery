@@ -1,5 +1,7 @@
 # 02 — Roadmap & Priorities
 
+Current stabilization work: [Priority 1 implementation and validation](09-PRIORITY-1-STABILIZE-AND-OPTIMIZE.md#implementation-record--2026-10-25). Changes are local and unreleased; native sleep/wake and cross-platform release checks remain.
+
 Priorities:
 - **P0** — must exist for the milestone to ship.
 - **P1** — strongly expected; ship in the milestone if time allows, else next.
@@ -62,6 +64,8 @@ Done when: 20 hosts in the list cause **zero** connections; opening/closing/swit
 | P | Feature | Spec |
 |---|---|---|
 | P0 | Files view + Files side panel (SFTP): browse, upload/download with progress, drag-drop | [D] §4 |
+| ✅ P1 | Selected-file toolbar download; ZIP / Unzip on the server (Python 3 required) | [D] §4.2 |
+| ✅ P1 | Browse server folders to select and save a log file | [D] §5.7 |
 | P0 | "Follow terminal" (cwd via shell integration OSC 7 / OSC 133; no polling) | [D] §4.3 |
 | P0 | Edit remote file locally (CodeMirror or external editor), auto-upload on save | [D] §4.4 |
 | P0 | Docker view: container list grouped by compose project, `docker events` stream, actions start/stop/restart | [D] §5 |
@@ -147,6 +151,12 @@ Done when: 20 hosts in the list cause **zero** connections; opening/closing/swit
 | P2 | Edit cells in the grid | [Q] §1 |
 
 ## v0.8 — Editor — **built (0.8.0)**
+
+Git workflow (unreleased): built a lazy per-server Git view with remembered folders, cached status/diffs, staging/commits, local branches, fetch/pull/push/publish, stashes and conflict resolution through the existing editor. Rust enforces confirmation for every production mutation; no Git subscriptions or polling.
+
+Git workspace refinement: compact repository dropdown and single changes panel, editable working-tree diff with version-aware Save / Save & stage, read-only staged diffs and bounded first-open discovery under the configured folder. Unsaved drafts share Editor buffers and survive navigation.
+
+Git layout refinement: persistent panel/diff resizing, compact collapsible folder tree with staged/working-tree actions and a saved flat-list toggle. The existing servers sidebar can shrink to 104 px and persists its width.
 
 | P | Feature | Spec |
 |---|---|---|

@@ -12,6 +12,7 @@ import { api, asCoreError } from "../../../ipc/api";
 import { copyText, readClipboard } from "../../../ipc/clipboard";
 import { askConfirm } from "../../../stores/dialogs";
 import { useFiles } from "../../../stores/files";
+import { useGit } from "../../../stores/git";
 import { useHosts } from "../../../stores/hosts";
 import { useKeys } from "../../../stores/keys";
 import { useTermUi } from "../../../stores/termui";
@@ -339,6 +340,7 @@ class TerminalRegistry {
     e.cmdStart = null;
     e.cmdText = null;
     if (started == null) return;
+    if (!e.local && !e.opts.container) useGit.getState().invalidate(e.hostId);
     const prefs = useKeys.getState().terminal;
     const took = Date.now() - started;
     if (!prefs.notifyLongCommands || took < prefs.notifyAfterSec * 1000) return;
@@ -382,6 +384,12 @@ class TerminalRegistry {
       e.term.write(`\r\n\x1b[31m${ce.message}\x1b[0m\r\n\x1b[90mPress Enter to retry\x1b[0m\r\n`);
     } finally {
       e.connecting = false;
+    }
+  }
+
+  markEventGap() {
+    for (const entry of this.byTermId.values()) {
+      entry.term.write("\r\n\x1b[33m[Output gap: application events were missed. Refresh the terminal display if needed.]\x1b[0m\r\n");
     }
   }
 

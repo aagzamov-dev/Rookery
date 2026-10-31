@@ -48,7 +48,7 @@ Group servers by environment, client or home lab. Switch between them with their
 
 1. **Create your vault.** Set a master password; optionally enable a device PIN for convenient unlocking.
 2. **Add a server.** Enter its SSH address and credentials, or choose **Import my servers** for MobaXterm, PuTTY or a basic `~/.ssh/config`. Imported connections do not include passwords.
-3. **Open its tab.** Start in Terminal, browse Files, or open Docker, Database or Editor as needed.
+3. **Open its tab.** Start in Terminal, browse Files, or open Docker, Database, Editor or Git as needed.
 
 Server tools target Linux hosts: the Docker view needs Docker, and Services needs systemd. Databases can also connect directly, without an SSH host.
 
@@ -62,11 +62,14 @@ Open terminals, follow logs and manage containers alongside the server's files. 
 
 - **Terminal:** search, error highlighting, themes, snippets and broadcast typing. Local shells are supported too.
 - **Docker:** containers grouped by Compose project, live logs, resource usage, start/stop/restart and a container shell.
+- **Git:** repository dropdown, compact folder tree or flat list, resizable panes, editable working-tree diffs with safe Save / Save & stage, read-only staged diffs, commits, branches, remotes, stashes and conflicts through the editor. Loads only when opened; production mutations require confirmation. First-open discovery stays within two levels of the configured folder.
 - **Files and operations:** SFTP transfers, systemd services, processes and log-file following.
 
 <picture><img src="docs/screenshots/terminal.png" alt="SSH terminal with reusable snippets and highlighted warning and error output" width="100%" /></picture>
 
 [See the Docker view](docs/screenshots/docker.png) · [Explore desktop features](docs/03-DESKTOP-FEATURES.md)
+
+In **Logs**, browse server folders and click a file to follow it. In **Files**, select a file to download from the toolbar, ZIP a file or folder, or unzip a selected archive into a new folder. ZIP operations require Python 3 on the server.
 
 ### Inspect the database next to the deployment
 
@@ -131,3 +134,5 @@ Before changing code, read the [working guide](docs/00-START-HERE.md) and [archi
 ---
 
 **If Rookery makes your server work easier, give it a star.** Tried it and got stuck? [Tell me where](https://github.com/aagzamov-dev/Rookery/issues) — that feedback helps make the next release better.
+
+Stabilization work and verification: [Priority 1 implementation record](docs/09-PRIORITY-1-STABILIZE-AND-OPTIMIZE.md#implementation-record--2026-10-25).

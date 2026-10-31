@@ -29,6 +29,7 @@ import { useHosts } from "../stores/hosts";
 import { pageTabId, serverTabId, useTabs, type PageKind } from "../stores/tabs";
 import { useSessions } from "../stores/sessions";
 import { useUi } from "../stores/ui";
+import { HOST_LIST_MAX, HOST_LIST_MIN } from "../ui/panelSize";
 import { useKeys } from "../stores/keys";
 import { useSnippets } from "../stores/snippets";
 import { ago, useSync } from "../stores/sync";
@@ -66,6 +67,7 @@ import type { Group } from "../ipc/bindings/Group";
 import type { Host } from "../ipc/bindings/Host";
 
 export function Shell() {
+  const density = useKeys((s) => s.app.density);
   useSubscriptionEngine();
   useAutoLock();
 
@@ -125,7 +127,7 @@ export function Shell() {
   }, []);
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full flex-col" data-density={density}>
       <TitleBar onQuickConnect={(d) => setHostEditor(d)} />
       <UpdateBanner />
       <div className="flex min-h-0 flex-1">
@@ -318,6 +320,7 @@ function HostList({
   const toggle = useUi((s) => s.toggleHostList);
   const width = useUi((s) => s.hostListWidth);
   const setWidth = useUi((s) => s.setHostListWidth);
+  const compact = width < 190;
   const resize = useRef<{ pointerId: number; x: number; width: number } | null>(null);
   const mode = useUi((s) => s.sidebar);
   const setMode = useUi((s) => s.setSidebar);
@@ -341,12 +344,12 @@ function HostList({
     const isCollapsed = collapsed[g.id] && !f;
     return (
       <div key={g.id} className="flex flex-col gap-px">
-        <div className="group/g flex h-[26px] items-center gap-1.5 pr-1 text-[11px] font-semibold tracking-wider text-muted uppercase" style={{ paddingLeft: 6 + depth * 12 }}>
-          <button aria-label={isCollapsed ? "Expand" : "Collapse"} onClick={() => setCollapsed((c) => ({ ...c, [g.id]: !c[g.id] }))} className="grid h-5 w-5 place-items-center">
+        <div className="group/g flex h-[26px] min-w-0 items-center gap-1 pr-1 text-[11px] font-semibold tracking-wider text-muted uppercase" style={{ paddingLeft: compact ? Math.min(6 + depth * 8, 22) : 6 + depth * 12 }}>
+          <button aria-label={isCollapsed ? "Expand" : "Collapse"} onClick={() => setCollapsed((c) => ({ ...c, [g.id]: !c[g.id] }))} className="grid h-5 w-5 shrink-0 place-items-center">
             {isCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
           </button>
-          <span aria-hidden className="h-2 w-2 rounded-[2px]" style={{ background: g.color }} />
-          <span className="flex-1 truncate">{g.name}</span>
+          <span aria-hidden className="h-2 w-2 shrink-0 rounded-[2px]" style={{ background: g.color }} />
+          <span className="min-w-0 flex-1 truncate" title={g.name}>{g.name}</span>
           <button aria-label={`Add host to ${g.name}`} onClick={() => onNewHost(g.id)} className="hidden h-5 w-5 place-items-center rounded hover:text-text group-hover/g:grid">
             <Plus size={12} />
           </button>
@@ -358,7 +361,7 @@ function HostList({
         {!isCollapsed && (
           <>
             {own.map((h) => (
-              <HostRow key={h.id} host={h} depth={depth + 1} onEdit={() => onEditHost(h)} />
+              <HostRow key={h.id} host={h} depth={depth + 1} compact={compact} onEdit={() => onEditHost(h)} />
             ))}
             {children.map((c) => renderGroup(c, depth + 1))}
           </>
@@ -375,8 +378,8 @@ function HostList({
         role="separator"
         aria-label="Resize servers sidebar"
         aria-orientation="vertical"
-        aria-valuemin={252}
-        aria-valuemax={520}
+        aria-valuemin={HOST_LIST_MIN}
+        aria-valuemax={HOST_LIST_MAX}
         aria-valuenow={width}
         tabIndex={0}
         className="absolute inset-y-0 -right-[3px] z-20 w-[6px] cursor-col-resize touch-none select-none hover:bg-accent-line active:bg-accent-line"
@@ -400,8 +403,8 @@ function HostList({
           setWidth(width + (e.key === "ArrowRight" ? 16 : -16));
         }}
       />
-      <div className="flex items-center gap-1 px-1">
-        <div role="tablist" aria-label="Sidebar list" className="flex rounded-[7px] border border-line bg-bg p-0.5">
+      <div className={clsx("flex items-center gap-1", compact ? "flex-wrap" : "px-1")}>
+        <div role="tablist" aria-label="Sidebar list" className={clsx("flex min-w-0 rounded-[7px] border border-line bg-bg p-0.5", compact && "w-full")}>
           {(["ssh", "sql"] as const).map((m) => (
             <button
               key={m}
@@ -409,7 +412,7 @@ function HostList({
               aria-selected={mode === m}
               onClick={() => setMode(m)}
               title={m === "ssh" ? "Servers (SSH)" : "Databases (SQL)"}
-              className={clsx("h-[22px] rounded-[5px] px-2.5 text-[11px] font-semibold tracking-wider", mode === m ? "bg-accent-bg text-text" : "text-muted hover:text-text")}
+              className={clsx("h-[22px] min-w-0 rounded-[5px] text-[11px] font-semibold tracking-wider", compact ? "flex-1 px-1" : "px-2.5", mode === m ? "bg-accent-bg text-text" : "text-muted hover:text-text")}
             >
               {m.toUpperCase()}
             </button>
@@ -417,29 +420,29 @@ function HostList({
         </div>
         {mode === "ssh" ? (
           <>
-            <IconButton label="New group" className="ml-auto h-[26px] w-[26px]" onClick={onNewGroup}>
+            <IconButton label="New group" className={compact ? "h-6 w-6 shrink-0" : "ml-auto h-[26px] w-[26px]"} onClick={onNewGroup}>
               <FolderPlus size={14} />
             </IconButton>
-            <IconButton label="New host" className="h-[26px] w-[26px] border border-line bg-panel2 text-text" onClick={() => onNewHost(null)}>
+            <IconButton label="New host" className={clsx("shrink-0 border border-line bg-panel2 text-text", compact ? "h-6 w-6" : "h-[26px] w-[26px]")} onClick={() => onNewHost(null)}>
               <Plus size={14} />
             </IconButton>
           </>
         ) : (
           <>
-            <IconButton label="Find databases on this PC" className="ml-auto h-[26px] w-[26px]" onClick={() => setFinding(true)}>
+            <IconButton label="Find databases on this PC" className={compact ? "h-6 w-6 shrink-0" : "ml-auto h-[26px] w-[26px]"} onClick={() => setFinding(true)}>
               <ScanSearch size={14} />
             </IconButton>
-            <IconButton label="New database connection" className="h-[26px] w-[26px] border border-line bg-panel2 text-text" onClick={() => useConnDialog.getState().open({})}>
+            <IconButton label="New database connection" className={clsx("shrink-0 border border-line bg-panel2 text-text", compact ? "h-6 w-6" : "h-[26px] w-[26px]")} onClick={() => useConnDialog.getState().open({})}>
               <Plus size={14} />
             </IconButton>
           </>
         )}
-        <IconButton label="Collapse host list" className="h-[26px] w-[26px]" onClick={toggle}>
+        <IconButton label="Collapse host list" className={clsx("shrink-0", compact ? "h-6 w-6" : "h-[26px] w-[26px]")} onClick={toggle}>
           <ChevronsLeft size={14} />
         </IconButton>
       </div>
-      <label className="flex h-[30px] items-center gap-2 rounded-[7px] border border-line bg-bg px-2.5 text-muted">
-        <Search size={13} />
+      <label className="flex h-[30px] min-w-0 items-center gap-1.5 rounded-[7px] border border-line bg-bg px-2 text-muted">
+        <Search size={13} className="shrink-0" />
         <input
           aria-label={mode === "ssh" ? "Filter hosts" : "Filter databases"}
           placeholder={mode === "ssh" ? "Filter hosts or tags" : "Filter databases"}
@@ -453,20 +456,20 @@ function HostList({
           <DbConnections filter={filter} onFind={() => setFinding(true)} />
         </div>
       ) : (
-      <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2.5 overflow-x-hidden overflow-y-auto">
         {groups.filter((g) => !g.parent_id || !groups.some((p) => p.id === g.parent_id)).map((g) => renderGroup(g, 0))}
         {ungrouped.length > 0 && (
           <div className="flex flex-col gap-px">
             {groups.length > 0 && <div className="px-1.5 py-1 text-[11px] font-semibold tracking-wider text-muted uppercase">No group</div>}
             {ungrouped.map((h) => (
-              <HostRow key={h.id} host={h} depth={groups.length > 0 ? 1 : 0} onEdit={() => onEditHost(h)} />
+              <HostRow key={h.id} host={h} depth={groups.length > 0 ? 1 : 0} compact={compact} onEdit={() => onEditHost(h)} />
             ))}
           </div>
         )}
         {hosts.length === 0 && <p className="px-2 text-xs leading-relaxed text-muted">No hosts yet. Add one with the + button.</p>}
       </div>
       )}
-      <span className="border-t border-line px-1.5 pt-2.5 text-[11px] leading-relaxed text-muted">
+      <span className={clsx("border-t border-line px-1.5 pt-2.5 text-[11px] text-muted", compact ? "truncate" : "leading-relaxed")} title="Click a server or database to open a tab. Nothing connects until you do.">
         {mode === "ssh" ? "Click a server to open it as a tab. Nothing connects until you do." : "Click a database to open it as a tab. Nothing connects until you do."}
       </span>
       {finding && <FindLocalDialog onClose={() => setFinding(false)} />}
@@ -474,7 +477,7 @@ function HostList({
   );
 }
 
-function HostRow({ host, depth, onEdit }: { host: Host; depth: number; onEdit: () => void }) {
+function HostRow({ host, depth, compact, onEdit }: { host: Host; depth: number; compact: boolean; onEdit: () => void }) {
   const openServer = useTabs((s) => s.openServer);
   const isOpen = useTabs((s) => s.tabs.some((t) => t.id === serverTabId(host.id)));
   const isActive = useTabs((s) => s.activeTabId === serverTabId(host.id));
@@ -494,17 +497,18 @@ function HostRow({ host, depth, onEdit }: { host: Host; depth: number; onEdit: (
   return (
     <div
       onContextMenu={menu.open(items)}
-      className={clsx("group/h flex h-[30px] items-center gap-2 rounded-md pr-1", isActive ? "bg-accent-bg" : "hover:bg-panel2")}
-      style={{ paddingLeft: 8 + depth * 12 }}
+      className={clsx("group/h flex h-[30px] min-w-0 items-center gap-1.5 rounded-md pr-1", isActive ? "bg-accent-bg" : "hover:bg-panel2")}
+      style={{ paddingLeft: compact ? 6 + Math.min(depth, 1) * 6 : 8 + depth * 12 }}
     >
       <button
         onClick={() => openServer(host.id, host.start_view, host.start_folder)}
         onDoubleClick={() => openServer(host.id, "terminal", host.start_folder)}
+        title={`${host.name} · ${host.address}${host.env_label === "prod" ? " · PRODUCTION" : ""}`}
         className="flex min-w-0 flex-1 items-center gap-2 text-left"
       >
         <StatusDot state={state} />
-        <span className={clsx("flex-1 truncate", isOpen && "font-semibold")}>{host.name}</span>
-        {host.env_label === "prod" && <EnvTag env="prod" />}
+        <span className={clsx("min-w-0 flex-1 truncate", isOpen && "font-semibold")}>{host.name}</span>
+        {host.env_label === "prod" && (compact ? <span title="Production" aria-label="Production" className="h-2 w-2 shrink-0 rounded-sm bg-prod-fg" /> : <EnvTag env="prod" />)}
       </button>
       <button aria-label={`Edit ${host.name}`} onClick={onEdit} className="hidden h-6 w-6 place-items-center rounded text-muted hover:text-text group-hover/h:grid">
         <Pencil size={12} />

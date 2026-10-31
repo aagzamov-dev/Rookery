@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Database, KeyRound, Loader2, X } from "lucide-react";
 import type { DbConnection } from "../../ipc/bindings/DbConnection";
 import { api, asCoreError } from "../../ipc/api";
@@ -10,7 +10,7 @@ import { Button, Field, Select, TextInput } from "../../ui/primitives";
 import { blankConn } from "./ConnectionDialog";
 import { useConnDialog } from "./connDialog";
 import { sqlKeyForHost } from "./registry";
-import { SqlTab } from "./SqlTab";
+const SqlTab = lazy(() => import("./SqlTab").then((module) => ({ default: module.SqlTab })));
 
 const DEFAULTS: Record<DbEngine, { port: string; user: string }> = {
   postgres: { port: "5432", user: "postgres" },
@@ -27,7 +27,7 @@ const DEFAULTS_PORT: Record<DbEngine, number> = { postgres: 5432, mysql: 3306 };
  * logins. The next time the view opens, it connects with it by itself. A login that failed is
  * never saved. Unticking it forgets the password.
  */
-export function ServerDbView({ hostId }: { hostId: string }) {
+export function ServerDbView({ hostId, visible = true, requestsActive = visible }: { hostId: string; visible?: boolean; requestsActive?: boolean }) {
   const host = useHosts((s) => s.hosts.find((h) => h.id === hostId));
   const [engine, setEngine] = useState<DbEngine>("postgres");
   const [address, setAddress] = useState("127.0.0.1");
@@ -61,7 +61,7 @@ export function ServerDbView({ hostId }: { hostId: string }) {
 
   // Docker → Open in SQL: fill the form, then ask for the password (never read from the container).
   useEffect(() => {
-    if (!prefill) return;
+    if (!requestsActive || !prefill) return;
     useSql.getState().setServerPrefill(hostId, null);
     void (async () => {
       if (open.current) {
@@ -85,7 +85,7 @@ export function ServerDbView({ hostId }: { hostId: string }) {
       setSource({ name: prefill.name, note: prefill.note, passwordHint: prefill.password_hint });
       setTimeout(() => document.getElementById(`sql-pw-${hostId}`)?.focus(), 50);
     })();
-  }, [prefill, hostId]);
+  }, [prefill, hostId, requestsActive]);
 
   // Logins remembered for this server (newest first).
   const conns = useSql((s) => s.conns);
@@ -128,12 +128,12 @@ export function ServerDbView({ hostId }: { hostId: string }) {
   // Opening the view with a remembered login connects at once (like a server's SSH session).
   const autoTried = useRef(false);
   useEffect(() => {
-    if (autoTried.current || !connsLoaded || sessionId || prefill) return;
+    if (!requestsActive || autoTried.current || !connsLoaded || sessionId || prefill) return;
     autoTried.current = true;
     const c = saved.find((x) => x.has_password);
     if (c) void connectSaved(c);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connsLoaded, saved, sessionId, prefill]);
+  }, [connsLoaded, saved, sessionId, prefill, requestsActive]);
 
   /** Remember (or forget) the login after a successful connect. Never saves a failed login. */
   const rememberLogin = async (openedDb: string | null) => {
@@ -211,7 +211,10 @@ export function ServerDbView({ hostId }: { hostId: string }) {
 
   if (sessionId && meta) {
     return (
+      <Suspense fallback={<div role="status" className="p-4 text-muted">Loading database editor…</div>}>
       <SqlTab
+        visible={visible}
+        requestsActive={requestsActive}
         tabKey={sqlKeyForHost(hostId)}
         sessionId={sessionId}
         label={host?.name ?? "server"}
@@ -247,6 +250,7 @@ export function ServerDbView({ hostId }: { hostId: string }) {
           </>
         }
       />
+      </Suspense>
     );
   }
 

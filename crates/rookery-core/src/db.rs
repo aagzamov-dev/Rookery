@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use parking_lot::Mutex;
+use parking_lot::{Mutex, MutexGuard, ReentrantMutex, ReentrantMutexGuard};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use rusqlite_migration::{Migrations, M};
 
@@ -169,19 +169,57 @@ pub const SQL_HISTORY_KEEP: i64 = 200;
 
 pub struct Db {
     conn: Mutex<Connection>,
+    gate: ReentrantMutex<()>,
+}
+
+struct DbConnectionGuard<'a> {
+    conn: MutexGuard<'a, Connection>,
+    _gate: ReentrantMutexGuard<'a, ()>,
+}
+
+impl std::ops::Deref for DbConnectionGuard<'_> {
+    type Target = Connection;
+    fn deref(&self) -> &Connection { &self.conn }
+}
+impl std::ops::DerefMut for DbConnectionGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Connection { &mut self.conn }
 }
 
 impl Db {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let mut conn = Connection::open(path)?;
         Self::configure(&mut conn)?;
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self { conn: Mutex::new(conn), gate: ReentrantMutex::new(()) })
     }
 
     pub fn open_in_memory() -> Result<Self> {
         let mut conn = Connection::open_in_memory()?;
         Self::configure(&mut conn)?;
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self { conn: Mutex::new(conn), gate: ReentrantMutex::new(()) })
+    }
+
+    fn connection(&self) -> DbConnectionGuard<'_> {
+        let gate = self.gate.lock();
+        DbConnectionGuard { conn: self.conn.lock(), _gate: gate }
+    }
+
+    pub(crate) fn atomic<T>(&self, work: impl FnOnce() -> Result<T>) -> Result<T> {
+        let _gate = self.gate.lock();
+        self.connection().execute_batch("SAVEPOINT rookery_import")?;
+        let result = work();
+        match result {
+            Ok(value) => {
+                if let Err(error) = self.connection().execute_batch("RELEASE SAVEPOINT rookery_import") {
+                    let _ = self.connection().execute_batch("ROLLBACK TO SAVEPOINT rookery_import; RELEASE SAVEPOINT rookery_import");
+                    return Err(error.into());
+                }
+                Ok(value)
+            }
+            Err(error) => {
+                self.connection().execute_batch("ROLLBACK TO SAVEPOINT rookery_import; RELEASE SAVEPOINT rookery_import")?;
+                Err(error)
+            }
+        }
     }
 
     fn configure(conn: &mut Connection) -> Result<()> {
@@ -195,7 +233,7 @@ impl Db {
     // ---------------------------------------------------------------- groups
 
     pub fn list_groups(&self) -> Result<Vec<Group>> {
-        let c = self.conn.lock();
+        let c = self.connection();
         let mut st = c.prepare(
             "SELECT id, parent_id, name, color, sort, identity_id, jump_host_id, theme, start_folder,
                     refresh_json, auto_sync_enabled, updated_at
@@ -206,7 +244,7 @@ impl Db {
     }
 
     pub fn get_group(&self, id: &str) -> Result<Option<Group>> {
-        let c = self.conn.lock();
+        let c = self.connection();
         Ok(c.query_row(
             "SELECT id, parent_id, name, color, sort, identity_id, jump_host_id, theme, start_folder,
                     refresh_json, auto_sync_enabled, updated_at
@@ -228,7 +266,7 @@ impl Db {
 
     /// Write a group as is, keeping `updated_at` (device sync / backup import).
     pub fn put_group(&self, g: &Group) -> Result<()> {
-        let c = self.conn.lock();
+        let c = self.connection();
         c.execute(
             "INSERT INTO groups (id, parent_id, name, color, sort, identity_id, jump_host_id, theme,
                                  start_folder, refresh_json, auto_sync_enabled, updated_at)
@@ -263,14 +301,14 @@ impl Db {
     // ----------------------------------------------------------------- hosts
 
     pub fn list_hosts(&self) -> Result<Vec<Host>> {
-        let c = self.conn.lock();
+        let c = self.connection();
         let mut st = c.prepare(&format!("{HOST_SELECT} ORDER BY sort, name"))?;
         let rows = st.query_map([], row_host)?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
     pub fn get_host(&self, id: &str) -> Result<Host> {
-        let c = self.conn.lock();
+        let c = self.connection();
         c.query_row(&format!("{HOST_SELECT} WHERE id = ?1"), [id], row_host)
             .optional()?
             .ok_or_else(|| Error::NotFound(format!("host {id}")))
@@ -292,7 +330,7 @@ impl Db {
 
     /// Write a host as is, keeping its timestamps (device sync / backup import).
     pub fn put_host(&self, h: &Host) -> Result<()> {
-        let c = self.conn.lock();
+        let c = self.connection();
         c.execute(
             "INSERT INTO hosts (id, group_id, name, address, port, env_label, tags_json, identity_id,
                                 jump_host_id, theme, start_view, start_folder, auto_reconnect, keepalive_s,
@@ -337,14 +375,14 @@ impl Db {
     // ------------------------------------------------------------ identities
 
     pub fn list_identities(&self) -> Result<Vec<Identity>> {
-        let c = self.conn.lock();
+        let c = self.connection();
         let mut st = c.prepare("SELECT id, name, username, auth, key_path, updated_at FROM identities ORDER BY name")?;
         let rows = st.query_map([], row_identity)?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
     pub fn get_identity(&self, id: &str) -> Result<Identity> {
-        let c = self.conn.lock();
+        let c = self.connection();
         c.query_row(
             "SELECT id, name, username, auth, key_path, updated_at FROM identities WHERE id = ?1",
             [id],
@@ -365,7 +403,7 @@ impl Db {
 
     /// Write an identity as is, keeping `updated_at` (device sync / backup import).
     pub fn put_identity(&self, i: &Identity) -> Result<()> {
-        self.conn.lock().execute(
+        self.connection().execute(
             "INSERT INTO identities (id, name, username, auth, key_path, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT(id) DO UPDATE SET name=excluded.name, username=excluded.username,
                 auth=excluded.auth, key_path=excluded.key_path, updated_at=excluded.updated_at",
@@ -381,14 +419,14 @@ impl Db {
     // -------------------------------------------------------- db connections
 
     pub fn list_db_connections(&self) -> Result<Vec<DbConnection>> {
-        let c = self.conn.lock();
+        let c = self.connection();
         let mut st = c.prepare(&format!("{DBCONN_SELECT} ORDER BY sort, name"))?;
         let rows = st.query_map([], row_db_connection)?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
     pub fn get_db_connection(&self, id: &str) -> Result<DbConnection> {
-        let c = self.conn.lock();
+        let c = self.connection();
         c.query_row(&format!("{DBCONN_SELECT} WHERE id = ?1"), [id], row_db_connection)
             .optional()?
             .ok_or_else(|| Error::NotFound(format!("database connection {id}")))
@@ -422,7 +460,7 @@ impl Db {
 
     /// Write a connection as is, keeping its timestamps (device sync / backup import).
     pub fn put_db_connection(&self, d: &DbConnection) -> Result<()> {
-        self.conn.lock().execute(
+        self.connection().execute(
             "INSERT INTO db_connections (id, name, engine, via, host_id, address, port, username, database,
                                          ssl_mode, ca_path, env_label, group_id, read_only, row_limit, timeout_s,
                                          sort, created_at, updated_at)
@@ -468,7 +506,7 @@ impl Db {
 
     /// Add a run to a connection's history and keep only the newest [`SQL_HISTORY_KEEP`].
     pub fn add_sql_history(&self, e: &SqlHistoryEntry) -> Result<()> {
-        let c = self.conn.lock();
+        let c = self.connection();
         c.execute(
             "INSERT INTO sql_history (conn_key, sql, ran_at, ok, rows, elapsed_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![e.conn_key, e.sql, e.ran_at, e.ok as i64, e.rows, e.elapsed_ms],
@@ -483,7 +521,7 @@ impl Db {
 
     /// Newest first.
     pub fn list_sql_history(&self, conn_key: &str, limit: u32) -> Result<Vec<SqlHistoryEntry>> {
-        let c = self.conn.lock();
+        let c = self.connection();
         let mut st = c.prepare(
             "SELECT id, conn_key, sql, ran_at, ok, rows, elapsed_ms FROM sql_history
              WHERE conn_key = ?1 ORDER BY ran_at DESC, id DESC LIMIT ?2",
@@ -503,14 +541,14 @@ impl Db {
     }
 
     pub fn clear_sql_history(&self, conn_key: &str) -> Result<()> {
-        self.conn.lock().execute("DELETE FROM sql_history WHERE conn_key = ?1", params![conn_key])?;
+        self.connection().execute("DELETE FROM sql_history WHERE conn_key = ?1", params![conn_key])?;
         Ok(())
     }
 
     // ----------------------------------------------------------- known hosts
 
     pub fn get_known_host(&self, host_id: &str) -> Result<Option<KnownHost>> {
-        let c = self.conn.lock();
+        let c = self.connection();
         Ok(c.query_row(
             "SELECT host_id, key_type, fingerprint, first_seen, last_seen FROM known_hosts WHERE host_id = ?1",
             [host_id],
@@ -529,7 +567,7 @@ impl Db {
 
     pub fn trust_host_key(&self, host_id: &str, key_type: &str, fingerprint: &str) -> Result<()> {
         let now = now_ms();
-        self.conn.lock().execute(
+        self.connection().execute(
             "INSERT INTO known_hosts (host_id, key_type, fingerprint, first_seen, last_seen)
              VALUES (?1, ?2, ?3, ?4, ?4)
              ON CONFLICT(host_id) DO UPDATE SET key_type=excluded.key_type,
@@ -542,7 +580,7 @@ impl Db {
 
     /// Write a trusted key as is (device sync). Its version is `first_seen` (when it was trusted).
     pub fn put_known_host(&self, k: &KnownHost) -> Result<()> {
-        self.conn.lock().execute(
+        self.connection().execute(
             "INSERT INTO known_hosts (host_id, key_type, fingerprint, first_seen, last_seen)
              SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (SELECT 1 FROM hosts WHERE id = ?1)
              ON CONFLICT(host_id) DO UPDATE SET key_type=excluded.key_type,
@@ -554,7 +592,7 @@ impl Db {
     }
 
     pub fn list_known_hosts(&self) -> Result<Vec<KnownHost>> {
-        let c = self.conn.lock();
+        let c = self.connection();
         let mut st = c.prepare("SELECT host_id, key_type, fingerprint, first_seen, last_seen FROM known_hosts")?;
         let rows = st.query_map([], |r| {
             Ok(KnownHost {
@@ -586,7 +624,7 @@ impl Db {
         let metrics = s.metrics.as_ref().map(serde_json::to_string).transpose()?;
         let docker = s.docker.as_ref().map(serde_json::to_string).transpose()?;
         let services = s.failed_services.as_ref().map(serde_json::to_string).transpose()?;
-        self.conn.lock().execute(
+        self.connection().execute(
             "INSERT INTO server_snapshots (host_id, taken_at, ok, error, metrics_json, docker_json, state, last_ok_at,
                 prev_cpu, os, services_json, duration_ms)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
@@ -613,14 +651,14 @@ impl Db {
     }
 
     pub fn list_snapshots(&self) -> Result<Vec<Snapshot>> {
-        let c = self.conn.lock();
+        let c = self.connection();
         let mut st = c.prepare(SNAPSHOT_SELECT)?;
         let rows = st.query_map([], row_snapshot)?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
     pub fn get_snapshot(&self, host_id: &str) -> Result<Option<Snapshot>> {
-        let c = self.conn.lock();
+        let c = self.connection();
         let mut st = c.prepare(&format!("{SNAPSHOT_SELECT} WHERE host_id = ?1"))?;
         Ok(st.query_row(params![host_id], row_snapshot).optional()?)
     }
@@ -628,7 +666,7 @@ impl Db {
     // -------------------------------------------------------------- snippets
 
     pub fn list_snippets(&self) -> Result<Vec<Snippet>> {
-        let c = self.conn.lock();
+        let c = self.connection();
         let mut st = c.prepare(&format!("{SNIPPET_SELECT} ORDER BY pack, sort, name"))?;
         let rows = st.query_map([], row_snippet)?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
@@ -657,7 +695,7 @@ impl Db {
             if !a.chars().all(|c| c.is_ascii_alphanumeric() || "_.:-".contains(c)) {
                 return Err(Error::Other("alias may only contain letters, digits and _ . : -".into()));
             }
-            let c = self.conn.lock();
+            let c = self.connection();
             let taken: Option<String> = c
                 .query_row("SELECT name FROM snippets WHERE alias = ?1 AND id <> ?2", params![a, s.id], |r| r.get(0))
                 .optional()?;
@@ -681,7 +719,7 @@ impl Db {
     /// Write a snippet as is, keeping its timestamps (device sync / backup import).
     /// Fails if another snippet already uses the alias.
     pub fn put_snippet(&self, s: &Snippet) -> Result<()> {
-        self.conn.lock().execute(
+        self.connection().execute(
             "INSERT INTO snippets (id, name, alias, command, vars_json, scope, scope_value, run_mode, hotkey,
                                    ask_prod, pack, sort, created_at, updated_at, steps_json, continue_on_error, kind)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
@@ -720,7 +758,7 @@ impl Db {
     // -------------------------------------------------------------- settings
 
     pub fn get_setting<T: serde::de::DeserializeOwned>(&self, key: &str) -> Result<Option<T>> {
-        let c = self.conn.lock();
+        let c = self.connection();
         let v: Option<String> = c
             .query_row("SELECT value_json FROM settings WHERE key = ?1", [key], |r| r.get(0))
             .optional()?;
@@ -733,7 +771,7 @@ impl Db {
     pub fn set_setting<T: serde::Serialize>(&self, key: &str, value: &T) -> Result<()> {
         let json = serde_json::to_string(value)?;
         // The version time only moves when the value really changes (no needless sync pushes).
-        self.conn.lock().execute(
+        self.connection().execute(
             "INSERT INTO settings (key, value_json, updated_at) VALUES (?1, ?2, ?3)
              ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json,
                 updated_at = CASE WHEN value_json = excluded.value_json THEN updated_at ELSE excluded.updated_at END",
@@ -744,7 +782,7 @@ impl Db {
 
     /// Settings that travel between devices (everything except per-device keys).
     pub fn list_synced_settings(&self) -> Result<Vec<SettingRecord>> {
-        let c = self.conn.lock();
+        let c = self.connection();
         let mut st = c.prepare("SELECT key, value_json, updated_at FROM settings")?;
         let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))?;
         let mut out = Vec::new();
@@ -761,7 +799,7 @@ impl Db {
         if is_local_setting(&s.key) {
             return Ok(());
         }
-        self.conn.lock().execute(
+        self.connection().execute(
             "INSERT INTO settings (key, value_json, updated_at) VALUES (?1, ?2, ?3)
              ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at",
             params![s.key, serde_json::to_string(&s.value)?, s.updated_at],
@@ -773,8 +811,8 @@ impl Db {
 
     /// Delete a row and remember it, so the deletion reaches other devices.
     fn delete_tracked(&self, table: &str, key_col: &str, kind: &str, id: &str) -> Result<()> {
-        let mut c = self.conn.lock();
-        let tx = c.transaction()?;
+        let mut c = self.connection();
+        let tx = c.savepoint()?;
         let n = tx.execute(&format!("DELETE FROM {table} WHERE {key_col} = ?1"), [id])?;
         if n > 0 {
             tx.execute(
@@ -798,8 +836,8 @@ impl Db {
             "db_connection" => ("db_connections", "id"),
             _ => return Ok(()),
         };
-        let mut c = self.conn.lock();
-        let tx = c.transaction()?;
+        let mut c = self.connection();
+        let tx = c.savepoint()?;
         tx.execute(&format!("DELETE FROM {table} WHERE {col} = ?1"), [&t.id])?;
         tx.execute(
             "INSERT INTO tombstones (kind, id, deleted_at) VALUES (?1, ?2, ?3)
@@ -811,21 +849,21 @@ impl Db {
     }
 
     pub fn list_tombstones(&self) -> Result<Vec<Tombstone>> {
-        let c = self.conn.lock();
+        let c = self.connection();
         let mut st = c.prepare("SELECT kind, id, deleted_at FROM tombstones")?;
         let rows = st.query_map([], |r| Ok(Tombstone { kind: r.get(0)?, id: r.get(1)?, deleted_at: r.get(2)? }))?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
     pub fn clear_tombstone(&self, kind: &str, id: &str) -> Result<()> {
-        self.conn.lock().execute("DELETE FROM tombstones WHERE kind = ?1 AND id = ?2", params![kind, id])?;
+        self.connection().execute("DELETE FROM tombstones WHERE kind = ?1 AND id = ?2", params![kind, id])?;
         Ok(())
     }
 
     /// Replace everything that syncs (backup "Replace all"). Snapshots and per-device settings stay.
     pub fn wipe_synced(&self) -> Result<()> {
-        let mut c = self.conn.lock();
-        let tx = c.transaction()?;
+        let mut c = self.connection();
+        let tx = c.savepoint()?;
         let local: Vec<String> = LOCAL_SETTING_KEYS.iter().map(|k| format!("'{k}'")).collect();
         tx.execute_batch(&format!(
             "DELETE FROM db_connections; DELETE FROM known_hosts; DELETE FROM hosts; DELETE FROM groups;
@@ -839,7 +877,7 @@ impl Db {
 
     /// Changes whenever anything that syncs changes. Cheap: a few MAX / COUNT queries.
     pub fn data_revision(&self) -> Result<String> {
-        let c = self.conn.lock();
+        let c = self.connection();
         let local: Vec<String> = LOCAL_SETTING_KEYS.iter().map(|k| format!("'{k}'")).collect();
         let sql = format!(
             "SELECT
@@ -907,7 +945,7 @@ impl Db {
                 s.ungrouped_auto = on;
                 self.set_setting("sync.settings", &s)?;
             } else {
-                self.conn.lock().execute(
+                self.connection().execute(
                     "UPDATE groups SET auto_sync_enabled = ?2 WHERE id = ?1",
                     params![id, on as i64],
                 )?;

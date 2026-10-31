@@ -1,6 +1,6 @@
 import clsx from "clsx";
 import { createPortal } from "react-dom";
-import { forwardRef, useEffect, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from "react";
+import { forwardRef, useEffect, useRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from "react";
 import { X } from "lucide-react";
 
 type Variant = "primary" | "ghost" | "outline" | "danger";
@@ -14,7 +14,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonHTMLAttributes<HTMLBut
       ref={ref}
       {...rest}
       className={clsx(
-        "inline-flex h-8 items-center justify-center gap-2 rounded-md px-3 text-[13px] whitespace-nowrap",
+        "density-control inline-flex h-8 items-center justify-center gap-2 rounded-md px-3 text-[13px] whitespace-nowrap",
         variant === "primary" && "bg-accent font-semibold text-bg hover:brightness-110",
         variant === "outline" && "border border-line bg-transparent text-text hover:bg-panel2",
         variant === "ghost" && "bg-transparent text-muted hover:bg-panel2 hover:text-text",
@@ -31,7 +31,7 @@ export function IconButton({ label, className, ...rest }: ButtonHTMLAttributes<H
       aria-label={label}
       title={label}
       {...rest}
-      className={clsx("grid h-8 w-8 place-items-center rounded-md text-muted hover:bg-panel2 hover:text-text", className)}
+      className={clsx("density-icon grid h-8 w-8 place-items-center rounded-md text-muted hover:bg-panel2 hover:text-text", className)}
     />
   );
 }
@@ -81,14 +81,49 @@ export function Modal({
   footer?: ReactNode;
   width?: number;
 }) {
+  const dialog = useRef<HTMLDivElement>(null);
+  const close = useRef(onClose);
+  close.current = onClose;
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && !e.defaultPrevented && onClose();
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const el = dialog.current;
+    if (!el) return;
+    const topmost = () => Array.from(document.querySelectorAll('[role="dialog"][aria-modal="true"]')).at(-1) === el;
+    const focusable = () => Array.from(el.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], [tabindex]:not([tabindex="-1"])')).filter((node) => node.getClientRects().length > 0);
+    if (topmost() && !el.contains(document.activeElement)) (focusable()[0] ?? el).focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (!topmost()) return;
+      if (event.key === "Escape" && !event.defaultPrevented) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        close.current();
+      } else if (event.key === "Tab") {
+        const items = focusable();
+        const first = items[0] ?? el;
+        const last = items.at(-1) ?? el;
+        if (event.shiftKey && (document.activeElement === first || document.activeElement === el)) {
+          event.preventDefault(); last.focus();
+        } else if (!event.shiftKey && (document.activeElement === last || !el.contains(document.activeElement))) {
+          event.preventDefault(); first.focus();
+        }
+      }
+    };
+    const onFocus = (event: FocusEvent) => {
+      if (topmost() && event.target instanceof Node && !el.contains(event.target)) (focusable()[0] ?? el).focus();
+    };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+    document.addEventListener("focusin", onFocus);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.removeEventListener("focusin", onFocus);
+      if (previous?.isConnected) previous.focus();
+    };
+  }, []);
   return createPortal(
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4" onMouseDown={onClose}>
       <div
+        ref={dialog}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-label={title}

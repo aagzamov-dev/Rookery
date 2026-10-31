@@ -352,7 +352,8 @@ impl Editor {
     }
 
     /// Save `content` to `real_path` (see the module docs for the rules).
-    pub async fn save(&self, host_id: &str, real_path: &str, content: &str, eol: Eol, bom: bool, base: &FileVersion, mode: SaveMode) -> Result<SaveOutcome> {
+    pub async fn save(&self, host_id: &str, real_path: &str, content: &str, eol: Eol, bom: bool, base: &FileVersion, mode: SaveMode, confirmed: bool) -> Result<SaveOutcome> {
+        crate::git::require_confirmation(&self.db, host_id, confirmed)?;
         let path = clean_path(real_path)?;
         let new_bytes = encode(content, eol, bom);
         if new_bytes.len() as u64 > EDIT_MAX {

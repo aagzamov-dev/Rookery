@@ -54,6 +54,8 @@ Migrations with `rusqlite_migration`; schema version stored in `settings`.
 - `VK` lives only in memory, zeroized on lock.
 
 ### 2.3 PIN rules
+
+- Settings → Security → Change PIN requires the current PIN or master password. Forgot PIN on the lock screen resets it with the master password in one verified operation. Existing PINs cannot be replaced through the first-run setup command. Failed verification or keychain writes preserve the previous lock state and PIN; current-PIN attempts use the same cooldown/disable policy as unlocking.
 - 4–6 digits (user choice). Auto-submit on last digit; no Enter; autofocus on show.
 - Attempts: 5 wrong → 30 s cooldown; 10 wrong → PIN entry disabled, master password required and PIN must be set again. Counter stored in keychain item metadata (not editable by deleting a file).
 - Auto-lock: idle (default 10 min), OS lock/sleep, app start. Optional "close SSH sessions on lock".

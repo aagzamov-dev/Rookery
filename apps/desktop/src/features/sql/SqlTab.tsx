@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import clsx from "clsx";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import type { SQLNamespace } from "@codemirror/lang-sql";
-import { AlertTriangle, Bookmark, Download, History, Loader2, Lock, PanelLeft, Play, Square, Table2, Terminal, Unlock, X } from "lucide-react";
+import { AlertTriangle, Bookmark, Download, History, Loader2, Lock, PanelLeft, Play, RefreshCw, Square, Table2, Terminal, Unlock, X } from "lucide-react";
 import { api, asCoreError } from "../../ipc/api";
 import type { SchemaTree as Tree } from "../../ipc/bindings/SchemaTree";
 import { askConfirm } from "../../stores/dialogs";
@@ -20,6 +20,7 @@ import { SqlEditor, type SqlEditorHandle } from "./SqlEditor";
 import { charToIndex, splitSql, type Dialect } from "./split";
 import { TableView, type OpenTable, type TableSub } from "./TableView";
 import type { ColumnFilter } from "../../ipc/bindings/ColumnFilter";
+import { ResizablePanel } from "../../ui/ResizablePanel";
 import { TransactionReviewDialog } from "./TransactionReviewDialog";
 
 /** A table opened as a tab inside the SQL tab. Unpinned = preview (the next single click replaces it). */
@@ -33,6 +34,8 @@ interface OpenedTable {
 }
 
 interface Props {
+  visible?: boolean;
+  requestsActive?: boolean;
   /** Registry / draft key: `host:<id>` for a server view, the tab id for a database tab. */
   tabKey: string;
   sessionId: string;
@@ -82,7 +85,7 @@ function ConnectionMode({ sessionId, label, env }: { sessionId: string; label: s
 }
 
 /** Database tab / server Database view: schema tree, editor, results (docs/07 §2.2). */
-export function SqlTab({ tabKey, sessionId, extra, label, env }: Props) {
+export function SqlTab({ tabKey, sessionId, extra, label, env, visible = true, requestsActive = visible }: Props) {
   const meta = useSql((s) => s.sessions[sessionId]);
   const draftsLoaded = useSql((s) => s.draftsLoaded);
   const fontFamily = useKeys((s) => s.terminal.fontFamily);
@@ -91,6 +94,7 @@ export function SqlTab({ tabKey, sessionId, extra, label, env }: Props) {
 
   const editor = useRef<SqlEditorHandle>(null);
   const [tree, setTree] = useState<Tree | null>(null);
+  const [reconnecting, setReconnecting] = useState(false);
   const [treeLoading, setTreeLoading] = useState(false);
   const [treeError, setTreeError] = useState<string | null>(null);
   const [system, setSystem] = useState(false);
@@ -114,21 +118,26 @@ export function SqlTab({ tabKey, sessionId, extra, label, env }: Props) {
   }, []);
 
   // ------------------------------------------------------------- schema
+  const database = meta?.database ?? null;
+  const loadedTreeKey = useRef<string | null>(null);
+  const treeKey = JSON.stringify([sessionId, system, database]);
   const loadTree = useCallback(async () => {
+    const key = JSON.stringify([sessionId, system, database]);
+    loadedTreeKey.current = key;
     setTreeLoading(true);
     setTreeError(null);
     try {
       setTree(await api.sqlSchema(sessionId, system));
     } catch (e) {
+      if (loadedTreeKey.current === key) loadedTreeKey.current = null;
       setTreeError(asCoreError(e).message);
     } finally {
       setTreeLoading(false);
     }
-  }, [sessionId, system]);
-  const database = meta?.database ?? null;
+  }, [sessionId, system, database]);
   useEffect(() => {
-    void loadTree();
-  }, [loadTree, database]);
+    if (requestsActive && loadedTreeKey.current !== treeKey) void loadTree();
+  }, [loadTree, treeKey, requestsActive]);
 
   const completion = useMemo<SQLNamespace>(() => {
     if (!tree) return {};
@@ -339,18 +348,20 @@ export function SqlTab({ tabKey, sessionId, extra, label, env }: Props) {
 
   // Drag the editor / results divider.
   const body = useRef<HTMLDivElement>(null);
-  const startDrag = (e: React.PointerEvent) => {
-    e.preventDefault();
-    const el = body.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    const move = (ev: PointerEvent) => setSplit(Math.min(0.85, Math.max(0.12, (ev.clientY - r.top) / r.height)));
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
+  const resizeSplit = (clientY: number) => {
+    const bounds = body.current?.getBoundingClientRect();
+    if (bounds?.height) setSplit(Math.min(0.85, Math.max(0.12, (clientY - bounds.top) / bounds.height)));
+  };
+
+  const reconnect = async () => {
+    if (meta?.txOpen || running) {
+      const confirmed = await askConfirm({ title: "Reconnect database?", body: "This interrupts the current operation and abandons the connection. Its outcome may be unknown; verify changes before retrying.", confirmLabel: "Reconnect" });
+      if (!confirmed) return;
+    }
+    setReconnecting(true);
+    try { await api.sqlReconnect(sessionId); await loadTree(); }
+    catch (error) { setNotice(asCoreError(error).message); }
+    finally { setReconnecting(false); }
   };
 
   if (!meta) return null;
@@ -364,6 +375,7 @@ export function SqlTab({ tabKey, sessionId, extra, label, env }: Props) {
         <IconButton label={showTree ? "Hide schema tree" : "Show schema tree"} onClick={() => setShowTree((x) => !x)}>
           <PanelLeft size={15} />
         </IconButton>
+        <IconButton label="Reconnect database" disabled={reconnecting || meta.state === "reconnecting"} onClick={() => void reconnect()}><RefreshCw size={14} /></IconButton>
         {queryActive && (
           <>
             <Button variant="primary" className="h-7" disabled={running} onClick={() => void exec("current")} title="Run the statement at the cursor, or the selection (Ctrl+Enter)">
@@ -423,9 +435,10 @@ export function SqlTab({ tabKey, sessionId, extra, label, env }: Props) {
         </div>
       )}
       {reviewOpen && meta.txOpen && <TransactionReviewDialog sessionId={sessionId} label={label} fontFamily={fontFamily} onClose={() => setReviewOpen(false)} />}
-      {meta.state === "lost" && meta.message && (
+      {(meta.state === "lost" || meta.state === "reconnecting") && meta.message && (
         <div className="flex items-center gap-2 border-b border-[#5A2D33] bg-[#33232A] px-4 py-1.5 text-[13px] text-prod-fg">
-          <AlertTriangle size={14} /> {meta.message}
+          <AlertTriangle size={14} /><span className="flex-1">{meta.message}</span>
+          <Button disabled={reconnecting || meta.state === "reconnecting"} onClick={() => void reconnect()}>{reconnecting || meta.state === "reconnecting" ? "Reconnecting…" : "Reconnect"}</Button>
         </div>
       )}
       {notice && (
@@ -479,7 +492,7 @@ export function SqlTab({ tabKey, sessionId, extra, label, env }: Props) {
 
       <div className="flex min-h-0 flex-1">
         {showTree && (
-          <div className="w-[260px] flex-none">
+          <ResizablePanel id="sql-schema" label="Resize database tree" initialWidth={260}>
             <SchemaTree
               tree={tree}
               loading={treeLoading}
@@ -493,7 +506,7 @@ export function SqlTab({ tabKey, sessionId, extra, label, env }: Props) {
               onOpen={openTable}
               activeKey={queryActive ? null : active}
             />
-          </div>
+          </ResizablePanel>
         )}
         <div className="relative min-w-0 flex-1">
         {tables.map((t) => (
@@ -507,7 +520,8 @@ export function SqlTab({ tabKey, sessionId, extra, label, env }: Props) {
             info={tableInfo(t.schema, t.table)}
             sub={t.sub}
             onSub={(sub) => setTables((cur) => cur.map((x) => (x.key === t.key ? { ...x, sub, pinned: true } : x)))}
-            visible={active === t.key}
+            visible={visible && active === t.key}
+            requestsActive={requestsActive}
             fontFamily={fontFamily}
             onOpenTable={openTable}
             onQuery={toQuery}
@@ -529,12 +543,16 @@ export function SqlTab({ tabKey, sessionId, extra, label, env }: Props) {
               />
             )}
           </div>
-          <div onPointerDown={startDrag} className="h-1.5 flex-none cursor-row-resize border-y border-line bg-panel hover:bg-accent-line" role="separator" aria-label="Resize editor" />
+          <div onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); event.preventDefault(); }}
+            onPointerMove={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) resizeSplit(event.clientY); }}
+            onPointerUp={(event) => event.currentTarget.releasePointerCapture(event.pointerId)}
+            tabIndex={0} aria-orientation="horizontal" aria-valuemin={12} aria-valuemax={85} aria-valuenow={Math.round(split * 100)}
+            onKeyDown={(event) => { if (event.key === "ArrowUp" || event.key === "ArrowDown") { event.preventDefault(); setSplit((value) => Math.min(0.85, Math.max(0.12, value + (event.key === "ArrowDown" ? 0.05 : -0.05)))); } }} className="h-1.5 flex-none cursor-row-resize touch-none border-y border-line bg-panel hover:bg-accent-line" role="separator" aria-label="Resize editor" />
           <ResultsArea dialect={dialect} run={run} sets={sets} tab={tab} setTab={setTab} active={activeSet} meta={meta} fontFamily={fontFamily} onExport={exportCsv} onMore={(s) => run && void exec("all", { text: run.sql, rowLimit: s.rows.length + 500 })} />
         </div>
         </div>
         {panel && queryActive && (
-          <div className="w-[300px] flex-none">
+          <ResizablePanel id="sql-history" label="Resize query sidebar" initialWidth={300} side="right">
             <SidePanel
               tab={panel}
               onTab={setPanel}
@@ -545,7 +563,7 @@ export function SqlTab({ tabKey, sessionId, extra, label, env }: Props) {
               editorText={editorText}
               fontFamily={fontFamily}
             />
-          </div>
+          </ResizablePanel>
         )}
       </div>
     </div>

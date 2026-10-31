@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
-import { FileText, Plus, X } from "lucide-react";
+import { FileText, FolderOpen, Plus, X } from "lucide-react";
 import { api } from "../../ipc/api";
 import { useHosts } from "../../stores/hosts";
 import { streamKey, useLogs } from "../../stores/logs";
 import { LogViewer } from "./LogViewer";
+import { LogFilePicker } from "./LogFilePicker";
+import { parentPath } from "../../stores/files";
+import { Button } from "../../ui/primitives";
 
 const SAVED_KEY = "ui.logFiles";
 
@@ -17,6 +20,7 @@ export function LogsView({ hostId }: { hostId: string }) {
   const clear = useLogs((s) => s.clear);
   const [custom, setCustom] = useState("");
   const [saved, setSaved] = useSavedFiles(hostId);
+  const [browsing, setBrowsing] = useState(false);
 
   const presets = useMemo(() => {
     const list: string[] = [];
@@ -29,8 +33,11 @@ export function LogsView({ hostId }: { hostId: string }) {
 
   return (
     <div className="flex h-full min-h-0 gap-3 bg-bg p-3">
-      <aside className="flex w-[280px] flex-none flex-col gap-3 rounded-xl border border-line bg-panel p-3">
+      <aside className="flex min-h-0 w-[280px] flex-none flex-col gap-3 overflow-y-auto rounded-xl border border-line bg-panel p-3">
         <h2 className="m-0 text-sm font-semibold">Log files</h2>
+        <Button onClick={() => setBrowsing(true)}>
+          <FolderOpen size={14} /> Browse files
+        </Button>
         <form
           className="flex gap-1.5"
           onSubmit={(e) => {
@@ -63,6 +70,7 @@ export function LogsView({ hostId }: { hostId: string }) {
             title={<span className="font-mono text-xs font-normal text-accent">{target}</span>}
             lines={stream?.lines ?? []}
             ended={stream?.ended ?? null}
+      dropped={stream?.dropped ?? 0}
             live
             onClear={() => clear(hostId, `file:${target}`)}
             actions={
@@ -75,6 +83,16 @@ export function LogsView({ hostId }: { hostId: string }) {
           <div className="grid h-full place-items-center bg-term text-muted">Pick a log file to follow.</div>
         )}
       </div>
+      {browsing && <LogFilePicker
+        hostId={hostId}
+        initialPath={target ? parentPath(target) : host?.start_folder || "/var/log"}
+        onClose={() => setBrowsing(false)}
+        onPick={(path) => {
+          if (!saved.includes(path)) setSaved([...saved, path]);
+          pick(path);
+          setBrowsing(false);
+        }}
+      />}
     </div>
   );
 }

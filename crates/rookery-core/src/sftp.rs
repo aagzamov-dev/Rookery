@@ -12,8 +12,9 @@ use std::time::{Duration, Instant, SystemTime};
 
 use parking_lot::Mutex;
 use russh_sftp::client::SftpSession;
+use russh_sftp::protocol::{FileAttributes, OpenFlags, StatusCode};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Semaphore};
 use tokio::task::JoinHandle;
 
 use crate::model::{FileEntry, FileKind, Transfer, TransferState};
@@ -34,6 +35,7 @@ pub(crate) struct Conn {
     /// Keeps the SSH session open; also used by the editor for remote commands.
     pub(crate) lease: Lease,
     pub(crate) s: SftpSession,
+    handle: Arc<crate::ssh::SshHandle>,
 }
 
 struct EditWatch {
@@ -49,6 +51,8 @@ pub struct Sftp {
     sessions: tokio::sync::Mutex<HashMap<String, Arc<Conn>>>,
     transfers: Mutex<HashMap<String, JoinHandle<()>>>,
     edits: Mutex<HashMap<String, EditWatch>>,
+    transfer_slots: Arc<Semaphore>,
+    status: Mutex<HashMap<String, Transfer>>,
 }
 
 impl Sftp {
@@ -60,20 +64,27 @@ impl Sftp {
             sessions: Default::default(),
             transfers: Default::default(),
             edits: Default::default(),
+            transfer_slots: Arc::new(Semaphore::new(4)),
+            status: Default::default(),
         }
     }
 
     pub(crate) async fn conn(&self, host_id: &str) -> Result<Arc<Conn>> {
         let mut map = self.sessions.lock().await;
         if let Some(c) = map.get(host_id) {
-            return Ok(c.clone());
+            if c.lease.handle().await.is_ok_and(|handle| Arc::ptr_eq(&handle, &c.handle)) {
+                return Ok(c.clone());
+            }
         }
-        let lease = self.conns.acquire(host_id).await?;
-        let h = lease.handle().await?;
-        let ch = h.channel_open_session().await?;
-        ch.request_subsystem(true, "sftp").await?;
-        let s = SftpSession::new(ch.into_stream()).await.map_err(sftp_err)?;
-        let c = Arc::new(Conn { lease, s });
+        map.remove(host_id);
+        let c = tokio::time::timeout(Duration::from_secs(30), async {
+            let lease = self.conns.acquire(host_id).await?;
+            let handle = lease.handle().await?;
+            let ch = handle.channel_open_session().await?;
+            ch.request_subsystem(true, "sftp").await?;
+            let s = SftpSession::new(ch.into_stream()).await.map_err(sftp_err)?;
+            Ok::<_, Error>(Arc::new(Conn { lease, s, handle }))
+        }).await.map_err(|_| Error::Ssh("SFTP connection timed out; retry after checking the network".into()))??;
         map.insert(host_id.to_string(), c.clone());
         Ok(c)
     }
@@ -84,9 +95,12 @@ impl Sftp {
             Ok(v) => Ok(v),
             Err(e) => {
                 let msg = e.to_string();
-                if msg.contains("closed") || msg.contains("Timeout") || msg.contains("timeout") || msg.contains("EOF") {
-                    self.sessions.lock().await.remove(host_id);
-                }
+                let broken = match &e {
+                    russh_sftp::client::error::Error::Status(status) => matches!(status.status_code, StatusCode::NoConnection | StatusCode::ConnectionLost | StatusCode::BadMessage),
+                    russh_sftp::client::error::Error::Limited(_) => false,
+                    _ => true,
+                };
+                if broken { self.sessions.lock().await.remove(host_id); }
                 Err(sftp_err(msg))
             }
         }
@@ -146,6 +160,31 @@ impl Sftp {
         self.on_err(host_id, r).await
     }
 
+    pub async fn archive(&self, host_id: &str, path: &str, name: &str, extract: bool) -> Result<()> {
+        if !path.starts_with('/') || path == "/" || path.contains('\0')
+            || name.is_empty() || name == "." || name == ".."
+            || name.contains(['/', '\\', '\0'])
+        {
+            return Err(Error::Other("select a file or folder and enter a valid destination name".into()));
+        }
+        let lease = self.conns.acquire(host_id).await?;
+        let h = lease.handle().await?;
+        let command = format!(
+            "command -v python3 >/dev/null 2>&1 || {{ echo 'ZIP and Unzip require Python 3 on this server.'; exit 1; }}; python3 -c {} {} {} {} 2>&1",
+            shell_quote(include_str!("archive.py")), shell_quote(path), shell_quote(name), if extract { "1" } else { "0" },
+        );
+        let out = exec(&h, &command, Duration::from_secs(1800)).await?;
+        if out.exit != Some(0) {
+            let message = out.stdout.trim();
+            return Err(Error::Other(if message.is_empty() {
+                "Archive operation did not complete. Check the destination for partial output.".into()
+            } else {
+                format!("{message} Check the destination for partial output before retrying.")
+            }));
+        }
+        Ok(())
+    }
+
     /// Delete a file or empty folder; `recursive` uses `rm -rf` on the server.
     pub async fn delete(&self, host_id: &str, path: &str, is_dir: bool, recursive: bool) -> Result<()> {
         let p = path.trim();
@@ -168,7 +207,19 @@ impl Sftp {
 
     // -------------------------------------------------------------- transfers
 
+    pub fn transfer_status(&self) -> Vec<Transfer> {
+        self.status.lock().values().cloned().collect()
+    }
+
     fn emit(&self, t: &Transfer) {
+        let mut status = self.status.lock();
+        if status.len() >= 100 && !status.contains_key(&t.id) {
+            if let Some(id) = status.iter().find(|(_, value)| value.state != TransferState::Running).map(|(id, _)| id.clone()) {
+                status.remove(&id);
+            }
+        }
+        status.insert(t.id.clone(), t.clone());
+        drop(status);
         let _ = self.events.send(CoreEvent::Transfer { transfer: t.clone() });
     }
 
@@ -191,14 +242,22 @@ impl Sftp {
             state: TransferState::Running,
             error: None,
         };
-        self.emit(&t);
         let me = self.clone();
         let host = host_id.to_string();
+        let permit = self.transfer_slots.clone().try_acquire_owned()
+            .map_err(|_| Error::Other("Four transfers are already running; wait for one to finish".into()))?;
+        self.emit(&t);
+        let (start, ready) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
+            let _permit = permit;
+            if ready.await.is_err() { return; }
+            let mut recovery = None;
             let res: Result<()> = async {
                 let c = me.conn(&host).await?;
                 let mut src = tokio::fs::File::open(&local).await?;
-                let mut dst = c.s.create(&remote).await.map_err(sftp_err)?;
+                let (staging, original) = prepare_upload(&c, &remote).await?;
+                recovery = Some(staging.clone());
+                let mut dst = create_staging(&c, &staging).await?;
                 let mut buf = vec![0u8; CHUNK];
                 let mut last = Instant::now();
                 loop {
@@ -214,6 +273,8 @@ impl Sftp {
                     }
                 }
                 dst.shutdown().await?;
+                finish_upload(&c, &staging, &remote, &original).await?;
+                recovery = None;
                 Ok(())
             }
             .await;
@@ -221,13 +282,18 @@ impl Sftp {
                 Ok(()) => t.state = TransferState::Done,
                 Err(e) => {
                     t.state = TransferState::Failed;
-                    t.error = Some(e.to_string());
+                    me.sessions.lock().await.remove(&t.host_id);
+                    t.error = Some(match &recovery {
+                        Some(path) => format!("{e}. Partial recovery file: {path}"),
+                        None => e.to_string(),
+                    });
                 }
             }
             me.emit(&t);
             me.transfers.lock().remove(&t.id);
         });
         self.transfers.lock().insert(id.clone(), task);
+        let _ = start.send(());
         Ok(id)
     }
 
@@ -267,10 +333,16 @@ impl Sftp {
             state: TransferState::Running,
             error: None,
         };
-        self.emit(&t);
         let me = self.clone();
         let host = host_id.to_string();
+        let permit = self.transfer_slots.clone().try_acquire_owned()
+            .map_err(|_| Error::Other("Four transfers are already running; wait for one to finish".into()))?;
+        self.emit(&t);
+        let (start, ready) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
+            let _permit = permit;
+            if ready.await.is_err() { return; }
+            let mut recovery = None;
             let res: Result<()> = async {
                 let c = me.conn(&host).await?;
                 for d in &dirs {
@@ -283,7 +355,10 @@ impl Sftp {
                 let mut last = Instant::now();
                 for (path, rel, _) in &files {
                     let mut src = tokio::fs::File::open(path).await?;
-                    let mut dst = c.s.create(&format!("{root}/{rel}")).await.map_err(sftp_err)?;
+                    let remote = format!("{root}/{rel}");
+                    let (staging, original) = prepare_upload(&c, &remote).await?;
+                    recovery = Some(staging.clone());
+                    let mut dst = create_staging(&c, &staging).await?;
                     loop {
                         let n = src.read(&mut buf).await?;
                         if n == 0 {
@@ -297,6 +372,8 @@ impl Sftp {
                         }
                     }
                     dst.shutdown().await?;
+                    finish_upload(&c, &staging, &remote, &original).await?;
+                    recovery = None;
                 }
                 Ok(())
             }
@@ -305,13 +382,18 @@ impl Sftp {
                 Ok(()) => t.state = TransferState::Done,
                 Err(e) => {
                     t.state = TransferState::Failed;
-                    t.error = Some(e.to_string());
+                    me.sessions.lock().await.remove(&t.host_id);
+                    t.error = Some(match &recovery {
+                        Some(path) => format!("{e}. Partial recovery file: {path}"),
+                        None => e.to_string(),
+                    });
                 }
             }
             me.emit(&t);
             me.transfers.lock().remove(&t.id);
         });
         self.transfers.lock().insert(id.clone(), task);
+        let _ = start.send(());
         Ok(id)
     }
 
@@ -331,14 +413,21 @@ impl Sftp {
             state: TransferState::Running,
             error: None,
         };
-        self.emit(&t);
         let me = self.clone();
         let remote = remote.to_string();
+        let permit = self.transfer_slots.clone().try_acquire_owned()
+            .map_err(|_| Error::Other("Four transfers are already running; wait for one to finish".into()))?;
+        self.emit(&t);
+        let (start, ready) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
+            let _permit = permit;
+            if ready.await.is_err() { return; }
+            let mut recovery = None;
             let res: Result<()> = async {
                 let mut src = c.s.open(&remote).await.map_err(sftp_err)?;
-                let tmp = local.with_extension("rookerypart");
-                let mut dst = tokio::fs::File::create(&tmp).await?;
+                let tmp = local.with_file_name(format!(".{}.{}.rookerypart", local.file_name().unwrap_or_default().to_string_lossy(), t.id));
+                recovery = Some(tmp.to_string_lossy().into_owned());
+                let mut dst = tokio::fs::OpenOptions::new().write(true).create_new(true).open(&tmp).await?;
                 let mut buf = vec![0u8; CHUNK];
                 let mut last = Instant::now();
                 loop {
@@ -356,6 +445,7 @@ impl Sftp {
                 dst.flush().await?;
                 drop(dst);
                 tokio::fs::rename(&tmp, &local).await?;
+                recovery = None;
                 Ok(())
             }
             .await;
@@ -363,19 +453,30 @@ impl Sftp {
                 Ok(()) => t.state = TransferState::Done,
                 Err(e) => {
                     t.state = TransferState::Failed;
-                    t.error = Some(e.to_string());
+                    me.sessions.lock().await.remove(&t.host_id);
+                    t.error = Some(match &recovery {
+                        Some(path) => format!("{e}. Partial recovery file: {path}"),
+                        None => e.to_string(),
+                    });
                 }
             }
             me.emit(&t);
             me.transfers.lock().remove(&t.id);
         });
         self.transfers.lock().insert(id.clone(), task);
+        let _ = start.send(());
         Ok(id)
     }
 
     pub fn cancel(&self, transfer_id: &str) {
         if let Some(t) = self.transfers.lock().remove(transfer_id) {
             t.abort();
+            let status = self.status.lock().get(transfer_id).cloned();
+            if let Some(mut status) = status {
+                status.state = TransferState::Cancelled;
+                status.error = Some("Cancelled. Partial recovery files may remain beside the destination".into());
+                self.emit(&status);
+            }
         }
     }
 
@@ -399,9 +500,11 @@ impl Sftp {
 
     async fn upload_bytes(&self, host_id: &str, remote: &str, bytes: &[u8]) -> Result<()> {
         let c = self.conn(host_id).await?;
-        let mut f = c.s.create(remote).await.map_err(sftp_err)?;
+        let (staging, original) = prepare_upload(&c, remote).await?;
+        let mut f = create_staging(&c, &staging).await?;
         f.write_all(bytes).await?;
         f.shutdown().await?;
+        finish_upload(&c, &staging, remote, &original).await?;
         Ok(())
     }
 
@@ -517,6 +620,77 @@ impl Sftp {
     }
 }
 
+async fn create_staging(c: &Conn, path: &str) -> Result<russh_sftp::client::fs::File> {
+    let mut attributes = FileAttributes::empty();
+    attributes.permissions = Some(0o600);
+    c.s.open_with_flags_and_attributes(path, OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::EXCLUDE, attributes).await.map_err(sftp_err)
+}
+
+async fn prepare_upload(c: &Conn, remote: &str) -> Result<(String, String)> {
+    let target = shell_quote(remote);
+    let command = format!("if [ -e {target} ] || [ -L {target} ]; then [ -f {target} ] && [ ! -L {target} ] && [ \"$(stat -c %u -- {target})\" = \"$(id -u)\" ] && [ \"$(stat -c %h -- {target})\" = 1 ] || {{ echo 'Cannot safely replace this file; use the built-in editor or another destination'; exit 1; }}; stat -c '%u:%g:%a:%h:%s:%Y:%i' -- {target}; else echo missing; fi");
+    let result = exec(c.lease.handle().await?.as_ref(), &command, Duration::from_secs(10)).await?;
+    if result.exit != Some(0) { return Err(Error::Other(result.stdout.trim().into())); }
+    let parent = remote.rsplit_once('/').map(|(dir, _)| dir).unwrap_or(".");
+    Ok((format!("{parent}/.rookery-{}.part", new_id()), result.stdout.trim().into()))
+}
+
+async fn finish_upload(c: &Conn, staging: &str, remote: &str, original: &str) -> Result<()> {
+    let (temp, target) = (shell_quote(staging), shell_quote(remote));
+    let check = if original == "missing" {
+        format!("[ ! -e {target} ] && [ ! -L {target} ]")
+    } else {
+        format!("[ ! -L {target} ] && [ \"$(stat -c '%u:%g:%a:%h:%s:%Y:%i' -- {target})\" = {} ] && chmod --reference={target} -- {temp} && chgrp --reference={target} -- {temp}", shell_quote(original))
+    };
+    let install = if original == "missing" {
+        format!("ln -- {temp} {target} && rm -- {temp}")
+    } else {
+        format!("mv -f -- {temp} {target}")
+    };
+    let command = format!("{check} && {install}");
+    let result = exec(c.lease.handle().await?.as_ref(), &command, Duration::from_secs(10)).await?;
+    if result.exit != Some(0) {
+        return Err(Error::Other(format!("Upload was staged but could not safely replace the destination. Check {staging} before retrying")));
+    }
+    Ok(())
+}
+
 async fn local_mtime(p: &Path) -> Option<SystemTime> {
     tokio::fs::metadata(p).await.ok()?.modified().ok()
+}
+
+#[cfg(test)]
+pub(crate) async fn exercise_staged_uploads(core: &crate::Core, host_id: &str) {
+    let dir = format!("/tmp/rookery-test-{}", new_id());
+    core.sftp.mkdir(host_id, &dir).await.unwrap();
+    let remote = format!("{dir}/unicode-文件.txt");
+    core.sftp.upload_bytes(host_id, &remote, b"original").await.unwrap();
+    let c = core.sftp.conn(host_id).await.unwrap();
+    assert_eq!(c.s.metadata(&remote).await.unwrap().permissions.unwrap() & 0o777, 0o600);
+    let (staging, original) = prepare_upload(&c, &remote).await.unwrap();
+    let mut file = create_staging(&c, &staging).await.unwrap();
+    file.write_all(b"replacement").await.unwrap();
+    file.shutdown().await.unwrap();
+    assert_eq!(core.sftp.read_small(host_id, &remote, 100).await.unwrap(), b"original");
+    assert!(create_staging(&c, &staging).await.is_err());
+    finish_upload(&c, &staging, &remote, &original).await.unwrap();
+    assert_eq!(core.sftp.read_small(host_id, &remote, 100).await.unwrap(), b"replacement");
+    let (staging, original) = prepare_upload(&c, &remote).await.unwrap();
+    let mut file = create_staging(&c, &staging).await.unwrap();
+    file.write_all(b"stale").await.unwrap();
+    file.shutdown().await.unwrap();
+    core.sftp.upload_bytes(host_id, &remote, b"external change").await.unwrap();
+    assert!(finish_upload(&c, &staging, &remote, &original).await.is_err());
+    assert_eq!(core.sftp.read_small(host_id, &remote, 100).await.unwrap(), b"external change");
+    let link = format!("{dir}/link");
+    c.s.symlink(&remote, &link).await.unwrap();
+    assert!(prepare_upload(&c, &link).await.is_err());
+    core.connections.close(host_id).await;
+    let renewed = core.sftp.conn(host_id).await.unwrap();
+    assert!(!Arc::ptr_eq(&c, &renewed));
+    assert_eq!(core.sftp.read_small(host_id, &remote, 100).await.unwrap(), b"external change");
+    core.sftp.delete(host_id, &dir, true, true).await.unwrap();
+    drop(c);
+    drop(renewed);
+    core.sftp.close(host_id).await;
 }

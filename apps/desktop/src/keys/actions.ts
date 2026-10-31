@@ -30,6 +30,7 @@ export type ActionId =
   | "view.terminal"
   | "view.files"
   | "view.editor"
+  | "view.git"
   | "view.docker"
   | "view.database"
   | "view.services"
@@ -135,6 +136,7 @@ export const ACTIONS: ActionDef[] = [
   { id: "view.terminal", label: "Terminal", group: "Server views", defaults: W(["Ctrl+2"], ["Meta+Alt+2"]) },
   { id: "view.files", label: "Files", group: "Server views", defaults: W(["Ctrl+3"], ["Meta+Alt+3"]) },
   { id: "view.editor", label: "Editor", group: "Server views", defaults: W(["Ctrl+9"], ["Meta+Alt+9"]) },
+  { id: "view.git", label: "Git", group: "Server views", defaults: [] },
   { id: "view.docker", label: "Docker", group: "Server views", defaults: W(["Ctrl+4"], ["Meta+Alt+4"]) },
   { id: "view.services", label: "Services", group: "Server views", defaults: W(["Ctrl+5"], ["Meta+Alt+5"]) },
   { id: "view.processes", label: "Processes", group: "Server views", defaults: W(["Ctrl+6"], ["Meta+Alt+6"]) },

@@ -197,6 +197,7 @@ pub struct Sink {
     stmt_started: Instant,
     cur: Option<OpenSet>,
     row_cap: u32,
+    bytes: usize,
     /// For the history: any statement failed; rows of the last finished statement.
     pub(crate) failed: bool,
     pub(crate) last_rows: Option<u64>,
@@ -213,7 +214,7 @@ struct OpenSet {
 
 impl Sink {
     pub fn new(events: broadcast::Sender<CoreEvent>, query_id: String, row_cap: u32) -> Self {
-        Self { events, query_id, next_index: 0, stmt: 0, stmt_started: Instant::now(), cur: None, row_cap: row_cap.max(1), failed: false, last_rows: None }
+        Self { events, query_id, next_index: 0, stmt: 0, stmt_started: Instant::now(), cur: None, row_cap: row_cap.max(1), bytes: 0, failed: false, last_rows: None }
     }
 
     pub fn start_statement(&mut self, stmt: u32) {
@@ -241,6 +242,13 @@ impl Sink {
     /// Add a row. Returns false once the row cap is reached (the row is dropped).
     pub fn row(&mut self, values: Vec<Option<String>>) -> bool {
         let cap = self.row_cap;
+        let size: usize = values.iter().map(|value| value.as_ref().map_or(4, String::len)).sum();
+        if self.bytes.saturating_add(size) > 16 * 1024 * 1024 {
+            self.open().truncated = true;
+            self.notice("Results reached the 16 MiB display limit. Select fewer columns or a smaller page.".into());
+            return false;
+        }
+        self.bytes += size;
         let set = self.open();
         if set.count >= cap {
             set.truncated = true;

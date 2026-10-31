@@ -9,6 +9,7 @@ import { docKey, langOfFile, useEditor, type EditorDoc } from "../../stores/edit
 import { createState, hide, hideExt, lang, readOnly, readOnlyExt, states, whitespace, whitespaceExt, wrap, wrapExt } from "./docs";
 import type { LangId } from "./lang";
 import { useTabs } from "../../stores/tabs";
+import { useGit } from "../../stores/git";
 import { supportFor } from "./languages";
 
 /** The editor view on screen per server, and which file it shows. */
@@ -110,17 +111,17 @@ function newState(key: string, hostId: string, l: LangId, ro: boolean, text: str
  * Open a file in the editor (or switch to it). An open tab with unsaved changes is never replaced;
  * a clean one is refreshed from the server.
  */
-export async function openFile(hostId: string, path: string): Promise<EditorDoc> {
+export async function openFile(hostId: string, path: string, activate = true): Promise<EditorDoc> {
   const f = await api.editorOpen(hostId, path);
   const key = docKey(hostId, f.real_path);
   const existing = getDoc(key);
   const store = useEditor.getState();
   if (existing?.dirty) {
-    store.activate(hostId, key);
+    if (activate) store.activate(hostId, key);
     return existing;
   }
   if (existing && stateOf(key)) {
-    const d = store.put(hostId, f);
+    const d = store.put(hostId, f, activate);
     // Same tab, maybe new content: keep its undo history.
     replaceText(key, f.content);
     clearTimeout(dirtyTimers.get(key));
@@ -129,7 +130,7 @@ export async function openFile(hostId: string, path: string): Promise<EditorDoc>
   }
   // The state exists before the tab does, so the view can show it at once.
   states.set(key, newState(key, hostId, langOfFile(f), f.read_only, f.content));
-  return store.put(hostId, f);
+  return store.put(hostId, f, activate);
 }
 
 /** Open a file and show the server's Editor view (Files → Edit in Rookery). */
@@ -224,13 +225,15 @@ export async function checkServer(hostId: string, keys?: string[]) {
 // ---------------------------------------------------------------- save
 
 /** One save attempt. `text` is what is saved (the editor may change meanwhile). */
-export async function saveRaw(key: string, text: string, mode: SaveMode): Promise<SaveOutcome> {
+export async function saveRaw(key: string, text: string, mode: SaveMode, confirmed = false): Promise<SaveOutcome> {
   const d = getDoc(key);
   if (!d) throw new Error("The file is no longer open.");
-  const out = await api.editorSave(d.hostId, d.realPath, text, d.eol, d.bom, d.base, mode);
+  const out = await api.editorSave(d.hostId, d.realPath, text, d.eol, d.bom, d.base, mode, confirmed);
   if (out.kind === "saved") {
     useEditor.getState().patch(key, { base: out.version, baseText: text, changed: null, reloadedAt: null, mixedEol: false });
     useEditor.getState().patch(key, { dirty: textOf(key) !== text });
+    useGit.getState().invalidate(d.hostId, d.path);
+    if (d.path !== d.realPath) useGit.getState().invalidate(d.hostId, d.realPath);
   }
   return out;
 }

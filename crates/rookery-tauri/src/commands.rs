@@ -10,6 +10,26 @@ use crate::AppState;
 // ------------------------------------------------------------------ vault
 
 #[tauri::command]
+pub async fn git_status(s: State<'_, AppState>, host_id: String, folder: String) -> Result<rookery_core::git::GitStatus> {
+    rookery_core::git::status(&s.core.connections, &host_id, &folder).await
+}
+
+#[tauri::command]
+pub async fn git_discover(s: State<'_, AppState>, host_id: String, folder: String) -> Result<Vec<String>> {
+    rookery_core::git::discover(&s.core.connections, &host_id, &folder).await
+}
+
+#[tauri::command]
+pub async fn git_diff(s: State<'_, AppState>, host_id: String, folder: String, file: rookery_core::git::GitFile, staged: bool) -> Result<rookery_core::git::GitDiff> {
+    rookery_core::git::diff(&s.core.connections, &host_id, &folder, &file, staged).await
+}
+
+#[tauri::command]
+pub async fn git_action(s: State<'_, AppState>, host_id: String, folder: String, action: rookery_core::git::GitAction, confirmed: bool) -> Result<String> {
+    rookery_core::git::mutate(&s.core.db, &s.core.connections, &host_id, &folder, &action, confirmed).await
+}
+
+#[tauri::command]
 pub fn vault_status(s: State<'_, AppState>) -> VaultStatus {
     s.core.vault.lock().status()
 }
@@ -43,6 +63,18 @@ pub fn vault_set_pin(s: State<'_, AppState>, pin: String) -> Result<VaultStatus>
     let mut v = s.core.vault.lock();
     v.set_pin(&pin)?;
     Ok(v.status())
+}
+
+#[tauri::command]
+pub async fn vault_change_pin(s: State<'_, AppState>, pin: String, credential: rookery_core::vault::PinCredential) -> Result<VaultStatus> {
+    let vault = s.core.vault.clone();
+    let status = blocking(move || {
+        let mut vault = vault.lock();
+        vault.change_pin(&pin, &credential)?;
+        Ok(vault.status())
+    }).await?;
+    let _ = s.core.events.send(CoreEvent::VaultUnlocked);
+    Ok(status)
 }
 
 #[tauri::command]
@@ -240,6 +272,11 @@ pub async fn sftp_mkdir(s: State<'_, AppState>, host_id: String, path: String) -
 #[tauri::command]
 pub async fn sftp_rename(s: State<'_, AppState>, host_id: String, from: String, to: String) -> Result<()> {
     s.core.sftp.rename(&host_id, &from, &to).await
+}
+
+#[tauri::command]
+pub async fn sftp_archive(s: State<'_, AppState>, host_id: String, path: String, name: String, extract: bool) -> Result<()> {
+    s.core.sftp.archive(&host_id, &path, &name, extract).await
 }
 
 #[tauri::command]
@@ -680,6 +717,11 @@ pub async fn sql_open(s: State<'_, AppState>, target: SqlTarget) -> Result<SqlOp
 }
 
 #[tauri::command]
+pub async fn sql_reconnect(state: tauri::State<'_, AppState>, session_id: String) -> Result<()> {
+    state.core.sql.reconnect(&session_id).await
+}
+
+#[tauri::command]
 pub async fn sql_close(s: State<'_, AppState>, session_id: String) -> Result<()> {
     s.core.sql.close(&session_id).await;
     Ok(())
@@ -954,8 +996,9 @@ pub async fn editor_save(
     bom: bool,
     base: FileVersion,
     mode: SaveMode,
+    confirmed: bool,
 ) -> Result<SaveOutcome> {
-    s.core.editor.save(&host_id, &path, &content, eol, bom, &base, mode).await
+    s.core.editor.save(&host_id, &path, &content, eol, bom, &base, mode, confirmed).await
 }
 
 #[tauri::command]
@@ -966,4 +1009,19 @@ pub fn editor_backups(s: State<'_, AppState>, host_id: String, path: String) -> 
 #[tauri::command]
 pub fn editor_backup_read(s: State<'_, AppState>, host_id: String, path: String, id: String) -> Result<String> {
     s.core.editor.backup_read(&host_id, &path, &id)
+}
+
+#[tauri::command]
+pub fn sql_active_queries(s: State<'_, AppState>) -> Vec<String> {
+    s.core.sql.active_queries()
+}
+
+#[tauri::command]
+pub fn transfer_status(s: State<'_, AppState>) -> Vec<Transfer> {
+    s.core.sftp.transfer_status()
+}
+
+#[tauri::command]
+pub fn sql_session_states(s: State<'_, AppState>) -> Vec<CoreEvent> {
+    s.core.sql.session_states()
 }

@@ -657,8 +657,12 @@ impl Backup {
     }
 
     fn apply(&self, payload: &Payload) -> Result<MergeSummary> {
-        let (sum, ops) = merge(&self.db, payload)?;
-        apply_secret_ops(&mut self.vault.lock(), ops)?;
+        let mut vault = self.vault.lock();
+        let sum = vault.restore_on_error(|vault| self.db.atomic(|| vault.atomic(|vault| {
+            let (sum, ops) = merge(&self.db, payload)?;
+            apply_secret_ops(vault, ops)?;
+            Ok(sum)
+        })))?;
         if sum.changed() || !sum.notes.is_empty() {
             let _ = self.events.send(CoreEvent::DataChanged { summary: sum.clone() });
         }
@@ -692,13 +696,20 @@ impl Backup {
         if payload.format != FORMAT {
             return Err(Error::Other("not a Rookery data file".into()));
         }
-        if mode == ImportMode::Replace {
-            self.db.wipe_synced()?;
-            let mut v = self.vault.lock();
-            v.delete_prefix("identity:")?;
-            v.delete_prefix("dbconn:")?;
-        }
-        let sum = self.apply(&payload)?;
+        let sum = {
+            let mut vault = self.vault.lock();
+            vault.restore_on_error(|vault| self.db.atomic(|| vault.atomic(|vault| {
+                if mode == ImportMode::Replace {
+                    self.db.wipe_synced()?;
+                    vault.delete_prefix("identity:")?;
+                    vault.delete_prefix("dbconn:")?;
+                }
+                let (sum, ops) = merge(&self.db, &payload)?;
+                apply_secret_ops(vault, ops)?;
+                Ok(sum)
+            })))?
+        };
+        let _ = self.events.send(CoreEvent::DataChanged { summary: sum.clone() });
         self.state.lock().pushed = None; // our sync file should reflect the import
         Ok(sum)
     }
@@ -869,6 +880,31 @@ mod tests {
             tombstones: db.list_tombstones().unwrap(),
             db_connections: db.list_db_connections().unwrap().into_iter().map(|conn| DbConnRecord { conn, password: None }).collect(),
         }
+    }
+
+    #[test]
+    fn failed_restore_rolls_back_database_and_secrets() {
+        let tmp = tempfile::tempdir().unwrap();
+        let core = crate::Core::init(tmp.path()).unwrap();
+        core.vault.lock().create("master password").unwrap();
+        core.vault.lock().set("identity:existing:password", "original").unwrap();
+        core.db.put_host(&host("existing", "original", 1)).unwrap();
+        let mut vault = core.vault.lock();
+        let result: Result<()> = vault.restore_on_error(|vault| core.db.atomic(|| vault.atomic(|vault| {
+            core.db.wipe_synced()?;
+            vault.delete_prefix("identity:")?;
+            core.db.put_host(&host("incoming", "new", 2))?;
+            vault.set("identity:new:password", "new")?;
+            Err(Error::Other("injected late restore failure".into()))
+        })));
+        assert!(result.is_err());
+        assert_eq!(core.db.list_hosts().unwrap().len(), 1);
+        assert_eq!(core.db.get_host("existing").unwrap().name, "original");
+        assert_eq!(vault.get("identity:existing:password").unwrap().unwrap().as_str(), "original");
+        assert!(!vault.has("identity:new:password"));
+        vault.lock();
+        vault.unlock_master("master password").unwrap();
+        assert_eq!(vault.get("identity:existing:password").unwrap().unwrap().as_str(), "original");
     }
 
     #[test]

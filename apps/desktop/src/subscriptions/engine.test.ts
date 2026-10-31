@@ -74,6 +74,10 @@ describe("desiredSubscriptions", () => {
     expect(desiredSubscriptions(logs).has(key("a", "file.tail", "/var/log/nginx/error.log"))).toBe(true);
   });
 
+  it("starts no Git or Docker collectors for the Git view", () => {
+    expect(sorted(desiredSubscriptions(input({ views: { a: views("git"), b: views("docker") }, dockerSelected: { a: "container" } })))).toEqual([key("a", "metrics")]);
+  });
+
   it("parses keys whose param contains separators", () => {
     expect(parseKey(key("h1", "file.tail", "/var/log/a|b.log"))).toEqual({ hostId: "h1", source: "file.tail", param: "/var/log/a|b.log" });
   });

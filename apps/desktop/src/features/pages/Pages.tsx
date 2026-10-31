@@ -20,7 +20,7 @@ export function PageTab({ page, active, onEditHost }: { page: PageKind; active: 
       {page === "dashboard" && <DashboardPage />}
       {page === "hosts" && <HostsPage onEditHost={onEditHost} />}
       {page === "snippets" && <SnippetsPage />}
-      {page === "tunnels" && <Soon title="Tunnels" version="v0.5" text="Port forwarding with on/off switches. Each tunnel keeps its server session alive." />}
+      {page === "tunnels" && <Soon title="Tunnels" version="Planned" text="Port forwarding with on/off switches. Each tunnel keeps its server session alive." />}
       {page === "settings" && <SettingsPage />}
       {page === "shortcuts" && <ShortcutsPage />}
       {page === "backup" && <BackupPage />}

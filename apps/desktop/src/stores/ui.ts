@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { clampPanelWidth, HOST_LIST_MAX, HOST_LIST_MIN, saveNumber, storedNumber } from "../ui/panelSize";
 
 interface UiState {
   /** Window visible and focused (with a short grace on blur). Gates every live subscription. */
@@ -18,13 +19,17 @@ interface UiState {
 export const useUi = create<UiState>((set) => ({
   windowActive: true,
   hostListOpen: true,
-  hostListWidth: 252,
+  hostListWidth: clampPanelWidth(storedNumber("ui.panel.hosts", 252), HOST_LIST_MIN, HOST_LIST_MAX),
   sidebar: "ssh",
   paletteOpen: false,
   setSidebar: (sidebar) => set({ sidebar }),
   setWindowActive: (windowActive) => set({ windowActive }),
   toggleHostList: () => set((s) => ({ hostListOpen: !s.hostListOpen })),
-  setHostListWidth: (width) => set({ hostListWidth: Math.max(252, Math.min(520, width)) }),
+  setHostListWidth: (width) => {
+    const next = clampPanelWidth(width, HOST_LIST_MIN, HOST_LIST_MAX);
+    saveNumber("ui.panel.hosts", next);
+    set({ hostListWidth: next });
+  },
   setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
 }));
 

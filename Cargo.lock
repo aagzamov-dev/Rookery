@@ -4487,7 +4487,7 @@ dependencies = [
 
 [[package]]
 name = "rookery-core"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -4524,7 +4524,7 @@ dependencies = [
 
 [[package]]
 name = "rookery-tauri"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "parking_lot",
  "rookery-core",

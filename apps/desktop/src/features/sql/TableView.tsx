@@ -37,6 +37,7 @@ interface Props {
   sub: TableSub;
   onSub: (s: TableSub) => void;
   visible: boolean;
+  requestsActive?: boolean;
   fontFamily: string;
   onOpenTable: OpenTable;
   /** Put SQL into the Query tab. */
@@ -74,7 +75,7 @@ export function TableView(p: Props) {
   const [detail, setDetail] = useState<TableDetail | null>(null);
   const [detailErr, setDetailErr] = useState<string | null>(null);
   const [detailBusy, setDetailBusy] = useState(false);
-  const wanted = p.visible; // Structure and the data's foreign-key links both need it
+  const wanted = p.visible && p.requestsActive !== false; // Structure and the data's foreign-key links both need it
 
   const loadDetail = useCallback(async () => {
     setDetailBusy(true);
@@ -203,11 +204,11 @@ function DataPane(p: Props & { detail: TableDetail | null }) {
   const key = JSON.stringify(query(0));
   const loadedKey = useRef<string | null>(null);
   useEffect(() => {
-    if (!p.visible || loadedKey.current === key || loading) return;
+    if (!p.visible || p.requestsActive === false || loadedKey.current === key || loading) return;
     loadedKey.current = key;
     void load(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [p.visible, key, loading]);
+  }, [p.visible, p.requestsActive, key, loading]);
 
   // A page finished: take its rows and free the run.
   useEffect(() => {
@@ -231,8 +232,8 @@ function DataPane(p: Props & { detail: TableDetail | null }) {
     wasInTx.current = meta?.txOpen ?? false;
     if (!ended) return;
     loadedKey.current = null;
-    if (p.visible && !loading) { loadedKey.current = key; void load(false); }
-  }, [meta?.txOpen, p.visible, loading, key, load]);
+    if (p.visible && p.requestsActive !== false && !loading) { loadedKey.current = key; void load(false); }
+  }, [meta?.txOpen, p.visible, p.requestsActive, loading, key, load]);
   const editReason = (row: (string | null)[], column: string) => {
     if (!meta || meta.readOnly) return "Read-only: enable Edit mode in the connection toolbar to change values.";
     if (loading) return "Wait for the table to finish loading.";

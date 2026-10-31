@@ -17,6 +17,7 @@ pub mod editor;
 pub mod error;
 pub mod events;
 pub mod forward;
+pub mod git;
 pub mod importers;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod local;

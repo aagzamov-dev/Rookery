@@ -50,7 +50,10 @@ pub fn run() {
                         Ok(ev) => {
                             let _ = handle.emit("core", ev);
                         }
-                        Err(RecvError::Lagged(n)) => tracing::warn!("ui event channel lagged by {n}"),
+                        Err(RecvError::Lagged(n)) => {
+                            tracing::warn!("ui event channel lagged by {n}");
+                            let _ = handle.emit("core", rookery_core::CoreEvent::EventsLost { count: n.min(u32::MAX as u64) as u32 });
+                        },
                         Err(RecvError::Closed) => break,
                     }
                 }
@@ -70,6 +73,7 @@ pub fn run() {
             commands::vault_unlock_master,
             commands::vault_unlock_pin,
             commands::vault_set_pin,
+            commands::vault_change_pin,
             commands::vault_lock,
             commands::groups_list,
             commands::group_save,
@@ -136,16 +140,22 @@ pub fn run() {
             commands::sftp_home,
             commands::sftp_list,
             commands::sftp_mkdir,
+            commands::sftp_archive,
             commands::sftp_rename,
             commands::sftp_delete,
             commands::sftp_upload,
             commands::sftp_download,
             commands::sftp_close,
             commands::transfer_cancel,
+            commands::transfer_status,
             commands::edit_open,
             commands::edit_upload,
             commands::edit_stop,
             commands::docker_action,
+            commands::git_status,
+            commands::git_discover,
+            commands::git_diff,
+            commands::git_action,
             commands::services_list,
             commands::shell_integration_install,
             commands::debug_active_subscriptions,
@@ -155,6 +165,9 @@ pub fn run() {
             commands::sql_test,
             commands::sql_open,
             commands::sql_close,
+            commands::sql_reconnect,
+            commands::sql_active_queries,
+            commands::sql_session_states,
             commands::sql_schema,
             commands::sql_table_detail,
             commands::sql_table_rows,

@@ -8,6 +8,7 @@
 //! - Idle sessions drop their connection after 10 minutes, never with a transaction open.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -46,20 +47,20 @@ enum Cancel {
 }
 
 impl Cancel {
-    async fn cancel(&self) {
-        let r = match self {
-            Cancel::Pg(c) => c.cancel().await,
-            Cancel::My(c) => c.cancel().await,
-        };
-        if let Err(e) = r {
-            tracing::debug!("sql cancel: {e}");
-        }
+    async fn cancel(&self) -> bool {
+        let r = tokio::time::timeout(Duration::from_secs(3), async {
+            match self {
+                Cancel::Pg(c) => c.cancel().await,
+                Cancel::My(c) => c.cancel().await,
+            }
+        }).await;
+        matches!(r, Ok(Ok(())))
     }
 }
 
 impl Conn {
     async fn connect(p: &ConnParams) -> Result<(Conn, Cancel, String, oneshot::Receiver<Option<String>>)> {
-        match p.engine {
+        tokio::time::timeout(Duration::from_secs(15), async { match p.engine {
             DbEngine::Postgres => {
                 let (c, version, ended) = pg::connect(p).await?;
                 let cancel = Cancel::Pg(c.cancel.clone());
@@ -71,7 +72,7 @@ impl Conn {
                 let (tx, ended) = oneshot::channel();
                 Ok((Conn::My(c, tx), cancel, version, ended))
             }
-        }
+        }}).await.map_err(|_| Error::Other("Database connection timed out; check the network and retry".into()))?
     }
 
     async fn exec(&mut self, sql: &str, cancel_at_cap: bool, sink: &mut Sink) -> std::result::Result<Done, StmtError> {
@@ -140,7 +141,7 @@ impl Conn {
     fn is_closed(&self) -> bool {
         match self {
             Conn::Pg(c) => c.is_closed(),
-            Conn::My(..) => false,
+            Conn::My(c, _) => c.is_closed(),
         }
     }
 
@@ -178,6 +179,10 @@ struct Session {
     cancel: Mutex<Option<Cancel>>,
     st: Mutex<State>,
     closed: AtomicBool,
+    stop: tokio::sync::watch::Sender<bool>,
+    operation: tokio::sync::Mutex<()>,
+    revision: AtomicU64,
+    last_event: Mutex<Option<CoreEvent>>,
     /// Through a server: the loopback forward (holds the SSH lease) for this session.
     forward: Mutex<Option<Forwarder>>,
     /// Table browser: columns per `schema.table` (cleared when the schema is reloaded).
@@ -189,6 +194,12 @@ enum Route {
     Direct,
     /// Through the saved server with this id.
     Ssh(String),
+}
+
+struct QueryWatchdog(tokio::task::JoinHandle<()>);
+
+impl Drop for QueryWatchdog {
+    fn drop(&mut self) { self.0.abort(); }
 }
 
 struct QueryCtl {
@@ -348,7 +359,9 @@ impl SqlManager {
         let database_hint = params.database.clone();
         let forward = self.forward(&mut params, &route).await?;
         let (mut conn, cancel, version, ended) = Conn::connect(&params).await?;
-        let database = conn.database().await.ok().flatten().or(database_hint);
+        let database = tokio::time::timeout(Duration::from_secs(15), conn.database()).await
+            .map_err(|_| Error::Other("Database initialization timed out; check the network and retry".into()))??
+            .or(database_hint);
         let sess = Arc::new(Session {
             id: new_id(),
             conn_key: conn_key.clone(),
@@ -369,6 +382,10 @@ impl SqlManager {
                 running: false,
             }),
             closed: AtomicBool::new(false),
+            stop: tokio::sync::watch::channel(false).0,
+            operation: tokio::sync::Mutex::new(()),
+            revision: AtomicU64::new(0),
+            last_event: Mutex::new(None),
             forward: Mutex::new(forward),
             columns: Mutex::new(HashMap::new()),
         });
@@ -385,7 +402,8 @@ impl SqlManager {
 
     fn emit(&self, s: &Session, state: &str, message: Option<String>) {
         let st = s.st.lock();
-        let _ = self.events.send(CoreEvent::SqlSession {
+        let event = CoreEvent::SqlSession {
+            revision: s.revision.fetch_add(1, Ordering::SeqCst) + 1,
             session_id: s.id.clone(),
             state: state.into(),
             tx_open: st.tx_open,
@@ -395,10 +413,95 @@ impl SqlManager {
             writes_until: st.writes_until,
             database: st.database.clone(),
             message,
-        });
+        };
+        *s.last_event.lock() = Some(event.clone());
+        let _ = self.events.send(event);
     }
 
-    /// Tell the UI when a connection breaks (the server rolls an open transaction back).
+    async fn operation<T>(&self, sess: &Arc<Session>, work: impl Future<Output = Result<T>>) -> Result<T> {
+        let _operation = sess.operation.try_lock().map_err(|_| Error::Other("A database operation is running; wait or cancel it".into()))?;
+        let mut stop = sess.stop.subscribe();
+        if sess.closed.load(Ordering::SeqCst) {
+            return Err(Error::Other("Database session is closed".into()));
+        }
+        let timeout = Duration::from_secs(u64::from(sess.params.lock().timeout_s.max(1)) + 5);
+        let outcome = tokio::select! {
+            biased;
+            _ = stop.changed() => None,
+            result = tokio::time::timeout(timeout, work) => Some(result),
+        };
+        match outcome {
+            Some(Ok(result)) => {
+                if result.is_err() {
+                    let mut guard = sess.conn.lock().await;
+                    if guard.as_ref().is_some_and(Conn::is_closed) {
+                        self.invalidate(sess, &mut guard, "Connection lost; retry after checking the network. Verify any pending changes before retrying");
+                    }
+                }
+                result
+            },
+            other => {
+                let message = if other.is_none() {
+                    "Database session closed; the last operation's outcome may be unknown"
+                } else {
+                    "Database operation timed out. The connection was reset; retry after checking the network. The last operation was not replayed and its outcome may be unknown"
+                };
+                let mut guard = sess.conn.lock().await;
+                self.invalidate(sess, &mut guard, message);
+                Err(Error::Other(message.into()))
+            }
+        }
+    }
+
+    async fn metadata<T>(&self, sess: &Arc<Session>, work: impl Future<Output = Result<T>>) -> Result<T> {
+        self.operation(sess, async {
+            let protected = {
+                let mut guard = sess.conn.lock().await;
+                if sess.st.lock().tx_open && guard.as_ref().is_some_and(Conn::uses_savepoints) {
+                    if let Err(error) = guard.as_mut().unwrap().tx("SAVEPOINT rookery_metadata").await {
+                        self.invalidate(sess, &mut guard, "Could not protect the transaction for metadata loading; reconnect before continuing");
+                        return Err(Error::Other(error.message));
+                    }
+                    true
+                } else { false }
+            };
+            let result = work.await;
+            if protected {
+                let mut guard = sess.conn.lock().await;
+                if let Some(conn) = guard.as_mut() {
+                    let cleanup = if result.is_err() {
+                        conn.tx("ROLLBACK TO SAVEPOINT rookery_metadata").await
+                    } else { Ok(()) };
+                    let cleanup = match cleanup {
+                        Ok(()) => conn.tx("RELEASE SAVEPOINT rookery_metadata").await,
+                        Err(error) => Err(error),
+                    };
+                    if let Err(error) = cleanup {
+                        self.invalidate(sess, &mut guard, "Metadata transaction cleanup failed; verify the transaction outcome before retrying");
+                        return Err(Error::Other(error.message));
+                    }
+                }
+            }
+            result
+        }).await
+    }
+
+    fn invalidate(&self, sess: &Session, guard: &mut Option<Conn>, message: &str) {
+        sess.conn_gen.fetch_add(1, Ordering::SeqCst);
+        *guard = None;
+        sess.cancel.lock().take();
+        sess.columns.lock().clear();
+        {
+            let mut st = sess.st.lock();
+            st.tx_open = false;
+            st.tx_rows = 0;
+        }
+        if !sess.closed.load(Ordering::SeqCst) {
+            self.emit(sess, "lost", Some(message.into()));
+        }
+    }
+
+    /// Tell the UI when the driver connection ends.
     fn watch(self: &Arc<Self>, sess: &Arc<Session>, gen: u64, ended: oneshot::Receiver<Option<String>>) {
         let me = Arc::downgrade(self);
         let sess = sess.clone();
@@ -413,7 +516,6 @@ impl SqlManager {
                 return;
             }
             *guard = None;
-            drop(guard);
             let had_tx = {
                 let mut st = sess.st.lock();
                 let had = st.tx_open;
@@ -422,7 +524,7 @@ impl SqlManager {
                 had
             };
             let msg = if had_tx {
-                "Connection lost — uncommitted changes were rolled back".to_string()
+                "Connection lost — transaction outcome may be unknown; verify changes before retrying".to_string()
             } else {
                 format!("Connection lost{}; it reconnects on the next run", reason.map(|r| format!(" ({r})")).unwrap_or_default())
             };
@@ -433,13 +535,20 @@ impl SqlManager {
     /// Reconnect if the connection was closed (idle) or lost.
     async fn ensure_conn<'a>(self: &Arc<Self>, sess: &Arc<Session>, guard: &'a mut Option<Conn>) -> Result<&'a mut Conn> {
         if guard.as_ref().is_some_and(|c| c.is_closed()) {
-            *guard = None;
+            self.invalidate(sess, guard, "Connection lost; the next operation reconnects. Verify any pending changes before retrying");
         }
         if guard.is_none() {
             let mut params = sess.params.lock().clone();
             let read_only = sess.st.lock().read_only;
             params.read_only = read_only;
-            let (conn, cancel, _, ended) = Conn::connect(&params).await?;
+            self.emit(sess, "reconnecting", Some("Reconnecting to the database…".into()));
+            let (conn, cancel, _, ended) = match Conn::connect(&params).await {
+                Ok(connection) => connection,
+                Err(error) => {
+                    self.emit(sess, "lost", Some(error.to_string()));
+                    return Err(error);
+                }
+            };
             let gen = sess.conn_gen.fetch_add(1, Ordering::SeqCst) + 1;
             *sess.cancel.lock() = Some(cancel);
             {
@@ -455,18 +564,37 @@ impl SqlManager {
         Ok(guard.as_mut().unwrap())
     }
 
+    pub async fn reconnect(self: &Arc<Self>, session_id: &str) -> Result<()> {
+        let sess = self.session(session_id)?;
+        sess.stop.send_replace(true);
+        let operation = sess.operation.lock().await;
+        sess.stop.send_replace(false);
+        let mut guard = sess.conn.lock().await;
+        self.invalidate(&sess, &mut guard, "Reconnecting; any interrupted operation was not replayed");
+        drop(guard);
+        drop(operation);
+        self.operation(&sess, async {
+            let mut guard = sess.conn.lock().await;
+            self.ensure_conn(&sess, &mut guard).await?;
+            Ok(())
+        }).await
+    }
+
+    pub fn session_states(&self) -> Vec<CoreEvent> {
+        self.sessions.lock().values().filter_map(|session| session.last_event.lock().clone()).collect()
+    }
+
+    pub fn active_queries(&self) -> Vec<String> {
+        self.queries.lock().keys().cloned().collect()
+    }
+
     pub async fn close(&self, session_id: &str) {
         let Some(sess) = self.sessions.lock().remove(session_id) else { return };
         sess.closed.store(true, Ordering::SeqCst);
         sess.conn_gen.fetch_add(1, Ordering::SeqCst);
-        // A running query keeps the lock; ask the server to stop it first.
-        let cancel = sess.cancel.lock().clone();
-        if sess.st.lock().running {
-            if let Some(c) = cancel {
-                c.cancel().await;
-            }
-        }
+        sess.stop.send_replace(true);
         sess.conn.lock().await.take();
+        sess.cancel.lock().take();
         sess.forward.lock().take(); // releases the SSH lease
         self.emit(&sess, "closed", None);
     }
@@ -540,19 +668,26 @@ impl SqlManager {
         let qid = query_id.clone();
         tokio::spawn(async move {
             let started = Instant::now();
-            let mut sink = me.run_inner(&ctl, &qid, &sql, opts).await;
+            let mut sink = match me.operation(&sess, async { Ok(me.run_inner(&ctl, &qid, &sql, opts).await) }).await {
+                Ok(sink) => sink,
+                Err(error) => {
+                    let mut sink = Sink::new(me.events.clone(), qid.clone(), 0);
+                    sink.error(error.to_string(), None);
+                    sink
+                }
+            };
             sink.end_open();
             // History first, so it is there when the UI sees `finished`.
             if history {
                 me.record(&ctl.session.conn_key, &sql, started, sink.failed, sink.last_rows).await;
             }
-            sink.finished();
             {
                 let mut st = ctl.session.st.lock();
                 st.running = false;
                 st.last_used = Instant::now();
             }
             me.queries.lock().remove(&qid);
+            sink.finished();
         });
         Ok(query_id)
     }
@@ -596,6 +731,10 @@ impl SqlManager {
                 return sink;
             }
         };
+        if stmts.len() > 200 {
+            sink.error("A script can contain at most 200 statements; split it into smaller runs".into(), None);
+            return sink;
+        }
         let mut guard = sess.conn.lock().await;
         if let Err(e) = self.ensure_conn(sess, &mut guard).await {
             sink.error(e.to_string(), None);
@@ -645,21 +784,20 @@ impl SqlManager {
             if savepoint {
                 if let Err(e) = conn.tx("SAVEPOINT rookery_stmt").await {
                     sink.error(e.message, None);
+                    self.invalidate(sess, &mut guard, "Transaction could not be recovered; connection reset. Verify pending changes before retrying");
                     break;
                 }
             }
 
             // Client-side watchdog on top of the server's statement timeout.
             let watchdog = sess.cancel.lock().clone().map(|c| {
-                tokio::spawn(async move {
+                QueryWatchdog(tokio::spawn(async move {
                     tokio::time::sleep(Duration::from_secs(u64::from(timeout_s) + 2)).await;
                     c.cancel().await;
-                })
+                }))
             });
             let res = conn.exec(text, info.kind == Kind::Read, &mut sink).await;
-            if let Some(w) = watchdog {
-                w.abort();
-            }
+            drop(watchdog);
             for note in conn.take_notices() {
                 sink.notice(note);
             }
@@ -668,7 +806,18 @@ impl SqlManager {
                 Ok(done) => {
                     if savepoint {
                         let undo = if done.cut { "ROLLBACK TO SAVEPOINT rookery_stmt" } else { "RELEASE SAVEPOINT rookery_stmt" };
-                        let _ = conn.tx(undo).await;
+                        if let Err(error) = conn.tx(undo).await {
+                            sink.error(format!("Transaction cleanup failed: {}", error.message), None);
+                            self.invalidate(sess, &mut guard, "Connection reset after transaction cleanup failed; verify pending changes before retrying");
+                            break;
+                        }
+                        if done.cut {
+                            if let Err(error) = conn.tx("RELEASE SAVEPOINT rookery_stmt").await {
+                                sink.error(error.message, None);
+                                self.invalidate(sess, &mut guard, "Connection reset after transaction cleanup failed");
+                                break;
+                            }
+                        }
                     }
                     let mut changed = true;
                     let mut ended_tx = false;
@@ -701,7 +850,11 @@ impl SqlManager {
                         changed = true;
                     }
                     if ended_tx {
-                        self.after_tx_end(sess, conn).await;
+                        if let Err(error) = self.after_tx_end(sess, conn).await {
+                            sink.error(format!("Transaction ended, but restoring read-only mode failed: {error}"), None);
+                            self.invalidate(sess, &mut guard, "Connection reset because read-only protection could not be restored");
+                            break;
+                        }
                     }
                     if changed {
                         self.emit(sess, "connected", None);
@@ -712,9 +865,18 @@ impl SqlManager {
                     let message = if ctl.cancelled.load(Ordering::SeqCst) { format!("Cancelled. {}", e.message) } else { e.message };
                     sink.error(message, pos);
                     if e.fatal {
-                        *guard = None;
+                        self.invalidate(sess, &mut guard, "Connection lost; the operation was not replayed. Verify its outcome before retrying");
                     } else if savepoint {
-                        let _ = conn.tx("ROLLBACK TO SAVEPOINT rookery_stmt").await;
+                        let cleanup = match conn.tx("ROLLBACK TO SAVEPOINT rookery_stmt").await {
+                            Ok(()) => conn.tx("RELEASE SAVEPOINT rookery_stmt").await,
+                            Err(error) => Err(error),
+                        };
+                        if let Err(error) = cleanup {
+                            sink.notice(format!("Transaction cleanup failed: {}", error.message));
+                            self.invalidate(sess, &mut guard, "Connection reset after transaction cleanup failed");
+                        }
+                    } else if tx_open && engine == DbEngine::Postgres {
+                        self.invalidate(sess, &mut guard, "Transaction-control or session statement failed; connection reset to avoid an aborted transaction. Verify pending changes before retrying");
                     }
                     break;
                 }
@@ -730,49 +892,57 @@ impl SqlManager {
         ctl.cancelled.store(true, Ordering::SeqCst);
         let cancel = ctl.session.cancel.lock().clone();
         if let Some(c) = cancel {
-            c.cancel().await;
+            if c.cancel().await { return; }
         }
+        ctl.session.stop.send_replace(true);
     }
 
     // ------------------------------------------------------- transactions
 
     pub async fn tx(self: &Arc<Self>, session_id: &str, action: TxAction) -> Result<()> {
         let sess = self.session(session_id)?;
-        let mut guard = sess.conn.lock().await;
-        if action != TxAction::Begin && guard.is_none() {
-            sess.st.lock().tx_open = false;
-            return Err(Error::Other("no open transaction (the connection was reset)".into()));
-        }
-        let conn = self.ensure_conn(&sess, &mut guard).await?;
-        let sql = match action {
-            TxAction::Begin => "BEGIN",
-            TxAction::Commit => "COMMIT",
-            TxAction::Rollback => "ROLLBACK",
-        };
-        conn.tx(sql).await.map_err(|e| Error::Other(e.message))?;
-        {
-            let mut st = sess.st.lock();
-            st.tx_open = action == TxAction::Begin;
-            st.tx_rows = 0;
-            st.last_used = Instant::now();
-        }
-        if action != TxAction::Begin {
-            self.after_tx_end(&sess, conn).await;
-        }
-        drop(guard);
-        self.emit(&sess, "connected", None);
-        Ok(())
+        self.operation(&sess, async {
+            let mut guard = sess.conn.lock().await;
+            if action != TxAction::Begin && (guard.as_ref().is_none_or(Conn::is_closed) || !sess.st.lock().tx_open) {
+                self.invalidate(&sess, &mut guard, "No active transaction on this connection; verify the previous transaction outcome before retrying");
+                return Err(Error::Other("No active transaction on this connection; the previous outcome may be unknown".into()));
+            }
+            let conn = self.ensure_conn(&sess, &mut guard).await?;
+            let sql = match action {
+                TxAction::Begin => "BEGIN",
+                TxAction::Commit => "COMMIT",
+                TxAction::Rollback => "ROLLBACK",
+            };
+            conn.tx(sql).await.map_err(|e| Error::Other(e.message))?;
+            {
+                let mut st = sess.st.lock();
+                st.tx_open = action == TxAction::Begin;
+                st.tx_rows = 0;
+                st.last_used = Instant::now();
+            }
+            if action != TxAction::Begin {
+                if let Err(error) = self.after_tx_end(&sess, conn).await {
+                    self.invalidate(&sess, &mut guard, "Connection reset because read-only protection could not be restored");
+                    return Err(error);
+                }
+            }
+            drop(guard);
+            self.emit(&sess, "connected", None);
+            Ok(())
+        }).await
     }
 
     /// Writes ran out while a transaction was open: make the server read-only again now.
-    async fn after_tx_end(&self, sess: &Session, conn: &mut Conn) {
+    async fn after_tx_end(&self, sess: &Session, conn: &mut Conn) -> Result<()> {
         let (want, have) = {
             let st = sess.st.lock();
             (st.read_only, st.server_read_only)
         };
-        if want && !have && conn.set_read_only(true).await.is_ok() {
+        if want && !have {
+            conn.set_read_only(true).await?;
             sess.st.lock().server_read_only = true;
         }
+        Ok(())
     }
 
     /// "Allow changes for N minutes" on a protected session (0 = read-only again now).
@@ -791,46 +961,48 @@ impl SqlManager {
 
     async fn set_writes(self: &Arc<Self>, session_id: &str, duration: Option<Duration>) -> Result<()> {
         let sess = self.session(session_id)?;
-        sess.st.lock().protected = true;
-        if duration.is_some_and(|dur| dur.is_zero()) {
-            let gen = sess.st.lock().writes_gen;
-            self.expire_writes(&sess, gen).await;
-            return Ok(());
-        }
-        let mut guard = sess.conn.lock().await;
-        let conn = self.ensure_conn(&sess, &mut guard).await?;
-        let (read_only, tx_open, server_ro) = {
-            let st = sess.st.lock();
-            (st.read_only, st.tx_open, st.server_read_only)
-        };
-        // Writes ran out inside a still-writable transaction: turning them back on needs no SET.
-        let already = !read_only || (tx_open && !server_ro);
-        if !already {
-            if tx_open {
-                return Err(Error::Other("finish the open transaction first (Commit or Rollback)".into()));
+        self.operation(&sess, async {
+            sess.st.lock().protected = true;
+            if duration.is_some_and(|dur| dur.is_zero()) {
+                let gen = sess.st.lock().writes_gen;
+                self.expire_writes(&sess, gen).await;
+                return Ok(());
             }
-            conn.set_read_only(false).await?;
-        }
-        let until = duration.map(|dur| now_ms() + dur.as_millis().min(i64::MAX as u128) as i64);
-        let gen = {
-            let mut st = sess.st.lock();
-            st.read_only = false;
-            st.server_read_only = false;
-            st.writes_until = until;
-            st.writes_gen += 1;
-            st.writes_gen
-        };
-        self.emit(&sess, "connected", None);
-        let Some(until) = until else { return Ok(()) };
-        let me = Arc::downgrade(self);
-        let s = sess.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis((until - now_ms()).max(0) as u64)).await;
-            if let Some(me) = me.upgrade() {
-                me.expire_writes(&s, gen).await;
+            let mut guard = sess.conn.lock().await;
+            let conn = self.ensure_conn(&sess, &mut guard).await?;
+            let (read_only, tx_open, server_ro) = {
+                let st = sess.st.lock();
+                (st.read_only, st.tx_open, st.server_read_only)
+            };
+            // Writes ran out inside a still-writable transaction: turning them back on needs no SET.
+            let already = !read_only || (tx_open && !server_ro);
+            if !already {
+                if tx_open {
+                    return Err(Error::Other("finish the open transaction first (Commit or Rollback)".into()));
+                }
+                conn.set_read_only(false).await?;
             }
-        });
-        Ok(())
+            let until = duration.map(|dur| now_ms() + dur.as_millis().min(i64::MAX as u128) as i64);
+            let gen = {
+                let mut st = sess.st.lock();
+                st.read_only = false;
+                st.server_read_only = false;
+                st.writes_until = until;
+                st.writes_gen += 1;
+                st.writes_gen
+            };
+            self.emit(&sess, "connected", None);
+            let Some(until) = until else { return Ok(()) };
+            let me = Arc::downgrade(self);
+            let s = sess.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis((until - now_ms()).max(0) as u64)).await;
+                if let Some(me) = me.upgrade() {
+                    me.expire_writes(&s, gen).await;
+                }
+            });
+            Ok(())
+        }).await
     }
 
     /// Back to read-only. With a transaction open, the app refuses further writes at once and
@@ -853,8 +1025,11 @@ impl SqlManager {
             };
             if current {
                 if let Some(conn) = guard.as_mut() {
-                    if conn.set_read_only(true).await.is_ok() {
+                    if matches!(tokio::time::timeout(Duration::from_secs(5), conn.set_read_only(true)).await, Ok(Ok(()))) {
                         sess.st.lock().server_read_only = true;
+                    } else {
+                        self.invalidate(sess, &mut guard, "Connection reset while restoring read-only mode");
+                        return;
                     }
                 }
             }
@@ -868,30 +1043,38 @@ impl SqlManager {
 
     pub async fn schema(self: &Arc<Self>, session_id: &str, system: bool) -> Result<SchemaTree> {
         let sess = self.session(session_id)?;
-        sess.columns.lock().clear();
-        let mut guard = sess.conn.lock().await;
-        let conn = self.ensure_conn(&sess, &mut guard).await?;
-        let tree = conn.schema(system).await?;
-        sess.st.lock().last_used = Instant::now();
-        Ok(tree)
+        self.metadata(&sess, async {
+            sess.columns.lock().clear();
+            let mut guard = sess.conn.lock().await;
+            let conn = self.ensure_conn(&sess, &mut guard).await?;
+            let tree = conn.schema(system).await?;
+            sess.st.lock().last_used = Instant::now();
+            Ok(tree)
+        }).await
     }
 
     /// Switch the session to another database (Postgres reconnects).
     pub async fn use_database(self: &Arc<Self>, session_id: &str, database: String) -> Result<()> {
         let sess = self.session(session_id)?;
-        if sess.st.lock().tx_open {
-            return Err(Error::Other("commit or roll back the open transaction first".into()));
-        }
-        let mut guard = sess.conn.lock().await;
-        sess.params.lock().database = Some(database.clone());
-        sess.columns.lock().clear();
-        sess.conn_gen.fetch_add(1, Ordering::SeqCst);
-        *guard = None; // the next connect uses the new database
-        self.ensure_conn(&sess, &mut guard).await?;
-        sess.st.lock().database = Some(database);
-        drop(guard);
-        self.emit(&sess, "connected", None);
-        Ok(())
+        self.operation(&sess, async {
+            if sess.st.lock().tx_open {
+                return Err(Error::Other("commit or roll back the open transaction first".into()));
+            }
+            let mut guard = sess.conn.lock().await;
+            let mut params = sess.params.lock().clone();
+            params.database = Some(database.clone());
+            params.read_only = sess.st.lock().read_only;
+            let (conn, cancel, _, ended) = Conn::connect(&params).await?;
+            sess.params.lock().database = Some(database.clone());
+            sess.columns.lock().clear();
+            let generation = sess.conn_gen.fetch_add(1, Ordering::SeqCst) + 1;
+            *guard = Some(conn);
+            *sess.cancel.lock() = Some(cancel);
+            sess.st.lock().database = Some(database);
+            self.watch(&sess, generation, ended);
+            self.emit(&sess, "connected", None);
+            Ok(())
+        }).await
     }
 }
 
@@ -900,75 +1083,82 @@ impl SqlManager {
 impl SqlManager {
     pub async fn table_update_cell(self: &Arc<Self>, session_id: &str, update: table::TableCellUpdate) -> Result<()> {
         let sess = self.session(session_id)?;
-        let mut guard = sess.conn.try_lock().map_err(|_| Error::Other("A query is running; wait for it to finish".into()))?;
-        if sess.st.lock().running {
-            return Err(Error::Other("A query is running; wait for it to finish".into()));
-        }
-        let conn = self.ensure_conn(&sess, &mut guard).await?;
-        let detail = conn.table_detail(&update.schema, &update.table).await?;
-        let engine = sess.params.lock().engine;
-        let plan = table::cell_update_plan(engine, &detail, &update)?;
-        if sess.st.lock().read_only {
-            return Err(Error::Other("Read-only: enable edit mode before applying changes".into()));
-        }
-        let existing_tx = sess.st.lock().tx_open;
-        conn.tx(if existing_tx { "SAVEPOINT rookery_cell" } else { "BEGIN" }).await.map_err(|e| Error::Other(e.message))?;
-        let timeout_s = sess.params.lock().timeout_s;
-        let watchdog = sess.cancel.lock().clone().map(|c| tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(u64::from(timeout_s) + 2)).await;
-            c.cancel().await;
-        }));
-        let result = match conn {
-            Conn::Pg(c) => c.update_cell(&plan).await,
-            Conn::My(c, _) => c.update_cell(&plan).await,
-        };
-        if let Some(w) = watchdog { w.abort(); }
-        let result = match result {
-            Ok(1) => Ok(()),
-            Ok(0) => Err(Error::Other("The value changed or the row was deleted. Refresh the table and try again.".into())),
-            Ok(_) => Err(Error::Other("More than one row matched. The edit was rolled back.".into())),
-            Err(e) => Err(e),
-        };
-        let cleanup = if result.is_err() {
-            let undo = conn.tx(if existing_tx { "ROLLBACK TO SAVEPOINT rookery_cell" } else { "ROLLBACK" }).await;
-            if existing_tx && undo.is_ok() { conn.tx("RELEASE SAVEPOINT rookery_cell").await } else { undo }
-        } else if existing_tx {
-            conn.tx("RELEASE SAVEPOINT rookery_cell").await
-        } else {
-            Ok(())
-        };
-        if let Err(e) = cleanup {
-            sess.conn_gen.fetch_add(1, Ordering::SeqCst);
-            *guard = None;
-            let mut st = sess.st.lock();
-            st.tx_open = false;
-            st.tx_rows = 0;
-            drop(st);
-            self.emit(&sess, "lost", Some("Connection reset after an edit failed; uncommitted changes were rolled back".into()));
-            return Err(Error::Other(e.message));
-        }
-        {
-            let mut st = sess.st.lock();
-            st.tx_open = existing_tx || result.is_ok();
-            if result.is_ok() { st.tx_rows += 1; }
-            st.last_used = Instant::now();
-        }
-        if !sess.st.lock().tx_open {
-            self.after_tx_end(&sess, conn).await;
-        }
-        self.emit(&sess, "connected", None);
-        result
+        self.metadata(&sess, async {
+            let mut guard = sess.conn.try_lock().map_err(|_| Error::Other("A query is running; wait for it to finish".into()))?;
+            if sess.st.lock().running {
+                return Err(Error::Other("A query is running; wait for it to finish".into()));
+            }
+            let conn = self.ensure_conn(&sess, &mut guard).await?;
+            let detail = conn.table_detail(&update.schema, &update.table).await?;
+            let engine = sess.params.lock().engine;
+            let plan = table::cell_update_plan(engine, &detail, &update)?;
+            if sess.st.lock().read_only {
+                return Err(Error::Other("Read-only: enable edit mode before applying changes".into()));
+            }
+            let existing_tx = sess.st.lock().tx_open;
+            conn.tx(if existing_tx { "SAVEPOINT rookery_cell" } else { "BEGIN" }).await.map_err(|e| Error::Other(e.message))?;
+            let timeout_s = sess.params.lock().timeout_s;
+            let watchdog = sess.cancel.lock().clone().map(|c| QueryWatchdog(tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(u64::from(timeout_s) + 2)).await;
+                c.cancel().await;
+            })));
+            let result = match conn {
+                Conn::Pg(c) => c.update_cell(&plan).await,
+                Conn::My(c, _) => c.update_cell(&plan).await,
+            };
+            drop(watchdog);
+            let result = match result {
+                Ok(1) => Ok(()),
+                Ok(0) => Err(Error::Other("The value changed or the row was deleted. Refresh the table and try again.".into())),
+                Ok(_) => Err(Error::Other("More than one row matched. The edit was rolled back.".into())),
+                Err(e) => Err(e),
+            };
+            let cleanup = if result.is_err() {
+                let undo = conn.tx(if existing_tx { "ROLLBACK TO SAVEPOINT rookery_cell" } else { "ROLLBACK" }).await;
+                if existing_tx && undo.is_ok() { conn.tx("RELEASE SAVEPOINT rookery_cell").await } else { undo }
+            } else if existing_tx {
+                conn.tx("RELEASE SAVEPOINT rookery_cell").await
+            } else {
+                Ok(())
+            };
+            if let Err(e) = cleanup {
+                sess.conn_gen.fetch_add(1, Ordering::SeqCst);
+                *guard = None;
+                let mut st = sess.st.lock();
+                st.tx_open = false;
+                st.tx_rows = 0;
+                drop(st);
+                self.emit(&sess, "lost", Some("Connection reset after an edit failed; uncommitted changes were rolled back".into()));
+                return Err(Error::Other(e.message));
+            }
+            {
+                let mut st = sess.st.lock();
+                st.tx_open = existing_tx || result.is_ok();
+                if result.is_ok() { st.tx_rows += 1; }
+                st.last_used = Instant::now();
+            }
+            if !sess.st.lock().tx_open {
+                if let Err(error) = self.after_tx_end(&sess, conn).await {
+                    self.invalidate(&sess, &mut guard, "Connection reset because read-only protection could not be restored");
+                    return Err(error);
+                }
+            }
+            self.emit(&sess, "connected", None);
+            result
+        }).await
     }
 
     /// Structure tab: columns, indexes, foreign keys (both ways), CREATE code, size.
     pub async fn table_detail(self: &Arc<Self>, session_id: &str, schema: &str, table: &str) -> Result<TableDetail> {
         let sess = self.session(session_id)?;
-        let mut guard = sess.conn.lock().await;
-        let conn = self.ensure_conn(&sess, &mut guard).await?;
-        let detail = conn.table_detail(schema, table).await?;
-        sess.columns.lock().insert(format!("{schema}.{table}"), Arc::new(detail.columns.clone()));
-        sess.st.lock().last_used = Instant::now();
-        Ok(detail)
+        self.metadata(&sess, async {
+            let mut guard = sess.conn.lock().await;
+            let conn = self.ensure_conn(&sess, &mut guard).await?;
+            let detail = conn.table_detail(schema, table).await?;
+            sess.columns.lock().insert(format!("{schema}.{table}"), Arc::new(detail.columns.clone()));
+            sess.st.lock().last_used = Instant::now();
+            Ok(detail)
+        }).await
     }
 
     async fn table_columns(self: &Arc<Self>, sess: &Arc<Session>, schema: &str, table: &str) -> Result<Arc<Vec<ColumnDetail>>> {
@@ -993,7 +1183,7 @@ impl SqlManager {
     pub async fn table_rows(self: &Arc<Self>, session_id: &str, q: TableQuery) -> Result<TableRowsStarted> {
         let sess = self.session(session_id)?;
         let engine = sess.params.lock().engine;
-        let cols = self.table_columns(&sess, &q.schema, &q.table).await?;
+        let cols = self.metadata(&sess, self.table_columns(&sess, &q.schema, &q.table)).await?;
         let meta: Vec<ColMeta> = cols.iter().map(|c| ColMeta { name: &c.name, data_type: &c.data_type }).collect();
         let sql = table::select_sql(engine, &q, &meta)?;
         let limit = q.limit.clamp(1, table::MAX_PAGE);
@@ -1004,18 +1194,20 @@ impl SqlManager {
     /// Exact row count with the same filters (on demand: it can be slow on big tables).
     pub async fn table_count(self: &Arc<Self>, session_id: &str, q: TableQuery) -> Result<u64> {
         let sess = self.session(session_id)?;
-        let engine = sess.params.lock().engine;
-        let cols = self.table_columns(&sess, &q.schema, &q.table).await?;
-        let meta: Vec<ColMeta> = cols.iter().map(|c| ColMeta { name: &c.name, data_type: &c.data_type }).collect();
-        let sql = table::count_sql(engine, &q, &meta)?;
-        if sess.st.lock().running {
-            return Err(Error::Other("a query is running in this tab; wait or cancel it".into()));
-        }
-        let mut guard = sess.conn.lock().await;
-        let conn = self.ensure_conn(&sess, &mut guard).await?;
-        let n = conn.scalar(&sql).await?;
-        sess.st.lock().last_used = Instant::now();
-        Ok(n.and_then(|v| v.parse().ok()).unwrap_or(0))
+        self.metadata(&sess, async {
+            let engine = sess.params.lock().engine;
+            let cols = self.table_columns(&sess, &q.schema, &q.table).await?;
+            let meta: Vec<ColMeta> = cols.iter().map(|c| ColMeta { name: &c.name, data_type: &c.data_type }).collect();
+            let sql = table::count_sql(engine, &q, &meta)?;
+            if sess.st.lock().running {
+                return Err(Error::Other("a query is running in this tab; wait or cancel it".into()));
+            }
+            let mut guard = sess.conn.lock().await;
+            let conn = self.ensure_conn(&sess, &mut guard).await?;
+            let n = conn.scalar(&sql).await?;
+            sess.st.lock().last_used = Instant::now();
+            Ok(n.and_then(|v| v.parse().ok()).unwrap_or(0))
+        }).await
     }
 }
 
@@ -1201,6 +1393,79 @@ mod tests {
         assert!(history_safe("select * from users where id = 1"));
         assert!(!history_safe("ALTER USER app WITH PASSWORD 'x'"));
         assert!(!history_safe("create user 'a'@'%' identified by 'x'"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "requires disposable ROOKERY_TEST_PG_URL / ROOKERY_TEST_MYSQL_URL"]
+    async fn real_connection_recovery() {
+        let mut tested = 0;
+        for var in ["ROOKERY_TEST_PG_URL", "ROOKERY_TEST_MYSQL_URL", "ROOKERY_TEST_MARIADB_URL"] {
+            let Ok(url) = std::env::var(var) else { continue };
+            tested += 1;
+            let tmp = tempfile::tempdir().unwrap();
+            let core = crate::Core::init(tmp.path()).unwrap();
+            let target = SqlTarget::Url { url, password: None };
+            let opened = core.sql.open(target.clone()).await.unwrap();
+            let observer = core.sql.open(target.clone()).await.unwrap();
+            let sid = &opened.session_id;
+            let sess = core.sql.session(sid).unwrap();
+            let mut rx = core.subscribe_events();
+            let bad = run_and_collect(&core, &mut rx, sid, "SELECT * FROM rookery_missing_table_123456", None).await;
+            assert!(first_error(&bad).is_some());
+            assert_eq!(first_error(&run_and_collect(&core, &mut rx, sid, "SELECT 1", None).await), None);
+            core.sql.tx(sid, TxAction::Begin).await.unwrap();
+            let bad = run_and_collect(&core, &mut rx, sid, "SELECT * FROM rookery_missing_table_123456", None).await;
+            assert!(first_error(&bad).is_some());
+            assert_eq!(first_error(&run_and_collect(&core, &mut rx, sid, "SELECT 1", None).await), None);
+            assert!(core.sql.metadata(&sess, async {
+                let mut guard = sess.conn.lock().await;
+                guard.as_mut().unwrap().scalar("SELECT * FROM rookery_missing_metadata_123456").await
+            }).await.is_err());
+            assert_eq!(first_error(&run_and_collect(&core, &mut rx, sid, "SELECT 1", None).await), None);
+            core.sql.tx(sid, TxAction::Rollback).await.unwrap();
+            if opened.engine == DbEngine::Postgres {
+                core.sql.tx(sid, TxAction::Begin).await.unwrap();
+                let bad = run_and_collect(&core, &mut rx, sid, "SET rookery_nonexistent_parameter = 1", None).await;
+                assert!(first_error(&bad).is_some());
+                assert_eq!(first_error(&run_and_collect(&core, &mut rx, sid, "SELECT 1", None).await), None);
+                assert!(!sess.st.lock().tx_open);
+            }
+            let id_sql = if opened.engine == DbEngine::Mysql { "SELECT CONNECTION_ID()" } else { "SELECT pg_backend_pid()" };
+            let id = sess.conn.lock().await.as_mut().unwrap().scalar(id_sql).await.unwrap().unwrap();
+            let kill = if opened.engine == DbEngine::Mysql { format!("KILL CONNECTION {id}") } else { format!("SELECT pg_terminate_backend({id})") };
+            raw_exec(&core, &observer.session_id, &kill).await.unwrap();
+            // The first request detects a dead idle socket. The following request must recover.
+            let _ = core.sql.schema(sid, false).await;
+            core.sql.schema(sid, false).await.unwrap();
+            assert_eq!(first_error(&run_and_collect(&core, &mut rx, sid, "SELECT 1", None).await), None);
+            // Model a network operation that never responds, then explicitly reconnect.
+            let sql = core.sql.clone();
+            let stalled_session = sess.clone();
+            let stalled = tokio::spawn(async move {
+                sql.operation(&stalled_session, async {
+                    let _guard = stalled_session.conn.lock().await;
+                    std::future::pending::<Result<()>>().await
+                }).await
+            });
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            tokio::time::timeout(Duration::from_secs(3), core.sql.reconnect(sid)).await.unwrap().unwrap();
+            assert!(stalled.await.unwrap().is_err());
+            assert_eq!(first_error(&run_and_collect(&core, &mut rx, sid, "SELECT 1", None).await), None);
+            let sql = core.sql.clone();
+            let stalled_session = sess.clone();
+            let stalled = tokio::spawn(async move {
+                sql.operation(&stalled_session, async {
+                    let _guard = stalled_session.conn.lock().await;
+                    std::future::pending::<Result<()>>().await
+                }).await
+            });
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            tokio::time::timeout(Duration::from_secs(1), core.sql.close(sid)).await.unwrap();
+            assert!(stalled.await.unwrap().is_err());
+            assert!(!core.sql.sessions.lock().contains_key(sid));
+            core.sql.close(&observer.session_id).await;
+        }
+        assert!(tested > 0, "set ROOKERY_TEST_*_URL to disposable databases");
     }
 
     #[tokio::test]
@@ -1556,6 +1821,11 @@ mod tests {
                 updated_at: 0,
             })
             .unwrap();
+        let mut unsupported = host.clone();
+        unsupported.jump_host_id = Some(host.id.clone());
+        core.db.save_host(unsupported).unwrap();
+        assert!(core.connections.acquire(&host.id).await.err().unwrap().to_string().contains("Jump hosts are not supported"));
+        core.db.save_host(host.clone()).unwrap();
         // first contact: trust the host key like the UI does
         match core.connections.acquire(&host.id).await {
             Err(Error::UnknownHostKey { fingerprint, .. }) => core.connections.trust_pending_key(&host.id, &fingerprint).unwrap(),
@@ -1630,6 +1900,8 @@ mod tests {
         assert!(core.sql.test(&saved, None).await.unwrap().server_version.starts_with("PostgreSQL"));
         let o2 = core.sql.open(SqlTarget::Saved { id: saved.id.clone() }).await.unwrap();
         assert!(!o2.read_only);
+
+        crate::sftp::exercise_staged_uploads(&core, &host.id).await;
 
         // closing every session releases the leases
         core.sql.close(&opened.session_id).await;

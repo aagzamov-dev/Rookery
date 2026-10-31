@@ -10,6 +10,7 @@ import { editorMock } from "./editor";
 import { ORDER_COLUMNS, ORDER_DETAIL, orderRows, SQL_COLUMNS, SQL_CONNS, SQL_DRAFT, SQL_TREE, sqlRows } from "./sql";
 
 const scene = new URLSearchParams(location.search).get("scene") ?? "dashboard";
+const stress = new URLSearchParams(location.search).has("stress");
 const b64 = (s: string) => btoa(String.fromCharCode(...new TextEncoder().encode(s)));
 const core = (payload: unknown) => void emit("core", payload);
 
@@ -18,6 +19,7 @@ mockWindows("main");
 mockIPC(
   (cmd, args) => {
     const a = (args ?? {}) as Record<string, unknown>;
+    if (stress && cmd === "sftp_list") return Array.from({ length: 10_000 }, (_, i) => ({ name: `file-${String(i).padStart(5, "0")}.txt`, path: `${String(a.path)}/file-${String(i).padStart(5, "0")}.txt`, kind: "file", size: 1024, mtime: 1760000000, mode: 0o600 }));
     const ed = editorMock(cmd, a, scene);
     if (ed !== undefined) return ed;
     switch (cmd) {
@@ -114,7 +116,7 @@ mockIPC(
         if (source === "docker.stats") setTimeout(() => core({ type: "docker_stats", host_id: host, stats: DEMO.stats }), 120);
         if (source === "docker.logs") {
           const c = (a.params as { container?: string } | undefined)?.container ?? "shop-app-1";
-          setTimeout(() => core({ type: "log_lines", host_id: host, stream: `docker:${c}`, lines: DEMO.logLines }), 150);
+          setTimeout(() => core({ type: "log_lines", host_id: host, stream: `docker:${c}`, lines: stress ? Array.from({ length: 5000 }, (_, i) => `2026-10-25T10:00:${String(i % 60).padStart(2, "0")}.000000001Z INFO demo log ${i} ${"sample ".repeat(12)}`) : DEMO.logLines }), 150);
         }
         return { sub_id: id, cached: null };
       }
@@ -146,6 +148,9 @@ for (let i = 0; i < 50 && !useHosts.getState().loaded; i++) await wait(50);
 const tabs = useTabs.getState();
 const api01 = "h-api01";
 switch (scene) {
+  case "files":
+    tabs.openServer(api01, "files");
+    break;
   case "terminal":
     tabs.openServer("h-stg-web", "terminal");
     tabs.openServer("h-pi", "overview");

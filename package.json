@@ -1,7 +1,7 @@
 {
   "name": "rookery",
   "private": true,
-  "version": "0.8.1",
+  "version": "0.9.0",
   "workspaces": ["apps/desktop"],
   "scripts": {
     "tauri": "tauri",

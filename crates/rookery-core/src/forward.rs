@@ -3,8 +3,7 @@
 //!
 //! - Loopback only: nothing on the network can use the forward.
 //! - Each accepted connection gets its own upstream (an SSH `direct-tcpip` channel).
-//! - Dropping the [`Forwarder`] stops accepting; the SSH lease is released when the
-//!   last forwarded connection ends.
+//! - Dropping the [`Forwarder`] closes its listener and active forwarded connections.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -12,7 +11,7 @@ use std::sync::Arc;
 
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 
 use crate::ssh::Lease;
 use crate::{Error, Result};
@@ -36,18 +35,23 @@ impl Forwarder {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
         let local_port = listener.local_addr()?.port();
         let accept = tokio::spawn(async move {
+            let mut connections = JoinSet::new();
             loop {
-                let Ok((mut sock, _)) = listener.accept().await else { break };
-                let _ = sock.set_nodelay(true);
-                let dial = dial.clone();
-                tokio::spawn(async move {
-                    match dial().await {
-                        Ok(mut up) => {
-                            let _ = tokio::io::copy_bidirectional(&mut sock, &mut up).await;
-                        }
-                        Err(e) => tracing::debug!("forward: could not open upstream: {e}"),
+                tokio::select! {
+                    _ = connections.join_next(), if !connections.is_empty() => {},
+                    accepted = listener.accept() => {
+                        let Ok((mut sock, _)) = accepted else { break };
+                        if connections.len() >= 32 { continue; }
+                        let _ = sock.set_nodelay(true);
+                        let dial = dial.clone();
+                        connections.spawn(async move {
+                            match tokio::time::timeout(std::time::Duration::from_secs(15), dial()).await {
+                                Ok(Ok(mut up)) => { let _ = tokio::io::copy_bidirectional(&mut sock, &mut up).await; }
+                                _ => tracing::debug!("forward: upstream connection unavailable"),
+                            }
+                        });
                     }
-                });
+                }
             }
         });
         Ok(Self { local_port, accept })
@@ -116,7 +120,12 @@ mod tests {
             assert_eq!(buf, msg);
         }
 
+        let mut active = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        active.write_all(b"x").await.unwrap();
+        let mut byte = [0];
+        active.read_exact(&mut byte).await.unwrap();
         drop(fwd);
+        assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(1), active.read(&mut byte)).await.unwrap().unwrap(), 0);
         tokio::task::yield_now().await;
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert!(tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_err(), "listener closed");

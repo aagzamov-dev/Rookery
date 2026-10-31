@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
 import clsx from "clsx";
 import { AlertTriangle, FolderOpen, Loader2, Plus, Radio, ShieldAlert, ShieldQuestion, Terminal as TermIcon, X } from "lucide-react";
 import { isProblem, useDocker } from "../../stores/docker";
@@ -10,7 +10,7 @@ import { ServicesView } from "../services/ServicesView";
 import { LogsView } from "../logs/LogsView";
 import { ProcessesView } from "../processes/ProcessesView";
 import { ServerDbView } from "../sql/ServerDbView";
-import { EditorWorkspace } from "../editor/EditorWorkspace";
+const EditorWorkspace = lazy(() => import("../editor/EditorWorkspace").then((module) => ({ default: module.EditorWorkspace })));
 import { useTermUi } from "../../stores/termui";
 import { api, asCoreError } from "../../ipc/api";
 import type { Host } from "../../ipc/bindings/Host";
@@ -20,17 +20,20 @@ import { ago, useSync } from "../../stores/sync";
 import { useSessions } from "../../stores/sessions";
 import { useTabs, type View } from "../../stores/tabs";
 import { useUi } from "../../stores/ui";
+import { useVault } from "../../stores/vault";
 import { Button } from "../../ui/primitives";
 import { bytes, pct, rate, uptime } from "../../ui/format";
 import { TerminalPane } from "./terminal/TerminalPane";
 import { SnippetBar } from "../snippets/SnippetBar";
 import { terminalRegistry } from "./terminal/registry";
+const GitView = lazy(() => import("../git/GitView").then((module) => ({ default: module.GitView })));
 
 const VIEWS: { id: View; label: string }[] = [
   { id: "overview", label: "Overview" },
   { id: "terminal", label: "Terminal" },
   { id: "files", label: "Files" },
   { id: "editor", label: "Editor" },
+  { id: "git", label: "Git" },
   { id: "docker", label: "Docker" },
   { id: "database", label: "Database" },
   { id: "services", label: "Services" },
@@ -65,6 +68,14 @@ export function ServerTab({ hostId, active, onEditHost }: Props) {
   const info = useSessions((s) => s.byHost[hostId]);
   const attach = useSessions((s) => s.attach);
   const [everConnected, setEverConnected] = useState(false);
+  const [visited, setVisited] = useState<View[]>([]);
+  const windowActive = useUi((s) => s.windowActive);
+  const unlocked = useVault((s) => !!s.status?.unlocked);
+  const resourceActive = active && windowActive && unlocked && info?.state === "connected";
+
+  useEffect(() => {
+    if (resourceActive && views) setVisited((current) => current.includes(views.active) ? current : [...current, views.active]);
+  }, [resourceActive, views?.active]);
 
   const deferred = useTabs((s) => !!s.deferred[hostId]);
   // Connect when the tab is shown for the first time (not before). Restored tabs wait for a click.
@@ -78,6 +89,8 @@ export function ServerTab({ hostId, active, onEditHost }: Props) {
 
   if (!views) return null;
   const show = (v: View) => active && views.active === v;
+  const visible = (v: View) => resourceActive && views.active === v;
+  const mounted = (v: View) => visited.includes(v) || visible(v);
 
   return (
     <div className="absolute inset-0 flex-col" style={{ display: active ? "flex" : "none" }}>
@@ -85,52 +98,57 @@ export function ServerTab({ hostId, active, onEditHost }: Props) {
       <ConnectionBanner hostId={hostId} host={host} onEditHost={onEditHost} />
       {views.active === "terminal" && <SnippetBar hostId={hostId} />}
       <div className="relative min-h-0 flex-1 bg-term">
-        {views.opened.includes("terminal") && everConnected && <TerminalView hostId={hostId} visible={show("terminal")} />}
+        {mounted("terminal") && everConnected && <TerminalView hostId={hostId} visible={show("terminal")} active={visible("terminal")} />}
         {views.opened.includes("terminal") && !everConnected && show("terminal") && <Waiting hostId={hostId} />}
         {views.opened.includes("overview") && show("overview") && <OverviewView hostId={hostId} />}
-        {(["files", "editor", "docker", "database", "services", "processes", "logs"] as const).map(
+        {(["files", "editor", "git", "docker", "database", "services", "processes", "logs"] as const).map(
           (v) =>
             views.opened.includes(v) &&
             !everConnected &&
             show(v) && <Waiting key={v} hostId={hostId} />,
         )}
-        {everConnected && views.opened.includes("files") && (
+        {everConnected && mounted("files") && (
           <Keep show={show("files")}>
-            <FileBrowser hostId={hostId} visible={show("files")} variant="full" />
+            <FileBrowser hostId={hostId} visible={visible("files")} variant="full" />
           </Keep>
         )}
-        {everConnected && views.opened.includes("editor") && (
+        {everConnected && mounted("editor") && (
           <Keep show={show("editor")}>
-            <EditorWorkspace hostId={hostId} visible={show("editor")} />
+            <Suspense fallback={<div role="status" className="p-4 text-muted">Loading file editor…</div>}><EditorWorkspace hostId={hostId} visible={visible("editor")} /></Suspense>
           </Keep>
         )}
-        {everConnected && views.opened.includes("docker") && (
+        {everConnected && mounted("git") && (
+          <Keep show={show("git")}>
+            <Suspense fallback={<div role="status" className="p-4 text-muted">Loading Git…</div>}><GitView hostId={hostId} visible={visible("git")} /></Suspense>
+          </Keep>
+        )}
+        {everConnected && mounted("docker") && (
           <Keep show={show("docker")}>
-            <DockerView hostId={hostId} />
+            <DockerView hostId={hostId} visible={show("docker")} />
           </Keep>
         )}
-        {everConnected && views.opened.includes("database") && (
+        {everConnected && mounted("database") && (
           <Keep show={show("database")}>
-            <ServerDbView hostId={hostId} />
+            <ServerDbView hostId={hostId} visible={show("database")} requestsActive={visible("database")} />
           </Keep>
         )}
-        {everConnected && views.opened.includes("services") && (
+        {everConnected && mounted("services") && (
           <Keep show={show("services")}>
-            <ServicesView hostId={hostId} visible={show("services")} />
+            <ServicesView hostId={hostId} visible={visible("services")} />
           </Keep>
         )}
-        {everConnected && views.opened.includes("processes") && (
+        {everConnected && mounted("processes") && (
           <Keep show={show("processes")}>
-            <ProcessesView hostId={hostId} visible={show("processes")} />
+            <ProcessesView hostId={hostId} visible={visible("processes")} />
           </Keep>
         )}
-        {everConnected && views.opened.includes("logs") && (
+        {everConnected && mounted("logs") && (
           <Keep show={show("logs")}>
             <LogsView hostId={hostId} />
           </Keep>
         )}
       </div>
-      <StatsBar hostId={hostId} />
+      <StatsBar hostId={hostId} visible={active} />
     </div>
   );
 }
@@ -220,7 +238,7 @@ function ViewBar({ hostId, current, onSelect }: { hostId: string; current: View;
   );
 }
 
-function TerminalView({ hostId, visible }: { hostId: string; visible: boolean }) {
+function TerminalView({ hostId, visible, active }: { hostId: string; visible: boolean; active: boolean }) {
   const views = useTabs((s) => s.views[hostId]);
   const panelOpen = useFiles((s) => s.byHost[hostId]?.panelOpen ?? false);
   const broadcast = useTermUi((s) => s.broadcast);
@@ -240,13 +258,13 @@ function TerminalView({ hostId, visible }: { hostId: string; visible: boolean })
           </div>
         )}
         {views.terminals.map((t) => (
-          <TerminalPane key={t.key} termKey={t.key} hostId={hostId} visible={visible && views.activeTerminal === t.key} opts={{ cwd: t.cwd, container: t.container }} />
+          <TerminalPane key={t.key} termKey={t.key} hostId={hostId} visible={visible && views.activeTerminal === t.key} active={active && views.activeTerminal === t.key} opts={{ cwd: t.cwd, container: t.container }} />
         ))}
         {views.terminals.length === 0 && <div className="grid h-full place-items-center text-muted">No terminals. Use + to open one.</div>}
       </div>
       {panelOpen && (
         <div className="w-[340px] flex-none border-l border-line">
-          <FileBrowser hostId={hostId} visible={visible} variant="panel" />
+          <FileBrowser hostId={hostId} visible={active} variant="panel" />
         </div>
       )}
     </div>
@@ -469,15 +487,17 @@ function Spark({ values, second, w = 200, h = 34 }: { values: number[]; second?:
   );
 }
 
-function StatsBar({ hostId }: { hostId: string }) {
+function StatsBar({ hostId, visible }: { hostId: string; visible: boolean }) {
   const m = useMetrics((s) => s.byHost[hostId]);
   const info = useSessions((s) => s.byHost[hostId]);
   const windowActive = useUi((s) => s.windowActive);
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
+    if (!visible || !windowActive) return;
+    setNow(Date.now());
     const t = setInterval(() => setNow(Date.now()), 5000);
     return () => clearInterval(t);
-  }, []);
+  }, [visible, windowActive]);
   const last = m?.last;
   const stale = !last || now - last.ts_ms > 30_000;
   const cpu = (m?.history ?? []).slice(-20).map((s) => s.cpu_pct ?? 0);

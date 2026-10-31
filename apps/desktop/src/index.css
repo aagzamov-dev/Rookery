@@ -77,3 +77,6 @@ textarea {
 .shake {
   animation: shake 0.4s;
 }
+
+[data-density="comfortable"] .density-control { min-height: 38px; padding-inline: 14px; }
+[data-density="comfortable"] .density-icon { min-height: 38px; min-width: 38px; }
