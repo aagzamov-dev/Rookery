@@ -23,12 +23,13 @@ import {
   SquareTerminal,
   X,
 } from "lucide-react";
+import { COMPUTER_ID, normalizeLocalPath } from "../local/target";
 import { api, asCoreError } from "../../ipc/api";
 import { copyText } from "../../ipc/clipboard";
 import type { FileEntry } from "../../ipc/bindings/FileEntry";
 import { askText } from "../../stores/dialogs";
 import { useEditor } from "../../stores/editor";
-import { parentPath, useFiles } from "../../stores/files";
+import { parentPath, pathRoot, useFiles } from "../../stores/files";
 import { useTabs } from "../../stores/tabs";
 import { useContextMenu, type MenuItem } from "../../ui/ContextMenu";
 import { terminalRegistry } from "../server-tab/terminal/registry";
@@ -37,7 +38,7 @@ import { crumbs } from "./lang";
 
 type Listing = FileEntry[] | "loading" | { error: string };
 
-const cleanDir = (p: string) => p.replace(/\/+$/, "") || "/";
+const cleanDir = (path: string) => { const p = normalizeLocalPath(path); const root = pathRoot(p); const clean = p.replace(/\/+$/, ""); return clean.length < root.length ? root : clean; };
 
 function Tool({ label, onClick, disabled, children }: { label: string; onClick: () => void; disabled?: boolean; children: ReactNode }) {
   return (
@@ -70,9 +71,12 @@ export function FileTree({ hostId, visible, activePath, onOpen, onOpenPath }: {
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const menu = useContextMenu();
   const self = useRef<HTMLDivElement>(null);
+  const active = useRef(visible);
+  active.current = visible;
 
   const load = useCallback(
     async (dir: string) => {
+      if (!active.current) return false;
       setLists((l) => ({ ...l, [dir]: Array.isArray(l[dir]) ? l[dir] : "loading" }));
       try {
         const entries = await api.sftpList(hostId, dir);
@@ -90,6 +94,7 @@ export function FileTree({ hostId, visible, activePath, onOpen, onOpenPath }: {
   const rootRef = useRef<string | null>(null);
   const go = useCallback(
     (dir: string, remember = true) => {
+      if (!active.current) return;
       const d = cleanDir(dir);
       const cur = rootRef.current;
       if (cur && cur !== d && remember) setBack((b) => [...b.slice(-29), cur]);
@@ -118,7 +123,7 @@ export function FileTree({ hostId, visible, activePath, onOpen, onOpenPath }: {
   };
   const goHome = () => void api.sftpHome(hostId).then((h) => go(h));
   const goTo = async () => {
-    const p = await askText({ title: "Go to folder", label: "Folder on the server (absolute)", value: root ?? "/", confirmLabel: "Go" });
+    const p = await askText({ title: "Go to folder", label: hostId === COMPUTER_ID ? "Folder on this computer (absolute)" : "Folder on the server (absolute)", value: root ?? "/", confirmLabel: "Go" });
     if (p) go(p);
   };
   const refresh = () => {
@@ -157,6 +162,7 @@ export function FileTree({ hostId, visible, activePath, onOpen, onOpenPath }: {
 
   const cdInTerminal = (dir: string) => {
     const tabs = useTabs.getState();
+    if (hostId === COMPUTER_ID) { tabs.addTerminal(hostId, { cwd: dir }); return; }
     const key = tabs.views[hostId]?.activeTerminal ?? tabs.addTerminal(hostId);
     if (!key) return;
     tabs.setView(hostId, "terminal");

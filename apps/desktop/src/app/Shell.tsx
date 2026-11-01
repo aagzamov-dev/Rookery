@@ -22,7 +22,9 @@ import {
   ScanSearch,
   Copy,
   Database,
+  Monitor,
 } from "lucide-react";
+import { COMPUTER_ID } from "../features/local/target";
 import { useContextMenu, type MenuItem } from "../ui/ContextMenu";
 import { duplicateHost } from "../features/hosts/HostsTable";
 import { useHosts } from "../stores/hosts";
@@ -50,8 +52,9 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { dirtyDocs } from "../stores/editor";
 import { ServerTab } from "../features/server-tab/ServerTab";
 import { CommandPalette } from "../features/palette/CommandPalette";
+import { NotificationCenter } from "../ui/NotificationCenter";
 import { DialogHost } from "../ui/DialogHost";
-import { LocalTab, useLoadLocalShells, useLocalShells } from "../features/local/LocalTab";
+import { LocalTab, useLocalShells } from "../features/local/LocalTab";
 import { restoreSession, useSessionPersistence } from "./session";
 import { HostEditor, type HostDraft } from "../features/hosts/HostEditor";
 import { GroupEditor } from "../features/hosts/GroupEditor";
@@ -99,16 +102,9 @@ export function Shell() {
     return () => unlisten?.();
   }, []);
 
-  // Auto-sync pauses a minute after the window is minimised / hidden (Rust keeps the clock).
-  useEffect(() => {
-    const report = () => void api.syncWindowVisible(!document.hidden).catch(() => {});
-    report();
-    document.addEventListener("visibilitychange", report);
-    return () => document.removeEventListener("visibilitychange", report);
-  }, []);
   useSessionPersistence();
   useAppPrefsEffects();
-  useLoadLocalShells();
+
 
   const hostListOpen = useUi((s) => s.hostListOpen);
   const tabs = useTabs((s) => s.tabs);
@@ -145,7 +141,7 @@ export function Shell() {
           <div className="relative min-h-0 flex-1">
             {tabs.length === 0 && <EmptyState onNewHost={() => setHostEditor({})} />}
             {tabs.map((t) =>
-              t.kind === "server" ? (
+              (t.kind === "server" || t.kind === "computer") ? (
                 <ServerTab key={t.id} hostId={t.hostId} active={t.id === activeTabId} onEditHost={(h) => setHostEditor({ host: h })} />
               ) : t.kind === "local" ? (
                 <LocalTab key={t.id} tabId={t.id} shellId={t.shellId} active={t.id === activeTabId} />
@@ -171,6 +167,7 @@ export function Shell() {
 
 /** Upload shortcut: pick files, send them into the folder the Files view is showing. */
 async function uploadToCurrentFolder(hostId: string) {
+  if (hostId === COMPUTER_ID) return;
   const dir = useFiles.getState().byHost[hostId]?.path;
   if (!dir) return;
   const picked = await openDialog({ multiple: true, title: `Upload to ${dir}` });
@@ -215,6 +212,7 @@ function TitleBar({ onQuickConnect }: { onQuickConnect: (d: HostDraft) => void }
         />
       </label>
       <BackupChip />
+      <NotificationCenter />
     </header>
   );
 }
@@ -322,6 +320,8 @@ function HostList({
   const setWidth = useUi((s) => s.setHostListWidth);
   const compact = width < 190;
   const resize = useRef<{ pointerId: number; x: number; width: number } | null>(null);
+  const showComputer = useKeys((s) => s.loaded && s.app.showThisComputer);
+  const computerActive = useTabs((s) => s.activeTabId === serverTabId(COMPUTER_ID));
   const mode = useUi((s) => s.sidebar);
   const setMode = useUi((s) => s.setSidebar);
   const [filter, setFilter] = useState("");
@@ -457,6 +457,7 @@ function HostList({
         </div>
       ) : (
       <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2.5 overflow-x-hidden overflow-y-auto">
+        {showComputer && (!f || "this computer local".includes(f)) && <button onClick={() => useTabs.getState().openServer(COMPUTER_ID, "overview")} className={clsx("flex h-[30px] shrink-0 items-center gap-2 rounded-md px-2 text-left", computerActive ? "bg-accent-bg font-semibold" : "hover:bg-panel2")}><Monitor size={14} className="shrink-0 text-muted" /><span className="truncate">This computer</span></button>}
         {groups.filter((g) => !g.parent_id || !groups.some((p) => p.id === g.parent_id)).map((g) => renderGroup(g, 0))}
         {ungrouped.length > 0 && (
           <div className="flex flex-col gap-px">
@@ -571,6 +572,8 @@ function TabBar() {
                 {host?.name ?? "deleted host"}
                 {host && <EnvTag env={host.env_label} />}
               </>
+            ) : t.kind === "computer" ? (
+              <><Monitor size={13} className="text-muted" />This computer</>
             ) : t.kind === "local" ? (
               <>
                 <TerminalSquare size={13} className="text-muted" />
@@ -607,6 +610,7 @@ function NewTabButton() {
   const shells = useLocalShells((s) => s.shells);
   const openLocal = useTabs((s) => s.openLocal);
   const [open, setOpen] = useState(false);
+  useEffect(() => { if (open) void useLocalShells.getState().load(); }, [open]);
   return (
     <div className="relative flex items-center">
       <button aria-label="New local terminal" title="New local terminal" onClick={() => setOpen(!open)} className="grid h-full w-10 place-items-center text-muted hover:text-text">

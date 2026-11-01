@@ -3,6 +3,7 @@
 // `desiredSubscriptions` is a pure function of UI state; the reconciler diffs it
 // against what is running and calls subscribe/unsubscribe. Hidden things are
 // unsubscribed but their data stays in the stores (and re-shows instantly).
+import { COMPUTER_ID } from "../features/local/target";
 import { api } from "../ipc/api";
 import type { Container } from "../ipc/bindings/Container";
 import type { MetricsSample } from "../ipc/bindings/MetricsSample";
@@ -34,6 +35,12 @@ export interface EngineInput {
   dockerSelected: Record<string, string | null>;
   /** Log file followed in the Logs view, per host. */
   fileTarget: Record<string, string | null>;
+  pausedLogs?: Record<string, boolean>;
+  metricsIntervalMs?: number;
+  dockerBlocked?: Record<string, boolean>;
+  dockerReady?: Record<string, boolean>;
+  computerEnabled?: boolean;
+  computerDeferred?: boolean;
 }
 
 /** What should be running right now. Nothing for hidden tabs or views, a hidden window, or a locked app. */
@@ -41,21 +48,23 @@ export function desiredSubscriptions(s: EngineInput): Set<string> {
   const out = new Set<string>();
   if (!s.unlocked || !s.windowActive) return out;
   const tab = s.tabs.find((t) => t.id === s.activeTabId);
-  if (!tab || tab.kind !== "server") return out;
+  if (!tab || (tab.kind !== "server" && tab.kind !== "computer")) return out;
+  if (tab.kind === "computer" && (s.computerEnabled === false || s.computerDeferred)) return out;
   const h = tab.hostId;
-  if (s.sessionStates[h] !== "connected") return out;
+  if (h !== COMPUTER_ID && s.sessionStates[h] !== "connected") return out;
 
   // Stats bar (and Overview charts) for the ACTIVE server tab only.
-  out.add(key(h, "metrics"));
+  const interval = s.metricsIntervalMs ?? 3000;
+  if (interval > 0 && (h !== COMPUTER_ID || s.views[h]?.active === "overview")) out.add(key(h, "metrics", interval === 3000 ? "" : String(interval)));
 
   const view = s.views[h]?.active;
-  if (view === "docker") {
+  if (view === "docker" && !s.dockerBlocked?.[h]) {
     out.add(key(h, "docker"));
-    out.add(key(h, "docker.stats"));
+    if (!s.dockerReady || s.dockerReady[h]) out.add(key(h, "docker.stats"));
     const sel = s.dockerSelected[h];
-    if (sel) out.add(key(h, "docker.logs", sel));
+    if (sel && !s.pausedLogs?.[streamKey(h, `docker:${sel}`)] && (!s.dockerReady || s.dockerReady[h])) out.add(key(h, "docker.logs", sel));
   }
-  if (view === "logs" && s.fileTarget[h]) out.add(key(h, "file.tail", s.fileTarget[h]!));
+  if (view === "logs" && s.fileTarget[h] && !s.pausedLogs?.[streamKey(h, `file:${s.fileTarget[h]}`)]) out.add(key(h, "file.tail", s.fileTarget[h]!));
   return out;
 }
 
@@ -74,6 +83,7 @@ export const defaultHooks: ReconcilerHooks = {
       useLogs.getState().resume(hostId, `docker:${param}`);
       return { container: param, since: lastTs };
     }
+    if (source === "metrics") return { interval_ms: Number(param) || 3000 };
     if (source === "file.tail") return { path: param };
     return undefined;
   },

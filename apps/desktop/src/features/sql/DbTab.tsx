@@ -56,7 +56,7 @@ function sqlTarget(t: DbTarget, password: string | undefined): SqlTarget {
 }
 
 /** A database tab: connects the first time it is shown (restored tabs wait for a click). */
-export function DbTab({ tab, active }: { tab: Extract<Tab, { kind: "db" }>; active: boolean }) {
+export function DbTab({ tab, active, requestsActive = active }: { tab: Extract<Tab, { kind: "db" }>; active: boolean; requestsActive?: boolean }) {
   const deferred = useTabs((s) => !!s.deferred[tab.id]);
   const conn = useSql((s) => (tab.target.kind === "saved" ? s.conns.find((c) => c.id === (tab.target as { id: string }).id) : undefined));
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -66,39 +66,46 @@ export function DbTab({ tab, active }: { tab: Extract<Tab, { kind: "db" }>; acti
   const [pw, setPw] = useState("");
   const meta = useSql((s) => (sessionId ? s.sessions[sessionId] : undefined));
   const tried = useRef(false);
+  const generation = useRef(0);
+  const sid = useRef<string | null>(null);
 
   const connect = async (password?: string) => {
+    const request = ++generation.current;
     setBusy(true);
     setError(null);
     try {
       const o = await api.sqlOpen(sqlTarget(tab.target, password ?? tabPasswords.get(tab.id)));
+      if (request !== generation.current) { void api.sqlClose(o.session_id); return; }
       if (password) tabPasswords.set(tab.id, password);
       useSql.getState().opened(o, tab.id);
+      sid.current = o.session_id;
       setSessionId(o.session_id);
       setAskPassword(false);
     } catch (e) {
+      if (request !== generation.current) return;
       const msg = asCoreError(e).message;
       setError(msg);
       // A login failure without a saved password: ask for one.
       if (/password|login failed|authentication/i.test(msg) && !(conn?.has_password && !password)) setAskPassword(true);
     } finally {
-      setBusy(false);
+      if (request === generation.current) setBusy(false);
     }
   };
 
   useEffect(() => {
-    if (active && !deferred && !sessionId && !tried.current) {
+    if (requestsActive && !deferred && !sessionId && !tried.current) {
       tried.current = true;
       void connect();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, deferred, sessionId]);
+  }, [requestsActive, deferred, sessionId]);
 
   // Closing the tab closes the session (an open transaction rolls back).
-  const sid = useRef<string | null>(null);
   sid.current = sessionId;
   useEffect(
     () => () => {
+      generation.current++;
+      tried.current = false;
       if (sid.current) {
         void api.sqlClose(sid.current);
         useSql.getState().forgetSession(sid.current);
@@ -120,23 +127,14 @@ export function DbTab({ tab, active }: { tab: Extract<Tab, { kind: "db" }>; acti
         <Suspense fallback={<div role="status" className="p-4 text-muted">Loading database editor…</div>}>
       <SqlTab
         visible={active}
+        requestsActive={requestsActive}
           tabKey={tab.id}
           sessionId={sessionId}
           label={conn?.name ?? tab.title}
           env={conn?.env_label}
-          extra={
-            tab.target.kind === "url" ? (
-              <Button className="h-7" onClick={save} title="Save this connection (the password goes to the vault)">
-                Save
-              </Button>
-            ) : (
-              conn && (
-                <Button className="h-7" onClick={() => useConnDialog.getState().open({ conn })}>
-                  Edit
-                </Button>
-              )
-            )
-          }
+          extra={tab.target.kind === "url"
+            ? [{ label: "Save connection", onClick: save }]
+            : conn ? [{ label: "Edit connection", onClick: () => useConnDialog.getState().open({ conn }) }] : []}
         />
       </Suspense>
       </div>

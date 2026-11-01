@@ -1,3 +1,4 @@
+import { COMPUTER_ID } from "../local/target";
 // The editor's big dialogs: side-by-side diff, three-way merge, PROD review, history.
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
@@ -184,6 +185,7 @@ export function MergeDialog({ doc, input, onCancel, onSave, onTakeTheirs, onOver
   onTakeTheirs: () => void;
   onOverwrite: () => void;
 }) {
+  const local = doc.hostId === COMPUTER_ID;
   const merged = useMemo(() => threeWay(doc.baseText, input.mine, input.theirs), [doc.baseText, input.mine, input.theirs]);
   const [picks, setPicks] = useState<(Pick | undefined)[]>([]);
   const auto = useMemo(() => resolve(merged, picks), [merged, picks]);
@@ -205,10 +207,10 @@ export function MergeDialog({ doc, input, onCancel, onSave, onTakeTheirs, onOver
 
   return (
     <Big
-      title={input.compare ? "Changed on the server" : "Someone changed this file on the server"}
+      title={input.compare ? "File changed" : `Someone changed this file on ${local ? "this computer" : "the server"}`}
       sub={
         <>
-          <span className="font-mono">{doc.realPath}</span> · server version {bytes(input.theirsVersion.size)}, saved {when(input.theirsVersion.mtime)}. Nothing was written.
+          <span className="font-mono">{doc.realPath}</span> · stored version {bytes(input.theirsVersion.size)}, saved {when(input.theirsVersion.mtime)}. Nothing was written.
         </>
       }
       onClose={onCancel}
@@ -219,7 +221,7 @@ export function MergeDialog({ doc, input, onCancel, onSave, onTakeTheirs, onOver
           </Button>
           <span className="flex-1" />
           <Button variant="outline" onClick={onTakeTheirs}>
-            Use the server's version
+            Use the stored version
           </Button>
           <Button variant="danger" onClick={onOverwrite}>
             Overwrite with mine…
@@ -232,7 +234,7 @@ export function MergeDialog({ doc, input, onCancel, onSave, onTakeTheirs, onOver
     >
       <div className={clsx("rounded-lg border px-3 py-2 text-[13px]", conflicts.length ? "border-[#7A6420] bg-[#33301F]" : "border-[#2C5A45] bg-[#1E3329]")}>
         {same
-          ? "The server already has exactly your text."
+          ? "The file already has exactly your text."
           : conflicts.length === 0
             ? "Your changes and theirs touch different lines: they were combined. Check the result on the right, then save."
             : `${conflicts.length} ${conflicts.length === 1 ? "place was" : "places were"} changed on both sides. Choose for each one; other changes were combined.`}
@@ -264,7 +266,7 @@ export function MergeDialog({ doc, input, onCancel, onSave, onTakeTheirs, onOver
           ))}
         </div>
       )}
-      <Labels left="On the server now" right={`Result (editable)${edited ? " · edited" : ""}${markers ? " · conflicts left" : ""}`} />
+      <Labels left={local ? "On this computer now" : "On the server now"} right={`Result (editable)${edited ? " · edited" : ""}${markers ? " · conflicts left" : ""}`} />
       <DiffView
         left={input.theirs}
         right={result}
@@ -331,7 +333,7 @@ export function HistoryDialog({ doc, current, onClose, onRestore }: { doc: Edito
   return (
     <Big
       title={`History · ${doc.name}`}
-      sub="The server's version before each save from this PC (last 20, 30 days). Kept on this PC only."
+      sub="The previous file version before each save (last 20, 30 days). Kept on this PC only."
       onClose={onClose}
       footer={
         <>

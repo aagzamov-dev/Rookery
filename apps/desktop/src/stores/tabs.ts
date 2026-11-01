@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { COMPUTER_ID } from "../features/local/target";
 
 export type View = "overview" | "terminal" | "files" | "editor" | "git" | "docker" | "database" | "services" | "processes" | "logs" | "settings";
 export type PageKind = "dashboard" | "snippets" | "hosts" | "tunnels" | "settings" | "shortcuts" | "backup";
@@ -8,6 +9,7 @@ export type DbTarget = { kind: "saved"; id: string } | { kind: "url"; url: strin
 
 export type Tab =
   | { id: string; kind: "server"; hostId: string }
+  | { id: string; kind: "computer"; hostId: string }
   | { id: string; kind: "page"; page: PageKind }
   | { id: string; kind: "local"; shellId: string; title: string }
   | { id: string; kind: "db"; target: DbTarget; title: string };
@@ -126,7 +128,7 @@ export const useTabs = create<TabsState>((set, get) => ({
     const terminals: TerminalSlot[] =
       startView === "terminal" ? [{ key: newKey(), title: "shell 1", cwd: cwd ?? undefined }] : [];
     set((s) => ({
-      tabs: [...s.tabs, { id, kind: "server", hostId }],
+      tabs: [...s.tabs, { id, kind: hostId === COMPUTER_ID ? "computer" : "server", hostId }],
       activeTabId: id,
       views: {
         ...s.views,
@@ -149,7 +151,11 @@ export const useTabs = create<TabsState>((set, get) => ({
     set({ activeTabId: id });
   },
 
-  activate: (tabId) => set({ activeTabId: tabId }),
+  activate: (tabId) => {
+    const tab=get().tabs.find((t)=>t.id===tabId);
+    if(tab?.kind==="computer") get().setDeferred(COMPUTER_ID,false);
+    set({ activeTabId: tabId });
+  },
 
   close: (tabId) => {
     const { tabs, activeTabId, views } = get();
@@ -158,7 +164,7 @@ export const useTabs = create<TabsState>((set, get) => ({
     const tab = tabs[idx];
     const next = tabs.filter((t) => t.id !== tabId);
     const nextViews = { ...views };
-    if (tab.kind === "server") delete nextViews[tab.hostId];
+    if (tab.kind === "server" || tab.kind === "computer") delete nextViews[tab.hostId];
     const nextActive =
       activeTabId === tabId ? (next[idx] ?? next[idx - 1] ?? null)?.id ?? null : activeTabId;
     set({ tabs: next, views: nextViews, activeTabId: nextActive, closed: [...get().closed, tab].slice(-10) });

@@ -31,7 +31,7 @@ export const sqlRegistry = {
     const t = tabs.find((x) => x.id === activeTabId);
     if (!t) return null;
     let key: string | null = null;
-    if (t.kind === "server" && views[t.hostId]?.active === "database") key = sqlKeyForHost(t.hostId);
+    if ((t.kind === "server" || t.kind === "computer") && views[t.hostId]?.active === "database") key = sqlKeyForHost(t.hostId);
     else if ((t as { kind: string }).kind === "db") key = t.id;
     return key && handles.has(key) ? key : null;
   },

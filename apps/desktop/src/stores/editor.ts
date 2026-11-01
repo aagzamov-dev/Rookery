@@ -1,5 +1,6 @@
 // Editor tabs per server (docs/08). The text itself lives in CodeMirror states (features/editor/docs.ts),
 // so undo history survives switching tabs; this store holds what the UI shows about each file.
+import { COMPUTER_ID } from "../features/local/target";
 import { create } from "zustand";
 import { api } from "../ipc/api";
 import type { EditorFile } from "../ipc/bindings/EditorFile";
@@ -84,12 +85,13 @@ export const useEditor = create<EditorState>((set, get) => ({
   loaded: false,
   async load() {
     if (get().loaded) return;
-    const [prefs, pins, roots] = await Promise.all([
+    const [prefs, pins, roots, computer] = await Promise.all([
       api.settingGet<EditorPrefs>(PREFS_KEY).catch(() => null),
       api.settingGet<Record<string, string[]>>(PINS_KEY).catch(() => null),
       api.settingGet<Record<string, string>>(ROOTS_KEY).catch(() => null),
+      api.settingGet<{ pins: string[]; root?: string }>("ui.computer.editor").catch(() => null),
     ]);
-    set({ loaded: true, prefs: { ...DEFAULT_PREFS, ...(prefs ?? {}) }, pins: pins ?? {}, roots: roots ?? {} });
+    set({ loaded: true, prefs: { ...DEFAULT_PREFS, ...(prefs ?? {}) }, pins: { ...pins, [COMPUTER_ID]: computer?.pins ?? [] }, roots: { ...roots, ...(computer?.root ? { [COMPUTER_ID]: computer.root } : {}) } });
   },
   setPrefs(p) {
     const prefs = { ...get().prefs, ...p };
@@ -102,13 +104,15 @@ export const useEditor = create<EditorState>((set, get) => ({
     const pins = { ...get().pins, [hostId]: next };
     if (next.length === 0) delete pins[hostId];
     set({ pins });
-    void api.settingSet(PINS_KEY, pins).catch(() => {});
+    if (hostId === COMPUTER_ID) { void api.settingSet("ui.computer.editor", { pins: next, root: get().roots[COMPUTER_ID] }).catch(() => {}); }
+    else { const { [COMPUTER_ID]: _, ...remote } = pins; void api.settingSet(PINS_KEY, remote).catch(() => {}); }
   },
   setRoot(hostId, path) {
     if (get().roots[hostId] === path) return;
     const roots = { ...get().roots, [hostId]: path };
     set({ roots });
-    void api.settingSet(ROOTS_KEY, roots).catch(() => {});
+    if (hostId === COMPUTER_ID) { void api.settingSet("ui.computer.editor", { pins: get().pins[COMPUTER_ID] ?? [], root: path }).catch(() => {}); }
+    else { const { [COMPUTER_ID]: _, ...remote } = roots; void api.settingSet(ROOTS_KEY, remote).catch(() => {}); }
   },
   put(hostId, f, activate = true) {
     const key = docKey(hostId, f.real_path);

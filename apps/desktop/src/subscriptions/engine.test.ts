@@ -130,3 +130,20 @@ describe("Reconciler", () => {
     expect(r.snapshot()).toEqual([]);
   });
 });
+it("disables live metrics, passes interval changes and keeps hidden sources stopped", () => {
+  expect(desiredSubscriptions(input({ metricsIntervalMs: 0 })).size).toBe(0);
+  expect([...desiredSubscriptions(input({ metricsIntervalMs: 10000 }))]).toEqual([key("a", "metrics", "10000")]);
+  expect(desiredSubscriptions(input({ metricsIntervalMs: 10000, windowActive: false })).size).toBe(0);
+});
+it("does not restart blocked Docker and waits for the list before stats", () => {
+  const state = input({ views: { a: views("docker") }, dockerBlocked: { a: true }, dockerReady: { a: false }, dockerSelected: { a: "container" } });
+  expect([...desiredSubscriptions(state)]).toEqual([key("a", "metrics")]);
+  state.dockerBlocked = {};
+  expect([...desiredSubscriptions(state)]).toEqual([key("a", "metrics"), key("a", "docker")]);
+  state.dockerReady = { a: true };
+  expect(desiredSubscriptions(state).has(key("a", "docker.stats"))).toBe(true);
+});
+it("pauses a historical log without stopping unrelated visible sources", () => {
+  const state = input({ views: { a: views("logs") }, fileTarget: { a: "/log" }, pausedLogs: { "a|file:/log": true } });
+  expect([...desiredSubscriptions(state)]).toEqual([key("a", "metrics")]);
+});

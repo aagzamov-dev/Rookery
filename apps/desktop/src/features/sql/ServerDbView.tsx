@@ -1,3 +1,4 @@
+import { allowDatabaseSessionClose } from "./jobGuard";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Database, KeyRound, Loader2, X } from "lucide-react";
 import type { DbConnection } from "../../ipc/bindings/DbConnection";
@@ -65,6 +66,7 @@ export function ServerDbView({ hostId, visible = true, requestsActive = visible 
     useSql.getState().setServerPrefill(hostId, null);
     void (async () => {
       if (open.current) {
+        if (!(await allowDatabaseSessionClose([open.current]))) return;
         const ok = await askConfirm({
           title: `Open ${prefill.name} instead?`,
           body: "This closes the current database connection in this view.",
@@ -203,7 +205,7 @@ export function ServerDbView({ hostId, visible = true, requestsActive = visible 
   };
 
   const disconnect = async () => {
-    if (!sessionId) return;
+    if (!sessionId || !(await allowDatabaseSessionClose([sessionId]))) return;
     await api.sqlClose(sessionId).catch(() => {});
     useSql.getState().forgetSession(sessionId);
     setSessionId(null);
@@ -219,36 +221,24 @@ export function ServerDbView({ hostId, visible = true, requestsActive = visible 
         sessionId={sessionId}
         label={host?.name ?? "server"}
         env={host?.env_label}
-        extra={
-          <>
-            <Button
-              className="h-7"
-              title="Save as a database connection (sidebar → Databases); the password goes to the vault"
-              onClick={() =>
-                useConnDialog.getState().open({
-                  prefill: {
-                    name: `${host?.name ?? "server"} ${database.trim() || meta.database || (engine === "mysql" ? "mysql" : "postgres")}`,
-                    engine,
-                    via: "ssh",
-                    host_id: hostId,
-                    address: address.trim() || "127.0.0.1",
-                    port: Number(port) || 0,
-                    username: user.trim(),
-                    database: database.trim() || meta.database,
-                    ssl_mode: "disable",
-                    env_label: host?.env_label ?? "none",
-                  },
-                  password: password || undefined,
-                })
-              }
-            >
-              Save
-            </Button>
-            <Button className="h-7" onClick={disconnect}>
-              Disconnect
-            </Button>
-          </>
-        }
+        extra={[
+          { label: "Save connection", onClick: () => useConnDialog.getState().open({
+            prefill: {
+              name: `${host?.name ?? "server"} ${database.trim() || meta.database || (engine === "mysql" ? "mysql" : "postgres")}`,
+              engine,
+              via: "ssh",
+              host_id: hostId,
+              address: address.trim() || "127.0.0.1",
+              port: Number(port) || 0,
+              username: user.trim(),
+              database: database.trim() || meta.database,
+              ssl_mode: "disable",
+              env_label: host?.env_label ?? "none",
+            },
+            password: password || undefined,
+          }) },
+          { label: "Disconnect", onClick: disconnect },
+        ]}
       />
       </Suspense>
     );

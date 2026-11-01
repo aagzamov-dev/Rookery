@@ -80,6 +80,7 @@ pub enum CoreEvent {
         database: Option<String>,
         message: Option<String>,
     },
+    DatabaseJob { job: crate::sql::backup::DatabaseJob },
     VaultLocked,
     VaultUnlocked,
 }

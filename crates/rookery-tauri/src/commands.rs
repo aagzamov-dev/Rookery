@@ -7,6 +7,11 @@ use tauri::State;
 
 use crate::AppState;
 
+fn require_remote_change(s: &AppState, host_id: &str, confirmed: bool) -> Result<()> {
+    if !s.core.vault.lock().is_unlocked() { return Err(Error::VaultLocked); }
+    rookery_core::git::require_confirmation(&s.core.db, host_id, confirmed)
+}
+
 // ------------------------------------------------------------------ vault
 
 #[tauri::command]
@@ -26,6 +31,7 @@ pub async fn git_diff(s: State<'_, AppState>, host_id: String, folder: String, f
 
 #[tauri::command]
 pub async fn git_action(s: State<'_, AppState>, host_id: String, folder: String, action: rookery_core::git::GitAction, confirmed: bool) -> Result<String> {
+    require_remote_change(&s, &host_id, confirmed)?;
     rookery_core::git::mutate(&s.core.db, &s.core.connections, &host_id, &folder, &action, confirmed).await
 }
 
@@ -256,31 +262,40 @@ pub async fn subscribe(
 
 #[tauri::command]
 pub async fn sftp_home(s: State<'_, AppState>, host_id: String) -> Result<String> {
+    if host_id == rookery_core::computer::ID { return blocking(rookery_core::computer::home).await; }
     s.core.sftp.home(&host_id).await
 }
 
 #[tauri::command]
 pub async fn sftp_list(s: State<'_, AppState>, host_id: String, path: String) -> Result<Vec<FileEntry>> {
+    if host_id == rookery_core::computer::ID { return blocking(move || rookery_core::computer::list(&path)).await; }
     s.core.sftp.list(&host_id, &path).await
 }
 
 #[tauri::command]
-pub async fn sftp_mkdir(s: State<'_, AppState>, host_id: String, path: String) -> Result<()> {
+pub async fn sftp_mkdir(s: State<'_, AppState>, host_id: String, path: String, confirmed: bool) -> Result<()> {
+    require_remote_change(&s, &host_id, confirmed)?;
+    if host_id == rookery_core::computer::ID { return blocking(move || rookery_core::computer::mkdir(&path)).await; }
     s.core.sftp.mkdir(&host_id, &path).await
 }
 
 #[tauri::command]
-pub async fn sftp_rename(s: State<'_, AppState>, host_id: String, from: String, to: String) -> Result<()> {
+pub async fn sftp_rename(s: State<'_, AppState>, host_id: String, from: String, to: String, confirmed: bool) -> Result<()> {
+    require_remote_change(&s, &host_id, confirmed)?;
+    if host_id == rookery_core::computer::ID { return blocking(move || rookery_core::computer::rename(&from, &to)).await; }
     s.core.sftp.rename(&host_id, &from, &to).await
 }
 
 #[tauri::command]
-pub async fn sftp_archive(s: State<'_, AppState>, host_id: String, path: String, name: String, extract: bool) -> Result<()> {
+pub async fn sftp_archive(s: State<'_, AppState>, host_id: String, path: String, name: String, extract: bool, confirmed: bool) -> Result<()> {
+    require_remote_change(&s, &host_id, confirmed)?;
     s.core.sftp.archive(&host_id, &path, &name, extract).await
 }
 
 #[tauri::command]
-pub async fn sftp_delete(s: State<'_, AppState>, host_id: String, path: String, is_dir: bool, recursive: bool) -> Result<()> {
+pub async fn sftp_delete(s: State<'_, AppState>, host_id: String, path: String, is_dir: bool, recursive: bool, confirmed: bool) -> Result<()> {
+    require_remote_change(&s, &host_id, confirmed)?;
+    if host_id == rookery_core::computer::ID { return blocking(move || rookery_core::computer::delete(&path, recursive, confirmed)).await; }
     s.core.sftp.delete(&host_id, &path, is_dir, recursive).await
 }
 
@@ -290,7 +305,9 @@ pub async fn sftp_upload(
     host_id: String,
     local_paths: Vec<String>,
     remote_dir: String,
+    confirmed: bool,
 ) -> Result<Vec<String>> {
+    require_remote_change(&s, &host_id, confirmed)?;
     let mut ids = Vec::new();
     for p in local_paths {
         let path = std::path::PathBuf::from(&p);
@@ -326,8 +343,9 @@ pub async fn edit_open(s: State<'_, AppState>, host_id: String, remote: String) 
 }
 
 #[tauri::command]
-pub async fn edit_upload(s: State<'_, AppState>, host_id: String, remote: String, force: bool) -> Result<()> {
-    s.core.sftp.edit_upload(&host_id, &remote, force).await
+pub async fn edit_upload(s: State<'_, AppState>, host_id: String, remote: String, force: bool, confirmed: bool) -> Result<()> {
+    require_remote_change(&s, &host_id, confirmed)?;
+    s.core.sftp.edit_upload(&host_id, &remote, force, confirmed).await
 }
 
 #[tauri::command]
@@ -343,7 +361,10 @@ pub async fn docker_action(
     host_id: String,
     container: String,
     action: rookery_core::actions::DockerAction,
+    confirmed: bool,
 ) -> Result<()> {
+    require_remote_change(&s, &host_id, confirmed)?;
+    if host_id == rookery_core::computer::ID && matches!(action, rookery_core::actions::DockerAction::Remove | rookery_core::actions::DockerAction::Kill) && !confirmed { return Err(Error::Other("Confirm this destructive local Docker action first.".into())); }
     rookery_core::actions::docker_action(&s.core.connections, &host_id, &container, action).await
 }
 
@@ -353,8 +374,15 @@ pub async fn services_list(s: State<'_, AppState>, host_id: String) -> Result<Ve
 }
 
 #[tauri::command]
-pub async fn shell_integration_install(s: State<'_, AppState>, host_id: String) -> Result<u32> {
+pub async fn shell_integration_install(s: State<'_, AppState>, host_id: String, confirmed: bool) -> Result<u32> {
+    require_remote_change(&s, &host_id, confirmed)?;
     rookery_core::actions::install_shell_integration(&s.core.connections, &host_id).await
+}
+
+#[tauri::command]
+pub async fn log_history(s: State<'_, AppState>, host_id: String, source: String, target: String, since: String, until: String) -> Result<Vec<String>> {
+    if !s.core.vault.lock().is_unlocked() { return Err(Error::VaultLocked); }
+    rookery_core::subscriptions::log_history(&s.core.connections, &host_id, &source, &target, &since, &until).await
 }
 
 #[tauri::command]
@@ -414,8 +442,8 @@ pub fn sync_set_auto(s: State<'_, AppState>, group_ids: Vec<String>, on: bool) -
 }
 
 #[tauri::command]
-pub fn sync_window_visible(s: State<'_, AppState>, visible: bool) {
-    s.core.sync.set_visible(visible);
+pub fn sync_window_visible(s: State<'_, AppState>, visible: bool, host_id: Option<String>) {
+    s.core.sync.set_visible(visible, host_id);
 }
 
 // --------------------------------------------------------- backup & device sync
@@ -865,8 +893,9 @@ pub fn local_shells() -> Vec<LocalShell> {
 }
 
 #[tauri::command]
-pub fn local_term_open(s: State<'_, AppState>, shell_id: String, cols: u16, rows: u16) -> Result<String> {
-    s.core.local.open(&shell_id, cols, rows)
+pub fn local_term_open(s: State<'_, AppState>, shell_id: String, cols: u16, rows: u16, cwd: Option<String>, container: Option<String>) -> Result<String> {
+    if !s.core.vault.lock().is_unlocked() { return Err(Error::VaultLocked); }
+    s.core.local.open_at(&shell_id, cols, rows, cwd.as_deref(), container.as_deref())
 }
 
 #[tauri::command]
@@ -892,7 +921,8 @@ pub async fn processes_list(s: State<'_, AppState>, host_id: String) -> Result<V
 }
 
 #[tauri::command]
-pub async fn process_kill(s: State<'_, AppState>, host_id: String, pid: u32, force: bool) -> Result<()> {
+pub async fn process_kill(s: State<'_, AppState>, host_id: String, pid: u32, force: bool, confirmed: bool) -> Result<()> {
+    require_remote_change(&s, &host_id, confirmed)?;
     rookery_core::actions::process_kill(&s.core.connections, &host_id, pid, force).await
 }
 
@@ -975,12 +1005,14 @@ use rookery_core::editor::{EditorBackup, EditorFile, Eol, FileStamp, FileVersion
 
 #[tauri::command]
 pub async fn editor_open(s: State<'_, AppState>, host_id: String, path: String) -> Result<EditorFile> {
+    if host_id == rookery_core::computer::ID { let editor=s.core.editor.clone(); return blocking(move || editor.local_open(&path)).await; }
     s.core.editor.open(&host_id, &path).await
 }
 
 /// The cheap "did it change on the server?" check (size and time only).
 #[tauri::command]
 pub async fn editor_stat(s: State<'_, AppState>, host_id: String, path: String) -> Result<FileStamp> {
+    if host_id == rookery_core::computer::ID { let editor=s.core.editor.clone(); return blocking(move || editor.local_stat(&path)).await; }
     s.core.editor.stat(&host_id, &path).await
 }
 
@@ -998,6 +1030,8 @@ pub async fn editor_save(
     mode: SaveMode,
     confirmed: bool,
 ) -> Result<SaveOutcome> {
+    require_remote_change(&s, &host_id, confirmed)?;
+    if host_id == rookery_core::computer::ID { let editor=s.core.editor.clone(); return blocking(move || editor.local_save(&path, &content, eol, bom, &base, mode, confirmed)).await; }
     s.core.editor.save(&host_id, &path, &content, eol, bom, &base, mode, confirmed).await
 }
 
@@ -1025,3 +1059,20 @@ pub fn transfer_status(s: State<'_, AppState>) -> Vec<Transfer> {
 pub fn sql_session_states(s: State<'_, AppState>) -> Vec<CoreEvent> {
     s.core.sql.session_states()
 }
+
+#[tauri::command]
+pub async fn database_file_info(s: State<'_, AppState>, session_id: String, include_tables: bool) -> Result<rookery_core::sql::backup::DatabaseFileInfo> {
+    s.core.database_files.info(&session_id, include_tables).await
+}
+#[tauri::command]
+pub async fn database_backups(s: State<'_, AppState>, session_id: String) -> Result<Vec<rookery_core::sql::backup::DatabaseBackup>> {
+    s.core.database_files.list(&session_id).await
+}
+#[tauri::command]
+pub async fn database_file_start(s: State<'_, AppState>, session_id: String, operation: rookery_core::sql::backup::DatabaseOperation, confirmed: bool) -> Result<String> {
+    s.core.database_files.start(session_id, operation, confirmed).await
+}
+#[tauri::command]
+pub fn database_file_status(s: State<'_, AppState>) -> Vec<rookery_core::sql::backup::DatabaseJob> { s.core.database_files.status() }
+#[tauri::command]
+pub fn database_file_cancel(s: State<'_, AppState>, job_id: String) { s.core.database_files.cancel(&job_id); }

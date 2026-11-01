@@ -65,7 +65,9 @@ export const DEFAULT_TERMINAL_PREFS: TerminalPrefs = {
 };
 
 export interface AppPrefs {
+  showThisComputer: boolean;
   density: "compact" | "comfortable";
+  metricsIntervalMs: number;
   /** Reopen last session's tabs on start (server tabs wait for a click to connect). */
   restoreTabs: boolean;
   /** Connect restored server tabs right away instead of waiting for a click. */
@@ -81,7 +83,9 @@ export interface AppPrefs {
 }
 
 export const DEFAULT_APP_PREFS: AppPrefs = {
+  showThisComputer: true,
   density: "compact",
+  metricsIntervalMs: 3_000,
   restoreTabs: true,
   autoConnectRestored: false,
   autoLockMin: 10,
@@ -145,19 +149,20 @@ export const useKeys = create<KeysState>((set, get) => ({
 
   load: async () => {
     const get_ = <T,>(k: string) => api.settingGet<T>(k).catch(() => null);
-    const [ov, term, app, themes, custom] = await Promise.all([
+    const [ov, term, app, themes, custom, showComputer] = await Promise.all([
       get_<Overrides>("ui.keybindings"),
       get_<Partial<TerminalPrefs>>("ui.terminal"),
       get_<Partial<AppPrefs>>("ui.app"),
       get_<Record<string, ITheme>>("ui.customThemes"),
       get_<CustomKey[]>("ui.customKeys"),
+      get_<boolean>("ui.computer.enabled"),
     ]);
     const overrides = ov ?? {};
     set({
       overrides,
       bindings: resolveBindings(overrides),
       terminal: { ...DEFAULT_TERMINAL_PREFS, ...(term ?? {}) },
-      app: { ...DEFAULT_APP_PREFS, ...(app ?? {}) },
+      app: { ...DEFAULT_APP_PREFS, ...(app ?? {}), showThisComputer: showComputer ?? true },
       customThemes: themes ?? {},
       customKeys: (custom ?? []).map((k) => ({ ...k, chord: normalizeChord(k.chord) })),
       loaded: true,
@@ -200,7 +205,9 @@ export const useKeys = create<KeysState>((set, get) => ({
   setApp: async (patch) => {
     const app = { ...get().app, ...patch };
     set({ app });
-    await api.settingSet("ui.app", app);
+    const { showThisComputer, ...synced } = app;
+    await api.settingSet("ui.app", synced);
+    if (patch.showThisComputer !== undefined) await api.settingSet("ui.computer.enabled", showThisComputer);
   },
 
   saveTheme: async (name, theme) => {

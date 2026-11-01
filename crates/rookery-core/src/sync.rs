@@ -51,6 +51,7 @@ pub struct SyncEngine {
     inner: Mutex<Inner>,
     permits: Arc<Semaphore>,
     limit: Mutex<usize>,
+    active_host: Mutex<Option<String>>,
     visible: AtomicBool,
     hidden_since: AtomicI64,
 }
@@ -71,7 +72,8 @@ impl SyncEngine {
             inner: Mutex::new(Inner::default()),
             permits: Arc::new(Semaphore::new(limit)),
             limit: Mutex::new(limit),
-            visible: AtomicBool::new(true),
+            active_host: Mutex::new(None),
+            visible: AtomicBool::new(false),
             hidden_since: AtomicI64::new(0),
         }
     }
@@ -107,7 +109,8 @@ impl SyncEngine {
     }
 
     /// The window was shown / hidden (minimised). Auto-sync pauses after a minute hidden.
-    pub fn set_visible(&self, visible: bool) {
+    pub fn set_visible(&self, visible: bool, host_id: Option<String>) {
+        *self.active_host.lock() = if visible { host_id } else { None };
         let was = self.visible.swap(visible, Ordering::SeqCst);
         if was && !visible {
             self.hidden_since.store(now_ms(), Ordering::SeqCst);
@@ -196,7 +199,7 @@ impl SyncEngine {
                 let job = job.clone();
                 let cancel = cancel.clone();
                 set.spawn(async move {
-                    let state = me.sync_host(&job, &host, &eff, &cancel).await;
+                    let state = me.sync_host(&job, &host, &eff, &cancel, auto).await;
                     me.inner.lock().busy.remove(&host.id);
                     state
                 });
@@ -215,9 +218,9 @@ impl SyncEngine {
         Ok(job_id)
     }
 
-    async fn sync_host(&self, job: &str, host: &Host, eff: &EffectiveRefresh, cancel: &AtomicBool) -> SyncState {
+    async fn sync_host(&self, job: &str, host: &Host, eff: &EffectiveRefresh, cancel: &AtomicBool, auto: bool) -> SyncState {
         let Ok(_permit) = self.permits.clone().acquire_owned().await else { return SyncState::Skipped };
-        if cancel.load(Ordering::SeqCst) || !self.vault.lock().is_unlocked() {
+        if cancel.load(Ordering::SeqCst) || !self.vault.lock().is_unlocked() || (auto && !self.auto_host_visible(&host.id)) {
             self.emit(job, &host.id, SyncState::Skipped, None);
             return SyncState::Skipped;
         }
@@ -348,6 +351,10 @@ impl SyncEngine {
             && now_ms() - self.hidden_since.load(Ordering::SeqCst) > HIDDEN_GRACE_MS
     }
 
+    fn auto_host_visible(&self, host_id: &str) -> bool {
+        self.visible.load(Ordering::SeqCst) && self.active_host.lock().as_deref() == Some(host_id) && self.conns.is_connected(host_id)
+    }
+
     fn due_hosts(&self) -> Result<Vec<String>> {
         let settings = self.db.sync_settings()?;
         if self.paused(&settings) {
@@ -365,7 +372,7 @@ impl SyncEngine {
                 Some(g) if known.contains(g) => on.contains(g),
                 _ => settings.ungrouped_auto,
             };
-            if !switch_on || inner.busy.contains(&h.id) {
+            if !self.auto_host_visible(&h.id) || !switch_on || inner.busy.contains(&h.id) {
                 continue;
             }
             let eff = self.db.effective_refresh(&h)?;

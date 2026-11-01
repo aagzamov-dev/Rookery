@@ -8,6 +8,7 @@
 //!   Values are text (`None` = NULL): display only, no typed decoding.
 //! - Read-only is enforced by the server (session setting) and by [`lex::read_only_guard`].
 
+pub mod backup;
 pub mod detect;
 pub mod lex;
 mod manager;

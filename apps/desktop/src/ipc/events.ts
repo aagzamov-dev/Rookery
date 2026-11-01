@@ -10,6 +10,7 @@ import { useMetrics } from "../stores/metrics";
 import { useVault } from "../stores/vault";
 import { useSync } from "../stores/sync";
 import { onDataChanged, useBackup } from "../stores/backup";
+import { useDatabaseFiles } from "../stores/databaseFiles";
 import { useSql } from "../stores/sql";
 import { useGit } from "../stores/git";
 import { terminalRegistry } from "../features/server-tab/terminal/registry";
@@ -61,7 +62,7 @@ export function dispatch(ev: CoreEvent) {
       // Refresh the folder an upload landed in (cheap, one listing).
       if (ev.transfer.upload && ev.transfer.state === "done") {
         const dir = ev.transfer.remote.slice(0, ev.transfer.remote.lastIndexOf("/")) || "/";
-        if (f.byHost[ev.transfer.host_id]?.path === dir) void f.open(ev.transfer.host_id, dir, true);
+        if (f.byHost[ev.transfer.host_id]?.visible && f.byHost[ev.transfer.host_id]?.path === dir) void f.open(ev.transfer.host_id, dir, true);
       }
       break;
     }
@@ -90,6 +91,9 @@ export function dispatch(ev: CoreEvent) {
     case "sync_done":
       useSync.getState().onDone(ev.job_id, ev.auto, ev.summary);
       break;
+    case "database_job":
+      useDatabaseFiles.getState().received(ev.job, true);
+      break;
     case "sql_result":
       useSql.getState().onResult(ev);
       break;
@@ -111,6 +115,7 @@ async function recoverEventLoss(count: number) {
   useSql.setState((state) => ({ runs: Object.fromEntries(Object.entries(state.runs).map(([id, run]) => [id, run.finished ? run : { ...run, notices: [...run.notices.slice(-199), warning] }])) }));
   const pending = Object.keys(useSql.getState().runs);
   try {
+    for (const job of await api.databaseFileStatus()) useDatabaseFiles.getState().received(job);
     const active = new Set(await api.sqlActiveQueries());
     useSql.setState((state) => ({ runs: Object.fromEntries(Object.entries(state.runs).map(([id, run]) => [id, pending.includes(id) && !active.has(id) ? { ...run, finished: true } : run])) }));
     for (const state of await api.sqlSessionStates()) if (state.type === "sql_session") useSql.getState().onSession(state);

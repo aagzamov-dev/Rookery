@@ -368,6 +368,11 @@ impl MyConn {
         })
     }
 
+    pub async fn backup_tables(&mut self) -> Result<Vec<super::backup::BackupTable>> {
+        let rows = self.rows("SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE, COALESCE(DATA_LENGTH,0), COALESCE(INDEX_LENGTH,0) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() ORDER BY TABLE_NAME").await?;
+        Ok(super::backup::tables_from_rows(rows))
+    }
+
     pub async fn schema(&mut self, system: bool) -> Result<SchemaTree> {
         let filter = if system { String::new() } else { format!("WHERE SCHEMA_NAME NOT IN ({SYSTEM_DBS})") };
         let databases = self

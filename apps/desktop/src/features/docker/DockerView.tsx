@@ -1,3 +1,4 @@
+import { COMPUTER_ID } from "../local/target";
 import { useMemo, useState } from "react";
 import clsx from "clsx";
 import { Box, Database, Loader2, Play, RotateCw, ScrollText, Search, Square, SquareTerminal, Trash2, X, Zap } from "lucide-react";
@@ -10,7 +11,7 @@ import { useSql } from "../../stores/sql";
 import { isDatabaseImage } from "../sql/shortcuts";
 import { streamKey, useLogs } from "../../stores/logs";
 import { useTabs } from "../../stores/tabs";
-import { LogViewer } from "../logs/LogViewer";
+import { HistoryLogViewer } from "../logs/HistoryLogViewer";
 import { appliesToContainer, useSnippets } from "../../stores/snippets";
 import { askText } from "../../stores/dialogs";
 import { runInContainer } from "../snippets/run";
@@ -71,7 +72,7 @@ export function DockerView({ hostId, visible: active = true }: { hostId: string;
     setErr(null);
     setBusy((b) => ({ ...b, [c.id]: a }));
     try {
-      await api.dockerAction(hostId, c.id, a);
+      await api.dockerAction(hostId, c.id, a, dangerous);
     } catch (e) {
       setErr(`${c.name}: ${asCoreError(e).message}`);
     } finally {
@@ -115,6 +116,7 @@ export function DockerView({ hostId, visible: active = true }: { hostId: string;
         <div className="max-w-md text-center">
           <Box size={26} className="mx-auto mb-3 text-muted" />
           <p className="m-0 leading-relaxed text-muted">{d.error}</p>
+          <button className="mt-3 rounded-md border border-line px-3 py-1.5" onClick={() => useDocker.getState().forget(hostId)}>Reload Docker</button>
         </div>
       </div>
     );
@@ -133,7 +135,7 @@ export function DockerView({ hostId, visible: active = true }: { hostId: string;
               Problems {problemCount}
             </button>
           )}
-          {d.error && <span className="text-xs text-[#F7CB6A]">{d.error}</span>}
+          {d.error && <span className="text-xs text-[#F7CB6A]">{d.error} <button className="underline" onClick={() => useDocker.getState().forget(hostId)}>Reload Docker</button></span>}
           <label className="ml-auto flex h-7 items-center gap-1.5 rounded-md border border-line bg-bg px-2 text-muted">
             <Search size={12} />
             <input aria-label="Filter containers" placeholder="Filter" value={q} onChange={(e) => setQ(e.target.value)} className="w-32 bg-transparent text-xs text-text outline-none" />
@@ -216,14 +218,14 @@ export function DockerView({ hostId, visible: active = true }: { hostId: string;
                 })}
               </div>
             ))}
-            {containers.length === 0 && <div className="px-4 py-6 text-center text-muted">No containers on this server.</div>}
+            {containers.length === 0 && <div className="px-4 py-6 text-center text-muted">No containers.</div>}
           </div>
         </div>
       </section>
 
       {selected && active && (
         <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-line min-[1250px]:w-[44%] min-[1250px]:flex-none">
-          <ContainerLogs hostId={hostId} container={selected} onClose={() => select(hostId, null)} />
+          <ContainerLogs key={selected.id} hostId={hostId} container={selected} onClose={() => select(hostId, null)} />
         </div>
       )}
     </div>
@@ -237,6 +239,8 @@ function QuickCommands({ hostId, container }: { hostId: string; container: Conta
   const adHoc = async () => {
     const cmd = await askText({ title: `Run in ${container.name}`, label: "Command (runs with sh -lc in a new terminal)", value: "", confirmLabel: "Run" });
     if (!cmd) return;
+    const host = useHosts.getState().hostById(hostId);
+    if (host?.env_label === "prod" && !await askConfirm({ title: `Run in ${container.name} on PROD — ${host.name}?`, preview: cmd, confirmLabel: "Run on production", danger: true })) return;
     const key = useTabs.getState().addTerminal(hostId, { title: `@ ${container.name}` });
     if (!key) return;
     terminalRegistry.runCommand(key, `docker exec -it ${container.name} sh -lc ${shellQuote(cmd)}`);
@@ -271,9 +275,13 @@ function ContainerLogs({ hostId, container, onClose }: { hostId: string; contain
   const clear = useLogs((s) => s.clear);
   return (
     <div className="flex h-full min-h-0 flex-col">
-    <QuickCommands hostId={hostId} container={container} />
+    {hostId !== COMPUTER_ID && <QuickCommands hostId={hostId} container={container} />}
     <div className="min-h-0 flex-1">
-    <LogViewer
+    <HistoryLogViewer
+      hostId={hostId}
+      source="docker"
+      target={container.id}
+      visible
       title={
         <span>
           Logs <span className="ml-1 font-mono text-xs font-normal text-accent">{container.name}</span>

@@ -1,0 +1,37 @@
+import { expect, it, vi } from "vitest";
+const guards = vi.hoisted(() => ({ choice: vi.fn(), tx: vi.fn(), transactions: vi.fn(), dispose: vi.fn() }));
+vi.mock("../../ipc/api", () => ({ api: {} }));
+vi.mock("../../stores/dialogs", () => ({ askChoice: guards.choice }));
+vi.mock("../sql/txGuard", () => ({ openTransactions: guards.transactions, settleTransactions: guards.tx }));
+vi.mock("../server-tab/terminal/registry", () => ({ terminalRegistry: { disposeHost: guards.dispose } }));
+import { closeTab } from "../../app/tabActions";
+import { useTabs } from "../../stores/tabs";
+import { useEditor } from "../../stores/editor";
+import { tabPasswords } from "../sql/DbTab";
+import { COMPUTER_ID, COMPUTER_TAB_ID } from "./target";
+import { sqlKeyForHost } from "../sql/registry";
+
+it("guards local dirty files and SQL transactions before freeing local work", async () => {
+  useTabs.setState({ tabs: [], views: {}, deferred: {}, activeTabId: null });
+  useTabs.getState().openServer(COMPUTER_ID, "overview");
+  const tab = useTabs.getState().tabs[0];
+  const doc = useEditor.getState().put(COMPUTER_ID, { path: "/fixture/file.txt", real_path: "/fixture/file.txt", content: "text", version: { size: 4, mtime: 1, sha256: "fixture" }, eol: "lf", mixed_eol: false, bom: false, read_only: false, read_only_reason: null, owned: true, mode: "" });
+  useEditor.getState().patch(doc.key, { dirty: true });
+  guards.choice.mockResolvedValue("show");
+  expect(await closeTab(tab)).toBe(false);
+  expect(useTabs.getState().activeTabId).toBe(COMPUTER_TAB_ID);
+  expect(useTabs.getState().views[COMPUTER_ID].active).toBe("editor");
+  expect(guards.dispose).not.toHaveBeenCalled();
+  useEditor.getState().patch(doc.key, { dirty: false });
+  guards.transactions.mockReturnValue([{ sessionId: "fixture" }]);
+  guards.tx.mockResolvedValue(false);
+  expect(await closeTab(tab)).toBe(false);
+  expect(guards.transactions).toHaveBeenCalledWith([sqlKeyForHost(COMPUTER_ID)]);
+  expect(guards.dispose).not.toHaveBeenCalled();
+  tabPasswords.set(sqlKeyForHost(COMPUTER_ID), "temporary password");
+  guards.tx.mockResolvedValue(true);
+  expect(await closeTab(tab)).toBe(true);
+  expect(guards.dispose).toHaveBeenCalledExactlyOnceWith(COMPUTER_ID);
+  expect(useTabs.getState().tabs).toEqual([]);
+  expect(tabPasswords.has(sqlKeyForHost(COMPUTER_ID))).toBe(false);
+});

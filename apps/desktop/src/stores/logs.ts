@@ -21,6 +21,8 @@ interface LogsState {
   streams: Record<string, LogStream>;
   /** Log file followed in each server's Logs view. */
   fileTarget: Record<string, string | null>;
+  paused: Record<string, boolean>;
+  setPaused: (hostId: string, stream: string, paused: boolean) => void;
   setFileTarget: (hostId: string, path: string | null) => void;
   resume: (hostId: string, stream: string) => void;
   push: (hostId: string, stream: string, lines: string[]) => void;
@@ -36,6 +38,8 @@ const empty = (): LogStream => ({ lines: [], lastTs: null, ended: null });
 export const useLogs = create<LogsState>((set) => ({
   streams: {},
   fileTarget: {},
+  paused: {},
+  setPaused: (hostId, stream, paused) => set((s) => ({ paused: { ...s.paused, [streamKey(hostId, stream)]: paused } })),
   setFileTarget: (hostId, path) => set((s) => ({ fileTarget: { ...s.fileTarget, [hostId]: path } })),
   resume: (hostId, stream) => {
     const k = streamKey(hostId, stream);

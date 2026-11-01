@@ -25,6 +25,8 @@ import {
   Archive,
   ArchiveRestore,
 } from "lucide-react";
+import { COMPUTER_ID } from "../local/target";
+import { crumbs as pathCrumbs } from "../editor/lang";
 import { openInEditor } from "../editor/actions";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
@@ -63,11 +65,14 @@ const fmtMode = (m: number | null) => {
 };
 
 export function FileBrowser({ hostId, visible, variant }: Props) {
+  const local = hostId === COMPUTER_ID;
   const st = useFiles((s) => s.byHost[hostId]);
   const openDir = useFiles((s) => s.open);
   const patch = useFiles((s) => s.patch);
   const host = useHosts((s) => s.hosts.find((h) => h.id === hostId));
   const rootRef = useRef<HTMLDivElement>(null);
+  const active = useRef(visible);
+  active.current = visible;
   const [dropping, setDropping] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
@@ -92,16 +97,18 @@ export function FileBrowser({ hostId, visible, variant }: Props) {
 
   // First show: open the terminal's folder (if following), the host's start folder, or home.
   useEffect(() => {
+    useFiles.getState().setVisible(hostId, variant, visible);
     if (!visible) return;
     const cur = useFiles.getState().byHost[hostId];
-    if (cur?.path) void openDir(hostId, cur.path); // cached unless stale
+    if (cur?.path) void openDir(hostId, (cur.follow && cur.terminalCwd) || cur.path); // cached unless stale
     else void openDir(hostId, (cur?.follow && cur.terminalCwd) || host?.start_folder || null);
+    return () => useFiles.getState().setVisible(hostId, variant, false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, hostId]);
 
   // Drag files from your computer onto the browser to upload into the current folder.
   useEffect(() => {
-    if (!visible) return;
+    if (!visible || local) return;
     let off: (() => void) | undefined;
     let disposed = false;
     const inside = (pos: { x: number; y: number }) => {
@@ -132,8 +139,8 @@ export function FileBrowser({ hostId, visible, variant }: Props) {
   const selected = selection?.directory === path ? entries.find((e) => e.path === selection.path) : undefined;
   const selectedZip = selected?.kind === "file" && selected.name.toLowerCase().endsWith(".zip");
 
-  const go = (p: string) => void openDir(hostId, p);
-  const refresh = () => path && void openDir(hostId, path, true);
+  const go = (p: string) => active.current && void openDir(hostId, p);
+  const refresh = () => active.current && path && void openDir(hostId, path, true);
 
   const activate = async (e: FileEntry) => {
     if (e.kind === "dir") return go(e.path);
@@ -159,16 +166,19 @@ export function FileBrowser({ hostId, visible, variant }: Props) {
       await openInEditor(hostId, e.path);
     } catch (x) {
       const msg = asCoreError(x).message;
-      if (fallback && /binary|UTF-8|larger than/i.test(msg)) return editLocally(e);
+      if (/larger than|too large/i.test(msg)) { setNote(msg); return; }
+      if (fallback && /binary|UTF-8/i.test(msg)) return editLocally(e);
       setNote(`${msg} You can still use “Edit locally”.`);
     }
   };
 
   const editLocally = async (e: FileEntry) => {
     setNote(null);
+    if (local) { await openPath(e.path).catch((e: unknown) => setNote(asCoreError(e).message)); return; }
     try {
       const local = await api.editOpen(hostId, e.path);
       useFiles.getState().setEdit({ hostId, remote: e.path, local, state: "open", message: null, at: Date.now() });
+      setNote("Local saves stay on this computer. Use Review upload in Files to send changes to the server.");
       await openPath(local);
     } catch (x) {
       setNote(asCoreError(x).message);
@@ -199,11 +209,11 @@ export function FileBrowser({ hostId, visible, variant }: Props) {
     try {
       await api.sftpArchive(hostId, entry.path, destination, extract);
       const directory = parentPath(entry.path);
-      await openDir(hostId, directory, true);
+      if (active.current) await openDir(hostId, directory, true);
       setSelection({ directory, path: joinPath(directory, destination) });
     } catch (error) {
       setNote(asCoreError(error).message);
-      await openDir(hostId, parentPath(entry.path), true);
+      if (active.current) await openDir(hostId, parentPath(entry.path), true);
     } finally {
       setArchiving(false);
     }
@@ -220,6 +230,7 @@ export function FileBrowser({ hostId, visible, variant }: Props) {
     if (!path) return;
     const name = await askText({ title: "New folder", label: `Inside ${path}`, value: "", confirmLabel: "Create" });
     if (!name) return;
+    if (local && (name === "." || name === ".." || /[/\\\0]/.test(name))) { setNote("Enter a folder name without separators."); return; }
     try {
       await api.sftpMkdir(hostId, joinPath(path, name));
       refresh();
@@ -232,6 +243,7 @@ export function FileBrowser({ hostId, visible, variant }: Props) {
     const dot = e.kind === "file" ? e.name.lastIndexOf(".") : -1;
     const name = await askText({ title: `Rename ${e.name}`, label: "New name", value: e.name, confirmLabel: "Rename", selectUntil: dot > 0 ? dot : undefined });
     if (!name || name === e.name) return;
+    if (local && (name === "." || name === ".." || /[/\\\0]/.test(name))) { setNote("Enter a name without separators."); return; }
     try {
       await api.sftpRename(hostId, e.path, joinPath(parentPath(e.path), name));
       refresh();
@@ -245,14 +257,14 @@ export function FileBrowser({ hostId, visible, variant }: Props) {
     const prod = host?.env_label === "prod";
     const ok = await askConfirm({
       title: dir ? `Delete folder ${e.name}?` : `Delete ${e.name}?`,
-      body: `${dir ? "The folder and everything inside it" : "The file"} will be removed from ${host?.name ?? "the server"}. This cannot be undone.${prod ? " This is a PRODUCTION server." : ""}`,
+      body: `${dir ? "The folder and everything inside it" : "The file"} will be removed from ${local ? "this computer" : host?.name ?? "the server"}. This cannot be undone.${prod ? " This is a PRODUCTION server." : ""}`,
       preview: e.path,
       confirmLabel: "Delete",
       danger: true,
     });
     if (!ok) return;
     try {
-      await api.sftpDelete(hostId, e.path, dir, dir);
+      await api.sftpDelete(hostId, e.path, dir, dir, true);
       refresh();
     } catch (x) {
       setNote(asCoreError(x).message);
@@ -260,6 +272,7 @@ export function FileBrowser({ hostId, visible, variant }: Props) {
   };
 
   const cdInTerminal = (p: string) => {
+    if (local) { useTabs.getState().addTerminal(hostId, { cwd: p }); return; }
     const views = useTabs.getState().views[hostId];
     const key = views?.activeTerminal ?? useTabs.getState().addTerminal(hostId);
     if (!key) return;
@@ -271,13 +284,13 @@ export function FileBrowser({ hostId, visible, variant }: Props) {
   const enableFollow = async () => {
     const ok = await askConfirm({
       title: "Let Files follow your terminal?",
-      body: "Adds a few lines to ~/.bashrc and ~/.zshrc on this server so your prompt reports its folder. Rookery never polls for it. Takes effect in new terminals.",
+      body: `${host?.env_label === "prod" ? "This is a PRODUCTION server. " : ""}Adds a few lines to ~/.bashrc and ~/.zshrc on this server so your prompt reports its folder. Rookery never polls for it. Takes effect in new terminals.`,
       preview: SHELL_INTEGRATION_PREVIEW,
       confirmLabel: "Add to shell config",
     });
     if (!ok) return;
     try {
-      const n = await api.shellIntegrationInstall(hostId);
+      const n = await api.shellIntegrationInstall(hostId, true);
       setNote(`Added to ${n} shell config file${n === 1 ? "" : "s"}. Open a new terminal (+) and Files will follow your cd.`);
     } catch (x) {
       setNote(asCoreError(x).message);
@@ -286,14 +299,13 @@ export function FileBrowser({ hostId, visible, variant }: Props) {
 
   const crumbs = useMemo(() => {
     if (!path) return [];
-    const parts = path.split("/").filter(Boolean);
-    return [{ name: "/", path: "/" }, ...parts.map((p, i) => ({ name: p, path: "/" + parts.slice(0, i + 1).join("/") }))];
+    return pathCrumbs(path).map(([name, path]) => ({ name, path }));
   }, [path]);
 
   const panel = variant === "panel";
 
   return (
-    <div ref={rootRef} className={clsx("relative flex h-full min-h-0 flex-col", panel ? "bg-panel" : "bg-bg")}>
+    <div ref={rootRef} aria-disabled={!visible} style={{ pointerEvents: visible ? undefined : "none" }} className={clsx("relative flex h-full min-h-0 flex-col", panel ? "bg-panel" : "bg-bg")}>
       {/* toolbar */}
       <div className="flex flex-wrap items-center gap-1 border-b border-line px-2 py-1.5">
         {panel && <span className="mr-1 px-1 text-[13px] font-semibold">Files</span>}
@@ -309,27 +321,27 @@ export function FileBrowser({ hostId, visible, variant }: Props) {
         <Tool label="New folder" onClick={() => void mkdir()} disabled={!path}>
           <FolderPlus size={14} />
         </Tool>
-        <Tool label="Upload files" onClick={() => void upload()} disabled={!path}>
+        {!local && <Tool label="Upload files" onClick={() => void upload()} disabled={!path}>
           <Upload size={14} />
-        </Tool>
-        <Tool label="Upload a folder" onClick={() => void upload(true)} disabled={!path}>
+        </Tool>}
+        {!local && <Tool label="Upload a folder" onClick={() => void upload(true)} disabled={!path}>
           <FolderUp size={14} />
-        </Tool>
+        </Tool>}
         <Tool label={showHidden ? "Hide hidden files" : "Show hidden files"} onClick={() => patch(hostId, { showHidden: !showHidden })}>
           {showHidden ? <EyeOff size={14} /> : <Eye size={14} />}
         </Tool>
-        {selected?.kind === "file" && (
+        {!local && selected?.kind === "file" && (
           <Tool label={`Download ${selected.name}`} onClick={() => void download(selected)} disabled={archiving}>
             <Download size={14} />
           </Tool>
         )}
-        {selected && (selected.kind === "file" || selected.kind === "dir") && (
+        {!local && selected && (selected.kind === "file" || selected.kind === "dir") && (
           <Tool label={selectedZip ? `Unzip ${selected.name}` : `ZIP ${selected.name}`} onClick={() => void archive(selected, !!selectedZip)} disabled={archiving}>
             {archiving ? <Loader2 size={14} className="animate-spin" /> : selectedZip ? <ArchiveRestore size={14} /> : <Archive size={14} />}
           </Tool>
         )}
         {archiving && <span role="status" className="px-1 text-xs text-muted">Working on archive…</span>}
-        {panel && (
+        {!local && panel && (
           <label className="ml-auto flex items-center gap-1.5 text-xs text-muted" title="Follow the folder of this server's terminal">
             <input type="checkbox" checked={st?.follow ?? true} onChange={(e) => patch(hostId, { follow: e.target.checked })} className="accent-accent" />
             Follow terminal
@@ -347,7 +359,7 @@ export function FileBrowser({ hostId, visible, variant }: Props) {
             </button>
           </span>
         ))}
-        {!path && st?.loading && <span>Opening SFTP…</span>}
+        {!path && st?.loading && <span>{local ? "Opening local folder…" : "Opening SFTP…"}</span>}
         {path && (
           <button
             aria-label="Copy folder path"
@@ -364,7 +376,7 @@ export function FileBrowser({ hostId, visible, variant }: Props) {
         )}
       </div>
 
-      {panel && st?.follow && st.terminalCwd === null && (
+      {!local && panel && st?.follow && st.terminalCwd === null && (
         <div className="flex items-center gap-2 border-b border-line bg-[#22304A] px-3 py-1.5 text-[11px] text-muted">
           <span className="flex-1">Files can follow your cd once shell integration is on.</span>
           <button onClick={() => void enableFollow()} className="text-accent">
@@ -439,12 +451,12 @@ export function FileBrowser({ hostId, visible, variant }: Props) {
                     <RowBtn label="Edit in Rookery" onClick={() => void editInRookery(e)}>
                       <FileCode2 size={13} />
                     </RowBtn>
-                    <RowBtn label="Edit locally (saves upload back)" onClick={() => void editLocally(e)}>
+                    <RowBtn label={local ? "Open with default app" : "Edit locally (review before upload)"} onClick={() => void editLocally(e)}>
                       <FileEdit size={13} />
                     </RowBtn>
-                    <RowBtn label="Download" onClick={() => void download(e)}>
+                    {!local && <RowBtn label="Download" onClick={() => void download(e)}>
                       <Download size={13} />
-                    </RowBtn>
+                    </RowBtn>}
                   </>
                 )}
                 <RowBtn label={copied === e.path ? "Copied" : "Copy path"} onClick={() => void copyPath(e.path)}>
@@ -477,7 +489,7 @@ export function FileBrowser({ hostId, visible, variant }: Props) {
           </button>
         </div>
       )}
-      <TransfersStrip hostId={hostId} />
+      {!local && <TransfersStrip hostId={hostId} />}
       {dropping && (
         <div className="pointer-events-none absolute inset-1 grid place-items-center rounded-lg border-2 border-dashed border-accent bg-[#1B2230CC] text-accent">
           Drop to upload into {path}

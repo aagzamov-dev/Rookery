@@ -76,6 +76,7 @@ pub enum GitAction {
 }
 
 pub fn require_confirmation(db: &Db, host_id: &str, confirmed: bool) -> Result<()> {
+    if host_id == crate::computer::ID { return Ok(()); }
     if db.get_host(host_id)?.env_label == EnvLabel::Prod && !confirmed {
         return Err(Error::Other(
             "Confirm this operation on the production server before continuing.".into(),
@@ -140,6 +141,7 @@ pub async fn discover(
     host_id: &str,
     folder: &str,
 ) -> Result<Vec<String>> {
+    if host_id == crate::computer::ID { return native::discover(folder).await; }
     let command = discovery_command(folder)?;
     let lease = conns.acquire(host_id).await?;
     let handle = lease.handle().await?;
@@ -207,6 +209,7 @@ if [ -f "$(git rev-parse --git-path MERGE_HEAD)" ]; then printf '# rook.operatio
 elif [ -d "$(git rev-parse --git-path rebase-merge)" ] || [ -d "$(git rev-parse --git-path rebase-apply)" ]; then printf '# rook.operation rebase\0'; fi"#;
 
 pub async fn status(conns: &ConnectionManager, host_id: &str, folder: &str) -> Result<GitStatus> {
+    if host_id == crate::computer::ID { return native::status(folder).await; }
     let command = folder_command(folder, STATUS)?;
     let lease = conns.acquire(host_id).await?;
     let handle = lease.handle().await?;
@@ -441,6 +444,7 @@ pub async fn mutate(
     confirmed: bool,
 ) -> Result<String> {
     require_confirmation(db, host_id, confirmed)?;
+    if host_id == crate::computer::ID { return native::mutate(folder, action, confirmed).await; }
     let command = folder_command(folder, &action_command(action)?)?;
     let lease = conns.acquire(host_id).await?;
     let handle = lease.handle().await?;
@@ -454,6 +458,7 @@ pub async fn diff(
     file: &GitFile,
     staged: bool,
 ) -> Result<GitDiff> {
+    if host_id == crate::computer::ID { return native::diff(folder, file, staged).await; }
     check_path(&file.path)?;
     if let Some(original) = &file.original_path {
         check_path(original)?;
@@ -909,5 +914,346 @@ mod tests {
             &discovery_command(empty.path().to_str().unwrap()).unwrap()
         )
         .is_empty());
+    }
+}
+
+mod native {
+    use super::*;
+    use crate::computer::{args, display, path, run};
+    use std::path::Path;
+
+    async fn git(folder: &Path, values: &[&str]) -> Result<String> {
+        run("git", &args(values), Some(folder), 120).await
+    }
+    async fn root(folder: &str) -> Result<std::path::PathBuf> {
+        let folder = path(folder)?;
+        let result = git(&folder, &["rev-parse", "--show-toplevel"]).await?;
+        path(result.trim_end_matches(['\r', '\n']))
+    }
+    pub async fn status(folder: &str) -> Result<GitStatus> {
+        let root = root(folder).await?;
+        let mut raw = format!("# rook.root {}\0", display(&root));
+        raw.push_str(
+            &git(
+                &root,
+                &[
+                    "status",
+                    "--porcelain=v2",
+                    "-z",
+                    "--branch",
+                    "--untracked-files=all",
+                ],
+            )
+            .await?,
+        );
+        for (command, prefix) in [
+            (
+                vec!["for-each-ref", "--format=%(refname:short)", "refs/heads"],
+                "# rook.branch ",
+            ),
+            (vec!["remote"], "# rook.remote "),
+            (vec!["stash", "list", "--format=%gd%x09%s"], "# rook.stash "),
+        ] {
+            for line in git(&root, &command).await?.lines() {
+                raw.push_str(prefix);
+                raw.push_str(line);
+                raw.push('\0');
+            }
+        }
+        for (file, operation) in [
+            ("MERGE_HEAD", "merge"),
+            ("rebase-merge", "rebase"),
+            ("rebase-apply", "rebase"),
+        ] {
+            let p = git(&root, &["rev-parse", "--git-path", file]).await?;
+            if tokio::fs::try_exists(root.join(p.trim()))
+                .await
+                .unwrap_or(false)
+            {
+                raw.push_str(&format!("# rook.operation {operation}\0"));
+                break;
+            }
+        }
+        parse_status(&raw)
+    }
+    pub async fn discover(folder: &str) -> Result<Vec<String>> {
+        // Discovery is confined to the explicitly selected directory and two levels beneath it.
+        let folder = path(folder)?;
+        let mut queue = vec![(folder, 0)];
+        let mut checked = 0;
+        let mut found = Vec::new();
+        while let Some((folder, depth)) = queue.pop() {
+            if checked >= 120 || found.len() >= 24 {
+                break;
+            }
+            checked += 1;
+            if let Ok(value) = git(&folder, &["rev-parse", "--show-toplevel"]).await {
+                let value = display(&path(value.trim())?);
+                if !found.contains(&value) {
+                    found.push(value);
+                }
+                continue;
+            }
+            if depth >= 2 {
+                continue;
+            }
+            let dir = folder.clone();
+            let children =
+                tokio::task::spawn_blocking(move || -> Result<Vec<std::path::PathBuf>> {
+                    let mut children = Vec::new();
+                    for entry in std::fs::read_dir(dir)?.take(120) {
+                        let entry = entry?;
+                        let name = entry.file_name();
+                        if entry.file_type()?.is_dir()
+                            && ![
+                                ".git",
+                                "node_modules",
+                                "vendor",
+                                "target",
+                                "dist",
+                                "build",
+                                ".cache",
+                                ".next",
+                                ".venv",
+                            ]
+                            .contains(&name.to_string_lossy().as_ref())
+                        {
+                            children.push(entry.path());
+                        }
+                    }
+                    Ok(children)
+                })
+                .await
+                .map_err(|e| Error::Other(e.to_string()))??;
+            queue.extend(children.into_iter().map(|p| (p, depth + 1)));
+        }
+        Ok(found)
+    }
+    fn valid_path(value: &str) -> Result<()> {
+        check_path(value)?;
+        if value.contains('\\')
+            || value.split('/').any(|p| p.eq_ignore_ascii_case(".git"))
+            || value.contains(':')
+        {
+            return Err(Error::Other("Invalid repository file path.".into()));
+        }
+        Ok(())
+    }
+    pub async fn mutate(folder: &str, action: &GitAction, confirmed: bool) -> Result<String> {
+        // Validate through the shared model before creating native argv.
+        action_command(action)?;
+        if matches!(
+            action,
+            GitAction::Discard { .. }
+                | GitAction::StashDrop { .. }
+                | GitAction::AbortMerge
+                | GitAction::AbortRebase
+        ) && !confirmed
+        {
+            return Err(Error::Other(
+                "Confirm this destructive local Git operation first.".into(),
+            ));
+        }
+        let root = root(folder).await?;
+        let values = match action {
+            GitAction::Stage { paths } | GitAction::Unstage { paths } => {
+                for p in paths {
+                    valid_path(p)?;
+                }
+                let mut values = if matches!(action, GitAction::Stage { .. }) {
+                    args(&["--literal-pathspecs", "add", "--"])
+                } else if git(&root, &["rev-parse", "--verify", "HEAD"]).await.is_ok() {
+                    args(&["--literal-pathspecs", "reset", "-q", "HEAD", "--"])
+                } else {
+                    args(&["--literal-pathspecs", "rm", "--cached", "-q", "--"])
+                };
+                values.extend(paths.iter().cloned());
+                values
+            }
+            GitAction::Discard { path, untracked } => {
+                valid_path(path)?;
+                let mut a = if *untracked {
+                    args(&["--literal-pathspecs", "clean", "-f", "--"])
+                } else {
+                    args(&["--literal-pathspecs", "restore", "--worktree", "--"])
+                };
+                a.push(path.clone());
+                a
+            }
+            GitAction::Commit { message } => args(&["commit", "-m", message]),
+            GitAction::Switch { branch } => {
+                git(&root, &["check-ref-format", "--branch", branch]).await?;
+                args(&["switch", "--", branch])
+            }
+            GitAction::CreateBranch { branch } => {
+                git(&root, &["check-ref-format", "--branch", branch]).await?;
+                args(&["switch", "-c", branch])
+            }
+            GitAction::Fetch => args(&["fetch", "--prune"]),
+            GitAction::Pull => args(&["pull", "--ff-only"]),
+            GitAction::Push { remote } => {
+                if let Some(r) = remote {
+                    git(&root, &["remote", "get-url", r]).await?;
+                    args(&["push", "--set-upstream", r, "HEAD"])
+                } else {
+                    args(&["push"])
+                }
+            }
+            GitAction::StashCreate { message } => args(&[
+                "stash",
+                "push",
+                "--include-untracked",
+                "-m",
+                if message.trim().is_empty() {
+                    "Rookery stash"
+                } else {
+                    message
+                },
+            ]),
+            GitAction::StashApply { reference } => args(&["stash", "apply", reference]),
+            GitAction::StashPop { reference } => args(&["stash", "pop", reference]),
+            GitAction::StashDrop { reference } => args(&["stash", "drop", reference]),
+            GitAction::AbortMerge => args(&["merge", "--abort"]),
+            GitAction::AbortRebase => args(&["rebase", "--abort"]),
+            GitAction::ContinueRebase => args(&["rebase", "--continue"]),
+        };
+        run("git", &values, Some(&root), 120).await
+    }
+    async fn blob(root: &Path, spec: &str, optional: bool) -> Result<String> {
+        if optional && git(root, &["cat-file", "-e", spec]).await.is_err() {
+            return Ok(String::new());
+        }
+        git(root, &["show", spec]).await
+    }
+    pub async fn diff(folder: &str, file: &GitFile, staged: bool) -> Result<GitDiff> {
+        valid_path(&file.path)?;
+        if let Some(p) = &file.original_path {
+            valid_path(p)?;
+        }
+        let root = root(folder).await?;
+        let old = file.original_path.as_deref().unwrap_or(&file.path);
+        let left = if file.conflicted {
+            blob(&root, &format!(":2:{}", file.path), true).await?
+        } else if file.index == "?" || staged && file.index == "A" {
+            String::new()
+        } else {
+            blob(
+                &root,
+                &if staged {
+                    format!("HEAD:{old}")
+                } else {
+                    format!(":{}", file.path)
+                },
+                false,
+            )
+            .await?
+        };
+        let right = if file.conflicted {
+            blob(&root, &format!(":3:{}", file.path), true).await?
+        } else if staged && file.index == "D" || !staged && file.worktree == "D" {
+            String::new()
+        } else if staged {
+            blob(&root, &format!(":{}", file.path), false).await?
+        } else {
+            let path = root.join(&file.path);
+            let bytes = tokio::task::spawn_blocking(move || {
+                let meta = std::fs::symlink_metadata(&path)?;
+                if !meta.is_file() || meta.is_symlink() {
+                    return Err(Error::Other("Select a regular text file.".into()));
+                }
+                crate::computer::read(&display(&path), OUTPUT_LIMIT as u64).map(|v| v.0)
+            })
+            .await
+            .map_err(|e| Error::Other(e.to_string()))??;
+            String::from_utf8(bytes)
+                .map_err(|_| Error::Other("This file is not UTF-8 text.".into()))?
+        };
+        if left.contains('\0') || right.contains('\0') {
+            return Ok(GitDiff {
+                left: String::new(),
+                right: String::new(),
+                notice: Some("Binary files cannot be shown in the text diff.".into()),
+            });
+        }
+        Ok(GitDiff {
+            left,
+            right,
+            notice: None,
+        })
+    }
+}
+
+#[cfg(test)]
+mod local_tests {
+    use super::*;
+    #[tokio::test]
+    async fn local_git_uses_literal_native_argv_and_preserves_other_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repository '$() & spaces");
+        std::fs::create_dir(&repo).unwrap();
+        crate::computer::run(
+            "git",
+            &crate::computer::args(&["init", "--initial-branch=main"]),
+            Some(&repo),
+            10,
+        )
+        .await
+        .unwrap();
+        let name = "file ' $() &.txt";
+        std::fs::write(repo.join(name), b"text\n").unwrap();
+        let folder = crate::computer::display(&repo);
+        let status = native::status(&folder).await.unwrap();
+        assert_eq!(status.files.len(), 1);
+        assert_eq!(status.files[0].path, name);
+        native::mutate(
+            &folder,
+            &GitAction::Stage {
+                paths: vec![name.into()],
+            },
+            false,
+        )
+        .await
+        .unwrap();
+        let status = native::status(&folder).await.unwrap();
+        assert_eq!(status.files[0].index, "A");
+        let diff = native::diff(&folder, &status.files[0], true).await.unwrap();
+        assert_eq!(diff.right, "text\n");
+        assert!(native::mutate(
+            &folder,
+            &GitAction::Discard {
+                path: name.into(),
+                untracked: false
+            },
+            false
+        )
+        .await
+        .is_err());
+        assert!(native::mutate(
+            &folder,
+            &GitAction::Stage {
+                paths: vec!["../outside".into()]
+            },
+            false
+        )
+        .await
+        .is_err());
+        assert!(native::mutate(
+            &folder,
+            &GitAction::Stage {
+                paths: vec![".GIT/config".into()]
+            },
+            false
+        )
+        .await
+        .is_err());
+        assert!(native::mutate(
+            &folder,
+            &GitAction::CreateBranch {
+                branch: "--bad".into()
+            },
+            false
+        )
+        .await
+        .is_err());
     }
 }

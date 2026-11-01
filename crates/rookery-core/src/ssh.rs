@@ -400,6 +400,7 @@ impl ConnectionManager {
 
     /// Take a lease, connecting if needed. This is the ONLY way a connection opens.
     pub async fn acquire(&self, host_id: &str) -> Result<Lease> {
+        if host_id == crate::computer::ID { return Err(Error::Other("This computer uses native tools, without SSH.".into())); }
         let entry = self.entry(host_id);
         entry.leases.fetch_add(1, Ordering::SeqCst);
         entry.generation.fetch_add(1, Ordering::SeqCst); // cancels a pending grace close
@@ -590,67 +591,89 @@ pub struct ExecOutput {
     pub exit: Option<u32>,
 }
 
-pub async fn exec(handle: &SshHandle, cmd: &str, timeout: Duration) -> Result<ExecOutput> {
-    let run = async {
-        let mut ch = handle.channel_open_session().await?;
-        ch.exec(true, cmd).await?;
-        let mut out = Vec::new();
-        let mut err = Vec::new();
-        let mut exit = None;
-        while let Some(msg) = ch.wait().await {
-            match msg {
-                ChannelMsg::Data { ref data } => out.extend_from_slice(data),
-                ChannelMsg::ExtendedData { ref data, .. } => err.extend_from_slice(data),
-                ChannelMsg::ExitStatus { exit_status } => exit = Some(exit_status),
-                ChannelMsg::Close => break,
-                _ => {}
-            }
-        }
-        Ok::<_, Error>(ExecOutput {
-            stdout: String::from_utf8_lossy(&out).into_owned(),
-            stderr: String::from_utf8_lossy(&err).into_owned(),
-            exit,
-        })
-    };
-    tokio::time::timeout(timeout, run)
-        .await
-        .map_err(|_| Error::Ssh("command timed out".into()))?
+pub const EXEC_OUTPUT_MAX: usize = 8 * 1024 * 1024;
+
+fn append_output(target: &mut Vec<u8>, data: &[u8], other_len: usize) -> Result<()> {
+    if data.len() > EXEC_OUTPUT_MAX.saturating_sub(target.len() + other_len) {
+        return Err(Error::Ssh("command output exceeded 8 MiB; narrow the request".into()));
+    }
+    target.extend_from_slice(data);
+    Ok(())
 }
 
-/// Like [`exec`], with `input` sent on stdin (then EOF). Used for a sudo password only:
-/// file content never travels on the same stdin as a password.
+pub async fn exec(handle: &SshHandle, cmd: &str, timeout: Duration) -> Result<ExecOutput> {
+    exec_bounded(handle, cmd, None, timeout, None).await
+}
+
+/// Like [`exec`], with input sent on stdin, then EOF.
 pub async fn exec_with_input(handle: &SshHandle, cmd: &str, input: &[u8], timeout: Duration) -> Result<ExecOutput> {
-    let run = async {
-        let mut ch = handle.channel_open_session().await?;
-        ch.exec(true, cmd).await?;
-        ch.data(input).await?;
-        ch.eof().await?;
-        let mut out = Vec::new();
-        let mut err = Vec::new();
-        let mut exit = None;
-        while let Some(msg) = ch.wait().await {
-            match msg {
-                ChannelMsg::Data { ref data } => out.extend_from_slice(data),
-                ChannelMsg::ExtendedData { ref data, .. } => err.extend_from_slice(data),
-                ChannelMsg::ExitStatus { exit_status } => exit = Some(exit_status),
-                ChannelMsg::Close => break,
-                _ => {}
+    exec_bounded(handle, cmd, Some(input.to_vec()), timeout, None).await
+}
+
+pub async fn exec_with_input_progress(handle: &SshHandle, cmd: &str, input: &[u8], timeout: Duration, stderr: tokio::sync::mpsc::Sender<Vec<u8>>) -> Result<ExecOutput> {
+    exec_bounded(handle, cmd, Some(input.to_vec()), timeout, Some(stderr)).await
+}
+
+async fn exec_bounded(handle: &SshHandle, cmd: &str, input: Option<Vec<u8>>, timeout: Duration, stderr: Option<tokio::sync::mpsc::Sender<Vec<u8>>>) -> Result<ExecOutput> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut ch = tokio::time::timeout_at(deadline, handle.channel_open_session()).await
+        .map_err(|_| Error::Ssh("command timed out".into()))??;
+    let command = cmd.to_string();
+    let (mut tx, rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let result = {
+            let run = async {
+                ch.exec(true, command).await?;
+                if let Some(input) = input {
+                    ch.data(input.as_slice()).await?;
+                    ch.eof().await?;
+                }
+                let mut out = Vec::new();
+                let mut err = Vec::new();
+                let mut exit = None;
+                while let Some(msg) = ch.wait().await {
+                    match msg {
+                        ChannelMsg::Data { ref data } => append_output(&mut out, data, err.len())?,
+                        ChannelMsg::ExtendedData { ref data, .. } => {
+                            append_output(&mut err, data, out.len())?;
+                            if let Some(sender) = &stderr { let _ = sender.send(data.to_vec()).await; }
+                        },
+                        ChannelMsg::ExitStatus { exit_status } => exit = Some(exit_status),
+                        ChannelMsg::Close => break,
+                        _ => {}
+                    }
+                }
+                Ok::<_, Error>(ExecOutput {
+                    stdout: String::from_utf8_lossy(&out).into_owned(),
+                    stderr: String::from_utf8_lossy(&err).into_owned(),
+                    exit,
+                })
+            };
+            tokio::select! {
+                result = run => Some(result),
+                _ = tx.closed() => None,
             }
-        }
-        Ok::<_, Error>(ExecOutput {
-            stdout: String::from_utf8_lossy(&out).into_owned(),
-            stderr: String::from_utf8_lossy(&err).into_owned(),
-            exit,
-        })
-    };
-    tokio::time::timeout(timeout, run)
-        .await
+        };
+        let _ = tokio::time::timeout(Duration::from_secs(1), ch.close()).await;
+        if let Some(result) = result { let _ = tx.send(result); }
+    });
+    tokio::time::timeout_at(deadline, rx).await
         .map_err(|_| Error::Ssh("command timed out".into()))?
+        .map_err(|_| Error::Ssh("command task stopped".into()))?
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn output_cap_counts_stdout_and_stderr_before_allocation() {
+        let mut out = vec![0; EXEC_OUTPUT_MAX - 2];
+        assert!(append_output(&mut out, b"x", 1).is_ok());
+        assert!(append_output(&mut out, b"x", 1).is_err());
+        assert_eq!(out.len(), EXEC_OUTPUT_MAX - 1);
+        assert!(append_output(&mut Vec::new(), b"x", EXEC_OUTPUT_MAX).is_err());
+    }
 
     #[test]
     fn preserves_split_utf8_and_final_unterminated_line() {

@@ -26,9 +26,11 @@ export function ProcessesView({ hostId, visible }: { hostId: string; visible: bo
   const [q, setQ] = useState("");
   const [note, setNote] = useState<string | null>(null);
   const busy = useRef(false);
+  const active = useRef(visible);
+  active.current = visible;
 
   const load = async () => {
-    if (busy.current) return;
+    if (!active.current || busy.current) return;
     busy.current = true;
     try {
       setList(await api.processesList(hostId));
@@ -59,7 +61,7 @@ export function ProcessesView({ hostId, visible }: { hostId: string; visible: bo
     });
     if (!ok) return;
     try {
-      await api.processKill(hostId, p.pid, force);
+      await api.processKill(hostId, p.pid, force, true);
       setNote(`Sent ${force ? "SIGKILL" : "SIGTERM"} to ${p.pid}`);
       void load();
     } catch (e) {

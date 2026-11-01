@@ -156,6 +156,10 @@ Git workflow (unreleased): built a lazy per-server Git view with remembered fold
 
 Git workspace refinement: compact repository dropdown and single changes panel, editable working-tree diff with version-aware Save / Save & stage, read-only staged diffs and bounded first-open discovery under the configured folder. Unsaved drafts share Editor buffers and survive navigation.
 
+Visibility and operation hardening: persisted live metric intervals / Off, Overview-only automatic snapshots, backend production mutation guards, explicit external-edit uploads, bounded Docker retries and bounded Yesterday/time-range log history are implemented.
+
+Database file operations (local, unreleased): Export / Import / Backups dialogs, native PostgreSQL/MySQL/MariaDB streaming, table selection/storage estimates, local or SSH-server paths, cancellable progress, PROD checks and checksum-tracked Rookery backups are implemented. Mock/local-fixture validation passes; actual database restores and cross-platform client availability remain unverified. No release or version bump is part of this work. See [native database file operations](07-SQL-CONNECTIONS.md#native-database-file-operations).
+
 Git layout refinement: persistent panel/diff resizing, compact collapsible folder tree with staged/working-tree actions and a saved flat-list toggle. The existing servers sidebar can shrink to 104 px and persists its width.
 
 | P | Feature | Spec |
@@ -182,6 +186,10 @@ Git layout refinement: persistent panel/diff resizing, compact collapsible folde
 | P3 | Home-screen widget (native Kotlin), push alerts via optional agent/integrations | [M] §7 |
 
 ---
+
+## This computer — implemented (unreleased)
+
+Native local workspace above the SSH host list: default-enabled Settings toggle, visible-Overview metrics, existing local terminals, bounded local Files/Editor, argv-native Git/Docker and saved loopback SQL connections with database export/import. No Services or Logs tabs and no localhost SSH requirement. Restore/disable preserve lazy collection and user work. See [desktop behavior and limits](03-DESKTOP-FEATURES.md#141-this-computer--native-local-workspace). macOS core/shell checks and fixture/UI tests pass; live system/Docker/database checks and Windows execution are not verified here.
 
 ## Explicitly out of scope (v1)
 

@@ -2,8 +2,8 @@
 //!
 //! One SFTP channel per host, opened the first time the Files view or panel needs it,
 //! on the host's shared SSH session. Transfers stream in chunks with progress events.
-//! "Edit locally" downloads to the cache, watches the local copy, and uploads every save
-//! back — unless the remote file changed meanwhile (conflict).
+//! "Edit locally" watches local saves and reports pending changes. Uploads are explicit
+//! and preserve remote-version conflict checks.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -46,6 +46,8 @@ struct EditWatch {
 
 pub struct Sftp {
     conns: Arc<ConnectionManager>,
+    db: Arc<crate::db::Db>,
+    vault: Arc<Mutex<crate::vault::Vault>>,
     events: broadcast::Sender<CoreEvent>,
     cache_dir: PathBuf,
     sessions: tokio::sync::Mutex<HashMap<String, Arc<Conn>>>,
@@ -56,9 +58,11 @@ pub struct Sftp {
 }
 
 impl Sftp {
-    pub fn new(conns: Arc<ConnectionManager>, events: broadcast::Sender<CoreEvent>, cache_dir: PathBuf) -> Self {
+    pub fn new(conns: Arc<ConnectionManager>, db: Arc<crate::db::Db>, vault: Arc<Mutex<crate::vault::Vault>>, events: broadcast::Sender<CoreEvent>, cache_dir: PathBuf) -> Self {
         Self {
             conns,
+            db,
+            vault,
             events,
             cache_dir,
             sessions: Default::default(),
@@ -531,9 +535,10 @@ impl Sftp {
         if meta.size.unwrap_or(0) > EDIT_MAX_BYTES {
             return Err(Error::Other("file is larger than 20 MB — download it instead".into()));
         }
-        let mut src = c.s.open(remote).await.map_err(sftp_err)?;
+        let src = c.s.open(remote).await.map_err(sftp_err)?;
         let mut data = Vec::new();
-        src.read_to_end(&mut data).await?;
+        src.take(EDIT_MAX_BYTES + 1).read_to_end(&mut data).await?;
+        if data.len() as u64 > EDIT_MAX_BYTES { return Err(Error::Other("file is larger than 20 MB — download it or use Database → Import".into())); }
         let local = self.local_copy_path(host_id, remote);
         if let Some(p) = local.parent() {
             tokio::fs::create_dir_all(p).await?;
@@ -543,7 +548,7 @@ impl Sftp {
         self.edit_stop(host_id, remote);
         let base_mtime = Arc::new(Mutex::new(meta.mtime.unwrap_or(0) as i64));
         let me = self.clone();
-        let (host, rem, path, base) = (host_id.to_string(), remote.to_string(), local.clone(), base_mtime.clone());
+        let (host, rem, path) = (host_id.to_string(), remote.to_string(), local.clone());
         let task = tokio::spawn(async move {
             let mut last_local = local_mtime(&path).await;
             loop {
@@ -553,14 +558,14 @@ impl Sftp {
                     continue;
                 }
                 last_local = now;
-                let _ = me.sync_edit(&host, &rem, &path, &base, false).await;
+                let _ = me.events.send(CoreEvent::EditSync { host_id: host.clone(), remote: rem.clone(), state: "pending".into(), message: Some("Local changes await upload. Review and upload from Files.".into()) });
             }
         });
         self.edits.lock().insert(Self::edit_key(host_id, remote), EditWatch { task, base_mtime, local: local.clone() });
         Ok(local)
     }
 
-    async fn sync_edit(&self, host_id: &str, remote: &str, local: &Path, base: &Arc<Mutex<i64>>, force: bool) -> Result<()> {
+    async fn sync_edit(&self, host_id: &str, remote: &str, local: &Path, base: &Arc<Mutex<i64>>, force: bool, confirmed: bool) -> Result<()> {
         let emit = |state: &str, message: Option<String>| {
             let _ = self.events.send(CoreEvent::EditSync {
                 host_id: host_id.to_string(),
@@ -570,6 +575,8 @@ impl Sftp {
             });
         };
         let res: Result<()> = async {
+            if !self.vault.lock().is_unlocked() { return Err(Error::VaultLocked); }
+            crate::git::require_confirmation(&self.db, host_id, confirmed)?;
             let current = self.remote_mtime(host_id, remote).await?;
             if !force && current != *base.lock() {
                 emit("conflict", Some("The file changed on the server since you opened it.".into()));
@@ -589,7 +596,7 @@ impl Sftp {
     }
 
     /// Upload the local copy now. `force` overwrites a file that changed on the server.
-    pub async fn edit_upload(&self, host_id: &str, remote: &str, force: bool) -> Result<()> {
+    pub async fn edit_upload(&self, host_id: &str, remote: &str, force: bool, confirmed: bool) -> Result<()> {
         let (local, base) = {
             let edits = self.edits.lock();
             let w = edits
@@ -597,7 +604,7 @@ impl Sftp {
                 .ok_or_else(|| Error::NotFound("this file is not open for editing".into()))?;
             (w.local.clone(), w.base_mtime.clone())
         };
-        self.sync_edit(host_id, remote, &local, &base, force).await
+        self.sync_edit(host_id, remote, &local, &base, force, confirmed).await
     }
 
     pub fn edit_stop(&self, host_id: &str, remote: &str) {
@@ -620,13 +627,13 @@ impl Sftp {
     }
 }
 
-async fn create_staging(c: &Conn, path: &str) -> Result<russh_sftp::client::fs::File> {
+pub(crate) async fn create_staging(c: &Conn, path: &str) -> Result<russh_sftp::client::fs::File> {
     let mut attributes = FileAttributes::empty();
     attributes.permissions = Some(0o600);
     c.s.open_with_flags_and_attributes(path, OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::EXCLUDE, attributes).await.map_err(sftp_err)
 }
 
-async fn prepare_upload(c: &Conn, remote: &str) -> Result<(String, String)> {
+pub(crate) async fn prepare_upload(c: &Conn, remote: &str) -> Result<(String, String)> {
     let target = shell_quote(remote);
     let command = format!("if [ -e {target} ] || [ -L {target} ]; then [ -f {target} ] && [ ! -L {target} ] && [ \"$(stat -c %u -- {target})\" = \"$(id -u)\" ] && [ \"$(stat -c %h -- {target})\" = 1 ] || {{ echo 'Cannot safely replace this file; use the built-in editor or another destination'; exit 1; }}; stat -c '%u:%g:%a:%h:%s:%Y:%i' -- {target}; else echo missing; fi");
     let result = exec(c.lease.handle().await?.as_ref(), &command, Duration::from_secs(10)).await?;
@@ -635,7 +642,7 @@ async fn prepare_upload(c: &Conn, remote: &str) -> Result<(String, String)> {
     Ok((format!("{parent}/.rookery-{}.part", new_id()), result.stdout.trim().into()))
 }
 
-async fn finish_upload(c: &Conn, staging: &str, remote: &str, original: &str) -> Result<()> {
+pub(crate) async fn finish_upload(c: &Conn, staging: &str, remote: &str, original: &str) -> Result<()> {
     let (temp, target) = (shell_quote(staging), shell_quote(remote));
     let check = if original == "missing" {
         format!("[ ! -e {target} ] && [ ! -L {target} ]")
@@ -693,4 +700,38 @@ pub(crate) async fn exercise_staged_uploads(core: &crate::Core, host_id: &str) {
     drop(c);
     drop(renewed);
     core.sftp.close(host_id).await;
+}
+
+#[cfg(test)]
+mod guard_tests {
+    use super::*;
+    use crate::model::{EnvLabel, Host, RefreshSetting, StartView};
+
+    #[tokio::test]
+    async fn external_upload_uses_saved_environment_and_lock_before_connecting() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = crate::Core::init(dir.path()).unwrap();
+        let mut host = core.db.save_host(Host {
+            id: String::new(), group_id: None, name: "server".into(), address: "unreachable.invalid".into(), port: 22,
+            env_label: EnvLabel::Dev, tags: vec![], identity_id: None, jump_host_id: None, theme: None,
+            start_view: StartView::Terminal, start_folder: None, auto_reconnect: false, keepalive_s: 30,
+            log_session: false, refresh: RefreshSetting::default(), sort: 0, created_at: 0, updated_at: 0,
+        }).unwrap();
+        let local = dir.path().join("draft.txt");
+        tokio::fs::write(&local, "local changes").await.unwrap();
+        let base = Arc::new(Mutex::new(1));
+        assert!(matches!(core.sftp.sync_edit(&host.id, "/remote", &local, &base, false, true).await, Err(Error::VaultLocked)));
+        core.vault.lock().create("test master").unwrap();
+        host.env_label = EnvLabel::Prod;
+        core.db.save_host(host.clone()).unwrap();
+        let error = core.sftp.sync_edit(&host.id, "/remote", &local, &base, false, false).await.unwrap_err();
+        assert!(error.to_string().contains("production"));
+        assert!(core.connections.all_info().is_empty());
+        core.sftp.edits.lock().insert(Sftp::edit_key(&host.id, "/remote"), EditWatch { task: tokio::spawn(std::future::pending()), base_mtime: base, local: local.clone() });
+        core.lock(false).await;
+        assert!(core.sftp.edits.lock().contains_key(&Sftp::edit_key(&host.id, "/remote")));
+        assert_eq!(tokio::fs::read_to_string(local).await.unwrap(), "local changes");
+        assert!(core.connections.all_info().is_empty());
+        core.sftp.edit_stop(&host.id, "/remote");
+    }
 }

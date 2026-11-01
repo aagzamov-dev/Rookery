@@ -1,3 +1,4 @@
+import { COMPUTER_ID } from "../local/target";
 import { useEffect, useRef, useState } from "react";
 import { ChevronRight, GitBranch, List, ListTree, Loader2, Plus, RefreshCw } from "lucide-react";
 import { api, asCoreError } from "../../ipc/api";
@@ -167,7 +168,7 @@ export function GitView({ hostId, visible }: { hostId: string; visible: boolean 
       if (production || destructive) {
         confirmed = await askConfirm({
           title: `${label}${production ? ` on PROD — ${host.name}` : ""}?`,
-          body: action.kind === "discard" ? "This permanently discards the selected file's changes on the server. Untracked files are deleted." : action.kind === "stash_drop" ? "This permanently deletes this stash." : production ? "This operation changes the production repository or its remote." : "This changes the working tree. Uncommitted work may be affected.",
+          body: action.kind === "discard" ? `This permanently discards the selected file's changes on ${hostId === COMPUTER_ID ? "this computer" : "the server"}. Untracked files are deleted.` : action.kind === "stash_drop" ? "This permanently deletes this stash." : production ? "This operation changes the production repository or its remote." : "This changes the working tree. Uncommitted work may be affected.",
           preview: `${status.root}\n${label}`,
           confirmLabel: label,
           danger: production || destructive,
@@ -209,9 +210,9 @@ export function GitView({ hostId, visible }: { hostId: string; visible: boolean 
       const outcome = await saveRaw(key, text, "normal", confirmed);
       if (outcome.kind === "saved") {
         saved = true;
-        setNotice(stage ? "File saved. Review staging confirmation next." : "File saved on the server. Stage it when ready.");
+        setNotice(stage ? "File saved. Review staging confirmation next." : "File saved. Stage it when ready.");
       } else if (outcome.kind === "conflict") {
-        setNotice("The file changed on the server. Nothing was overwritten. Your draft is preserved; open it in Editor to compare and resolve the changes.");
+        setNotice("The file changed. Nothing was overwritten. Your draft is preserved; open it in Editor to compare and resolve the changes.");
       } else { setNotice(`${outcome.message} Your draft is preserved. Open it in Editor to review saving with sudo.`); }
     } catch (cause) { setNotice(asCoreError(cause).message); }
     finally { working.current = false; setBusy(false); }
@@ -269,7 +270,7 @@ export function GitView({ hostId, visible }: { hostId: string; visible: boolean 
         <Button disabled={disabled || !folder} onClick={() => void refresh()}>{cached?.loading ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />} Reload</Button>
       </div>
       {(configError || cached?.error || notice) && <div role="status" className="max-h-36 shrink-0 overflow-auto whitespace-pre-wrap break-words border-b border-line px-3 py-2 text-xs text-warn">{[configError, cached?.error, notice].filter(Boolean).join("\n")}{configError && !config && <Button onClick={() => void loadFolders()}>Retry</Button>}</div>}
-      {!folder ? <div role="status" className="grid flex-1 place-items-center p-6 text-muted">{initializing ? "Checking the configured folder and nearby repositories…" : "Add a repository with the + button to get started."}</div> : !status ? <div role="status" className="grid flex-1 place-items-center text-muted">{cached?.loading ? "Loading repository…" : "Reload to inspect this repository. Git must be installed on the server."}</div> : <>
+      {!folder ? <div role="status" className="grid flex-1 place-items-center p-6 text-muted">{initializing ? "Checking the configured folder and nearby repositories…" : "Add a repository with the + button to get started."}</div> : !status ? <div role="status" className="grid flex-1 place-items-center text-muted">{cached?.loading ? "Loading repository…" : `Reload to inspect this repository. Git must be installed on ${hostId === COMPUTER_ID ? "this computer" : "the server"}.`}</div> : <>
         <div className="flex flex-wrap items-center gap-2 border-b border-line px-3 py-2">
           <GitBranch size={14} className="text-accent" /><Select aria-label="Switch branch" className="max-w-56" value={status.branch} disabled={disabled || !!status.operation} onChange={(event) => void mutate({ kind: "switch", branch: event.target.value }, `Switch to ${event.target.value}`)}><option value={status.branch}>{status.branch}</option>{status.branches.filter((branch) => branch !== status.branch).map((branch) => <option key={branch} value={branch}>{branch}</option>)}</Select>
           <Button disabled={disabled || !!status.operation} onClick={() => void createBranch()}>New branch</Button><span className="mr-auto text-xs text-muted">{status.upstream ?? "No upstream"} · ↑{status.ahead} ↓{status.behind}</span><Button disabled={disabled} onClick={() => void mutate({ kind: "fetch" }, "Fetch")}>Fetch</Button><Button disabled={disabled || !!status.operation} title="Fast-forward only" onClick={() => void mutate({ kind: "pull" }, "Pull (fast-forward only)")}>Pull</Button><Button disabled={disabled || status.branch === "(detached)"} onClick={() => void push()}>{status.upstream ? "Push" : "Publish branch"}</Button>

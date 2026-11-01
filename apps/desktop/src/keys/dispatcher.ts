@@ -1,6 +1,7 @@
 // One keydown listener (capture phase) for every shortcut in the app.
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { activeServerHostId, closeTab, lockApp, cycleTab } from "../app/tabActions";
+import { COMPUTER_ID } from "../features/local/target";
 import { useLocalShells } from "../features/local/LocalTab";
 import { terminalRegistry } from "../features/server-tab/terminal/registry";
 import { sqlRegistry } from "../features/sql/registry";
@@ -56,7 +57,7 @@ export function activeTerminalKey(termKey: string | null): string | null {
   const { tabs, activeTabId, views } = useTabs.getState();
   const t = tabs.find((x) => x.id === activeTabId);
   if (t?.kind === "local") return t.id;
-  if (t?.kind === "server") return views[t.hostId]?.activeTerminal ?? null;
+  if (t?.kind === "server" || t?.kind === "computer") return views[t.hostId]?.activeTerminal ?? null;
   return null;
 }
 
@@ -68,6 +69,7 @@ export function runAction(id: ActionId, termKey: string | null) {
   const tabs = useTabs.getState();
   const hostId = activeServerHostId();
   const term = activeTerminalKey(termKey);
+  if (hostId === COMPUTER_ID && (!useKeys.getState().app.showThisComputer || useTabs.getState().deferred[COMPUTER_ID]) && /^(view|term|files|sql)\./.test(id)) return;
   if (id.startsWith("sql.")) {
     const key = sqlRegistry.activeKey();
     const h = key ? sqlRegistry.get(key) : undefined;
@@ -80,7 +82,7 @@ export function runAction(id: ActionId, termKey: string | null) {
   }
   const view = VIEW_OF[id];
   if (view) {
-    if (hostId) tabs.setView(hostId, view);
+    if (hostId && (hostId !== COMPUTER_ID || !["services", "processes", "logs", "settings"].includes(view))) tabs.setView(hostId, view);
     return;
   }
   const gotoN = /^tab\.goto(\d)$/.exec(id);
@@ -149,7 +151,7 @@ export function runAction(id: ActionId, termKey: string | null) {
       break;
     case "tab.reopen": {
       const t = tabs.popClosed();
-      if (t?.kind === "server") tabs.openServer(t.hostId);
+      if (t?.kind === "server" || t?.kind === "computer" && useKeys.getState().app.showThisComputer) tabs.openServer(t.hostId, t.kind === "computer" ? "overview" : "terminal");
       else if (t?.kind === "page") tabs.openPage(t.page);
       else if (t?.kind === "local") tabs.openLocal(t.shellId, t.title);
       else if (t?.kind === "db") tabs.openDb(t.target, t.title, true);
@@ -214,8 +216,7 @@ export function runAction(id: ActionId, termKey: string | null) {
       if (term) void terminalRegistry.sudoFill(term);
       break;
     case "local.new": {
-      const sh = useLocalShells.getState().shells?.[0];
-      if (sh) tabs.openLocal(sh.id, sh.label);
+      void useLocalShells.getState().load().then(() => { const sh = useLocalShells.getState().shells?.[0]; if (sh) tabs.openLocal(sh.id, sh.label); });
       break;
     }
     // copy & paste
@@ -281,7 +282,7 @@ export function runAction(id: ActionId, termKey: string | null) {
       break;
     }
     case "files.upload":
-      if (hostId) shellHooks.uploadFiles(hostId);
+      if (hostId && hostId !== COMPUTER_ID) shellHooks.uploadFiles(hostId);
       break;
     case "files.refresh":
       if (hostId) void useFiles.getState().refresh(hostId);
@@ -372,7 +373,7 @@ export function installKeyDispatcher(): () => void {
     }
 
     const hostId = activeServerHostId();
-    if (!hostId) return;
+    if (!hostId || hostId === COMPUTER_ID) return;
     const host = useHosts.getState().hostById(hostId);
     const groups = useHosts.getState().groups;
     const snippet = useSnippets

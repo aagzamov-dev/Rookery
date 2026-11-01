@@ -4,7 +4,7 @@ import { FileText, FolderOpen, Plus, X } from "lucide-react";
 import { api } from "../../ipc/api";
 import { useHosts } from "../../stores/hosts";
 import { streamKey, useLogs } from "../../stores/logs";
-import { LogViewer } from "./LogViewer";
+import { HistoryLogViewer } from "./HistoryLogViewer";
 import { LogFilePicker } from "./LogFilePicker";
 import { parentPath } from "../../stores/files";
 import { Button } from "../../ui/primitives";
@@ -12,7 +12,7 @@ import { Button } from "../../ui/primitives";
 const SAVED_KEY = "ui.logFiles";
 
 /** Follow any log file with `tail -F` — only while this view is visible. */
-export function LogsView({ hostId }: { hostId: string }) {
+export function LogsView({ hostId, visible }: { hostId: string; visible: boolean }) {
   const host = useHosts((s) => s.hosts.find((h) => h.id === hostId));
   const target = useLogs((s) => s.fileTarget[hostId] ?? null);
   const setTarget = useLogs((s) => s.setFileTarget);
@@ -66,12 +66,17 @@ export function LogsView({ hostId }: { hostId: string }) {
       </aside>
       <div className="min-w-0 flex-1 overflow-hidden rounded-xl border border-line">
         {target ? (
-          <LogViewer
+          <HistoryLogViewer
+            key={target}
+            hostId={hostId}
+            source="file"
+            target={target}
+            visible={visible}
             title={<span className="font-mono text-xs font-normal text-accent">{target}</span>}
             lines={stream?.lines ?? []}
             ended={stream?.ended ?? null}
       dropped={stream?.dropped ?? 0}
-            live
+            live={visible}
             onClear={() => clear(hostId, `file:${target}`)}
             actions={
               <button aria-label="Stop following" title="Stop following" onClick={() => setTarget(hostId, null)} className="grid h-7 w-7 place-items-center rounded-md border border-line text-muted hover:text-text">
@@ -83,7 +88,7 @@ export function LogsView({ hostId }: { hostId: string }) {
           <div className="grid h-full place-items-center bg-term text-muted">Pick a log file to follow.</div>
         )}
       </div>
-      {browsing && <LogFilePicker
+      {browsing && visible && <LogFilePicker
         hostId={hostId}
         initialPath={target ? parentPath(target) : host?.start_folder || "/var/log"}
         onClose={() => setBrowsing(false)}

@@ -7,7 +7,7 @@ import { SearchAddon, type ISearchOptions } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
-import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
+import { notify } from "../../../stores/notifications";
 import { api, asCoreError } from "../../../ipc/api";
 import { copyText, readClipboard } from "../../../ipc/clipboard";
 import { askConfirm } from "../../../stores/dialogs";
@@ -69,19 +69,6 @@ const decodeB64 = (b64: string) => {
 
 const PRINTABLE = /^[^\x00-\x1f\x7f]+$/;
 const SUDO_PROMPT = /\[sudo[^\]\n]*\][^\r\n]*:\s*$/;
-
-let notifyAllowed: boolean | null = null;
-async function notify(title: string, body: string) {
-  try {
-    if (notifyAllowed === null) {
-      notifyAllowed = await isPermissionGranted();
-      if (!notifyAllowed) notifyAllowed = (await requestPermission()) === "granted";
-    }
-    if (notifyAllowed) sendNotification({ title, body });
-  } catch {
-    /* notifications unavailable */
-  }
-}
 
 const fmtDuration = (ms: number) => {
   const s = Math.round(ms / 1000);
@@ -336,7 +323,6 @@ class TerminalRegistry {
 
   private commandFinished(e: Entry, code: number | null) {
     const started = e.cmdStart;
-    const cmd = e.cmdText;
     e.cmdStart = null;
     e.cmdText = null;
     if (started == null) return;
@@ -347,7 +333,7 @@ class TerminalRegistry {
     if (document.hasFocus() && e.visible) return; // you're looking at it
     const where = e.local ? "this computer" : (useHosts.getState().hostById(e.hostId)?.name ?? "server");
     const status = code == null ? "Finished" : code === 0 ? "✓ Finished" : `✗ Failed (exit ${code})`;
-    void notify(`${status} on ${where}`, `${cmd ?? "command"} · ${fmtDuration(took)}`);
+    void notify(`${status} on ${where}`, `Command finished after ${fmtDuration(took)}. Open the terminal for details.`);
   }
 
   private async connect(e: Entry) {
@@ -356,7 +342,7 @@ class TerminalRegistry {
     e.exited = false;
     try {
       const termId = e.local
-        ? await api.localTermOpen(e.opts.localShell!, e.term.cols, e.term.rows)
+        ? await api.localTermOpen(e.opts.localShell!, e.term.cols, e.term.rows, e.opts.cwd, e.opts.container)
         : await api.termOpen({
             host_id: e.hostId,
             cols: e.term.cols,
@@ -414,13 +400,13 @@ class TerminalRegistry {
     if (!triggers.length) return;
     const buf = e.term.buffer.active;
     const from = e.scanMarker && !e.scanMarker.isDisposed ? e.scanMarker.line : buf.baseY;
-    const next = scanTerminal(e.term, from, triggers, (c, line) => {
+    const next = scanTerminal(e.term, from, triggers, (c) => {
       if (!c.t.notify || (document.hasFocus() && e.visible)) return;
       const now = Date.now();
       if (now - (e.trigNotified[c.t.id] ?? 0) < 30_000) return;
       e.trigNotified[c.t.id] = now;
       const where = e.local ? "this computer" : (useHosts.getState().hostById(e.hostId)?.name ?? "server");
-      void notify(`Trigger on ${where}`, line.trim().slice(0, 180));
+      void notify(`Trigger on ${where}`, "A terminal trigger matched. Open the terminal for details.");
     });
     if (!e.scanMarker || e.scanMarker.isDisposed || e.scanMarker.line !== next) {
       e.scanMarker?.dispose();

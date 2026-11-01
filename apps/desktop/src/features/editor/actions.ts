@@ -194,12 +194,14 @@ export function applyPrefs() {
  * The cheap check (size and time; never polled: on focus, when the view or a tab is shown).
  * A clean tab whose file changed is reloaded; a dirty one gets the banner.
  */
-export async function checkServer(hostId: string, keys?: string[]) {
+export async function checkServer(hostId: string, keys?: string[], active: () => boolean = () => true) {
   const docs = (useEditor.getState().byHost[hostId]?.docs ?? []).filter((d) => !keys || keys.includes(d.key));
   await Promise.all(
     docs.map(async (d) => {
       try {
+        if (!active()) return;
         const st = await api.editorStat(hostId, d.realPath);
+        if (!active()) return;
         const same = st.exists && st.size === d.base.size && st.mtime === d.base.mtime;
         const cur = getDoc(d.key);
         if (!cur) return;
@@ -211,7 +213,7 @@ export async function checkServer(hostId: string, keys?: string[]) {
           // Only the time changed (e.g. `touch`)? Then the content is the same: just take the new version.
           const f = await api.editorOpen(hostId, d.realPath);
           if (f.version.sha256 === cur.base.sha256) useEditor.getState().patch(d.key, { base: f.version, changed: null });
-          else if (!getDoc(d.key)?.dirty) await reload(d.key, true);
+          else if (active() && !getDoc(d.key)?.dirty) await reload(d.key, true);
           return;
         }
         useEditor.getState().patch(d.key, { changed: { size: st.size, mtime: st.mtime, exists: st.exists } });

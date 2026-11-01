@@ -1,3 +1,4 @@
+import { COMPUTER_ID } from "../local/target";
 // Running a snippet on a server tab: variables → PROD guard → type into the terminal.
 import type { RunMode } from "../../ipc/bindings/RunMode";
 import type { Snippet } from "../../ipc/bindings/Snippet";
@@ -32,7 +33,7 @@ export async function runInContainer(s: Snippet, hostId: string, container: stri
   const host = useHosts.getState().hostById(hostId);
   const command = await resolveCommand(s, `${container} on ${host?.name ?? "server"}`);
   if (command == null) return;
-  if (s.ask_prod && host?.env_label === "prod") {
+  if (host?.env_label === "prod") {
     const ok = await askConfirm({ title: `Run in ${container} on PROD — ${host.name}?`, preview: command, confirmLabel: "Run on production", danger: true });
     if (!ok) return;
   }
@@ -52,10 +53,10 @@ export async function runSnippet(s: Snippet, hostId: string, mode?: RunMode): Pr
   if (command == null) return;
   const runMode = mode ?? s.run_mode;
 
-  if (s.ask_prod && host?.env_label === "prod" && runMode !== "paste") {
+  if (host?.env_label === "prod" && runMode !== "paste") {
     const ok = await askConfirm({
       title: `Run on PROD — ${host.name}?`,
-      body: "This snippet asks for confirmation on production servers.",
+      body: "Review the command before running it on this production server.",
       preview: command,
       confirmLabel: "Run on production",
       danger: true,
@@ -79,6 +80,7 @@ export async function runSnippet(s: Snippet, hostId: string, mode?: RunMode): Pr
 
 /** Snippets that apply to a host, in library order. */
 export function snippetsForHost(hostId: string | null): Snippet[] {
+  if (hostId === COMPUTER_ID) return [];
   const { list } = useSnippets.getState();
   const { groups, hostById } = useHosts.getState();
   const host = hostId ? hostById(hostId) : undefined;

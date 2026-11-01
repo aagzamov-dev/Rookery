@@ -85,7 +85,9 @@ impl LocalTerminals {
         Self { events, map: Default::default() }
     }
 
-    pub fn open(&self, shell_id: &str, cols: u16, rows: u16) -> Result<String> {
+    pub fn open(&self, shell_id: &str, cols: u16, rows: u16) -> Result<String> { self.open_at(shell_id, cols, rows, None, None) }
+
+    pub fn open_at(&self, shell_id: &str, cols: u16, rows: u16, cwd: Option<&str>, container: Option<&str>) -> Result<String> {
         let sh = available_shells()
             .into_iter()
             .find(|s| s.id == shell_id)
@@ -94,11 +96,15 @@ impl LocalTerminals {
         let pair = pty
             .openpty(PtySize { rows: rows.max(2), cols: cols.max(2), pixel_width: 0, pixel_height: 0 })
             .map_err(|e| Error::Other(format!("could not open a terminal: {e}")))?;
-        let mut cmd = CommandBuilder::new(&sh.program);
-        cmd.args(&sh.args);
-        if let Some(home) = dirs::home_dir() {
-            cmd.cwd(home);
-        }
+        let mut cmd = if let Some(container) = container {
+            if !crate::collectors::valid_container_ref(container) { return Err(Error::Other("Invalid container.".into())); }
+            let mut cmd=CommandBuilder::new(crate::computer::executable("docker"));
+            cmd.args(["--host", &crate::computer::docker_endpoint()]);
+            for key in crate::computer::DOCKER_ENV { cmd.env_remove(key); }
+            cmd.args(["exec", "-it", container, "sh", "-c", "command -v bash >/dev/null && exec bash || exec sh"]);cmd
+        } else { let mut cmd=CommandBuilder::new(&sh.program);cmd.args(&sh.args);cmd };
+        if let Some(cwd)=cwd { let path=crate::computer::path(cwd)?;if !path.is_dir(){return Err(Error::Other("Choose an existing local folder.".into()));}cmd.cwd(path); }
+        else if let Some(home) = dirs::home_dir() { cmd.cwd(home); }
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
         let mut child = pair

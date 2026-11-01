@@ -28,6 +28,10 @@ pub async fn docker_action(conns: &ConnectionManager, host_id: &str, container: 
         DockerAction::Kill => "kill",
         DockerAction::Remove => "rm",
     };
+    if host_id == crate::computer::ID {
+        crate::computer::run("docker", &crate::computer::args(&[verb, container]), None, 90).await?;
+        return Ok(());
+    }
     let lease = conns.acquire(host_id).await?;
     let h = lease.handle().await?;
     let out = exec(&h, &format!("docker {verb} {container} 2>&1"), Duration::from_secs(90)).await?;

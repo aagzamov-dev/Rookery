@@ -117,7 +117,7 @@ CPU % = delta between this and the previous sample (kept in Rust). Net rate = de
 `docker.list` (on demand): `docker ps -a --format '{{json .}}'` (+ compose grouping from labels via `docker inspect` only on first load, cached).
 `docker.stats` (streaming, only while Docker view visible): `docker stats --format '{{json .}}'` — **one long-running process**, not repeated `--no-stream` calls.
 `docker.events` (streaming, while a server tab is open and Docker view was opened at least once): `docker events --format '{{json .}}' --filter type=container` — push, near-zero cost, keeps the list state correct without polling.
-`docker.logs` (streaming, only while Logs panel visible): `docker logs --tail 200 --since <last_ts> -f <id>`.
+`docker.logs` (streaming, only while Logs panel visible): `docker logs --tail 500 --since <last_ts> -f <id>`.
 `services` (on demand): `systemctl list-units --type=service --no-pager --plain --no-legend`.
 `processes` (on demand, optional 5 s while visible): `ps -eo pid,user,%cpu,%mem,etime,comm --sort=-%cpu | head -40`.
 
@@ -137,7 +137,7 @@ Sources: `metrics`, `docker.list`, `docker.stats`, `docker.events`, `docker.logs
 
 ### 4.4 RefreshEngine (Dashboard / mobile background refresh)
 
-Separate from subscriptions. Runs **only** on explicit Sync or when auto-refresh is enabled for a group/server (see 04-DATA-SYNC-SECURITY.md §4).
+Separate from subscriptions. Runs on explicit Sync, or opt-in auto-refresh only for the currently visible connected Overview while the window is focused, vault unlocked and live metrics enabled (see 04-DATA-SYNC-SECURITY.md §4). Automatic refresh never connects unrelated hosts.
 - Per server: resolve effective setting (server → group → global).
 - Collect = one connection (reuse the open session if the server tab is open, else a temporary one), one batched script (metrics twice, 1 s apart, for CPU%) + optional `docker ps` / `docker stats --no-stream` depending on "what to collect". Then close the temporary connection.
 - Concurrency 3 (configurable 1–6). Timeout 10 s. Servers that need an interactive secret are **skipped and marked Locked**.
@@ -234,6 +234,12 @@ All payloads are `serde` types from `rookery-core/model`, exported to TS with `t
 | Cold start to lock screen | < 1 s; unlock → UI < 300 ms; no network |
 
 ---
+
+### Native computer target
+
+`computer::ID` / `COMPUTER_ID` is a reserved resource identifier, not a saved host. The `computer` tab reuses server-view state and UI while omitting SSH-only views and attachment. Native adapters in `computer.rs`, `git.rs`, `editor.rs`, `local.rs` and subscriptions handle local operations; commands retain the existing typed IPC/event channel. The visibility engine selects local metrics only for visible Overview and Docker sources only for visible Docker, with lock/window/Settings/deferred-restore gates. No background shell, repository, Docker or database discovery is introduced.
+
+Local Git/Docker processes use argv, bounded capture and timeouts or cancellable streams with kill-on-drop. Docker always pins a default/Desktop local socket and removes remote context overrides, including PTY container shells. sysinfo 0.37.2 (Rust 1.88 minimum, workspace 1.90) enables only system/disk/network features and refreshes no process list. Local file/editor IO runs on blocking workers and reuses file-version, decoding and backup types. Filesystem paths are native in Rust and normalized for drive/UNC navigation in the UI without rewriting POSIX backslash filenames.
 
 ## 8. Testing strategy (minimum)
 

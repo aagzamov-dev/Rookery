@@ -4,12 +4,16 @@ import { api } from "../../ipc/api";
 import type { LocalShell } from "../../ipc/bindings/LocalShell";
 import { TerminalPane } from "../server-tab/terminal/TerminalPane";
 
+let shellsPending: Promise<void> | null = null;
+
 /** Shells installed on this computer (asked once). */
 export const useLocalShells = create<{ shells: LocalShell[] | null; load: () => Promise<void> }>((set, get) => ({
   shells: null,
   load: async () => {
     if (get().shells) return;
-    set({ shells: await api.localShells().catch(() => []) });
+    if (shellsPending) return shellsPending;
+    shellsPending = api.localShells().catch(() => []).then((shells) => { set({ shells }); }).finally(() => { shellsPending = null; });
+    return shellsPending;
   },
 }));
 

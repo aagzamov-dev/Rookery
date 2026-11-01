@@ -98,7 +98,8 @@ function Confirm({ req }: { req: ConfirmRequest }) {
           }}
         >
           <Field label={`Type ${req.typeToConfirm} to confirm`}>
-            <TextInput mono autoFocus value={typed} onChange={(e) => setTyped(e.target.value)} aria-label="Confirmation text" />
+            <TextInput mono autoFocus autoCapitalize="none" autoCorrect="off" autoComplete="off" spellCheck={false} value={typed} onChange={(e) => setTyped(e.target.value)} aria-label="Confirmation text" aria-describedby="confirmation-hint" />
+            <p id="confirmation-hint" className="m-0 mt-2 text-xs text-muted">{typed && locked ? `Does not match. Enter ${req.typeToConfirm} exactly, including uppercase and lowercase letters.` : "Case-sensitive. Enter the name exactly as shown."}</p>
           </Field>
         </form>
       )}

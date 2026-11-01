@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { allowDatabaseSessionClose } from "./jobGuard";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import type { SQLNamespace } from "@codemirror/lang-sql";
@@ -8,6 +9,7 @@ import type { SchemaTree as Tree } from "../../ipc/bindings/SchemaTree";
 import { askConfirm } from "../../stores/dialogs";
 import { useKeys } from "../../stores/keys";
 import { useSql, type SqlResultSet, type SqlRun } from "../../stores/sql";
+import type { MenuItem } from "../../ui/ContextMenu";
 import { Button, IconButton, Select } from "../../ui/primitives";
 import { classifySql } from "./classify";
 import { settleTransactions } from "./txGuard";
@@ -21,6 +23,7 @@ import { charToIndex, splitSql, type Dialect } from "./split";
 import { TableView, type OpenTable, type TableSub } from "./TableView";
 import type { ColumnFilter } from "../../ipc/bindings/ColumnFilter";
 import { ResizablePanel } from "../../ui/ResizablePanel";
+import { DatabaseFiles } from "./DatabaseFiles";
 import { TransactionReviewDialog } from "./TransactionReviewDialog";
 
 /** A table opened as a tab inside the SQL tab. Unpinned = preview (the next single click replaces it). */
@@ -39,8 +42,8 @@ interface Props {
   /** Registry / draft key: `host:<id>` for a server view, the tab id for a database tab. */
   tabKey: string;
   sessionId: string;
-  /** Extra buttons at the right end of the toolbar (Disconnect, Save…). */
-  extra?: ReactNode;
+  /** Connection actions in the toolbar menu (Disconnect, Save…). */
+  extra?: MenuItem[];
   /** Connection name and env, for confirmations ("Allow changes on shop prod (PROD)?"). */
   label: string;
   env?: string;
@@ -87,6 +90,15 @@ function ConnectionMode({ sessionId, label, env }: { sessionId: string; label: s
 /** Database tab / server Database view: schema tree, editor, results (docs/07 §2.2). */
 export function SqlTab({ tabKey, sessionId, extra, label, env, visible = true, requestsActive = visible }: Props) {
   const meta = useSql((s) => s.sessions[sessionId]);
+  const toolbar = useRef<HTMLDivElement>(null);
+  const [compactToolbar, setCompactToolbar] = useState(true);
+  useEffect(() => {
+    const element = toolbar.current;
+    if (!element || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(([entry]) => setCompactToolbar(entry.contentRect.width < 800));
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [!!meta]);
   const draftsLoaded = useSql((s) => s.draftsLoaded);
   const fontFamily = useKeys((s) => s.terminal.fontFamily);
   const fontSize = useKeys((s) => s.terminal.fontSize);
@@ -338,6 +350,7 @@ export function SqlTab({ tabKey, sessionId, extra, label, env, visible = true, r
 
   const switchDb = async (db: string) => {
     if (!meta || db === meta.database) return;
+    if (!(await allowDatabaseSessionClose([sessionId]))) return;
     if (meta.txOpen && !(await settleTransactions([meta], `switching to ${db}`))) return;
     try {
       await api.sqlUse(sessionId, db);
@@ -354,6 +367,7 @@ export function SqlTab({ tabKey, sessionId, extra, label, env, visible = true, r
   };
 
   const reconnect = async () => {
+    if (!(await allowDatabaseSessionClose([sessionId]))) return;
     if (meta?.txOpen || running) {
       const confirmed = await askConfirm({ title: "Reconnect database?", body: "This interrupts the current operation and abandons the connection. Its outcome may be unknown; verify changes before retrying.", confirmLabel: "Reconnect" });
       if (!confirmed) return;
@@ -371,27 +385,25 @@ export function SqlTab({ tabKey, sessionId, extra, label, env, visible = true, r
   return (
     <div className="absolute inset-0 flex flex-col bg-bg" data-sql-key={tabKey}>
       {/* toolbar */}
-      <div className="flex min-h-[42px] flex-wrap items-center gap-1.5 border-b border-line bg-term px-2.5">
+      <div ref={toolbar} className="@container flex h-[42px] shrink-0 flex-nowrap items-center gap-1.5 whitespace-nowrap border-b border-line bg-term px-2.5 [&>button]:shrink-0">
         <IconButton label={showTree ? "Hide schema tree" : "Show schema tree"} onClick={() => setShowTree((x) => !x)}>
           <PanelLeft size={15} />
         </IconButton>
-        <IconButton label="Reconnect database" disabled={reconnecting || meta.state === "reconnecting"} onClick={() => void reconnect()}><RefreshCw size={14} /></IconButton>
+        {!compactToolbar && <IconButton label="Reconnect database" disabled={reconnecting || meta.state === "reconnecting"} onClick={() => void reconnect()}><RefreshCw size={14} /></IconButton>}
         {queryActive && (
           <>
             <Button variant="primary" className="h-7" disabled={running} onClick={() => void exec("current")} title="Run the statement at the cursor, or the selection (Ctrl+Enter)">
               <Play size={13} /> Run
             </Button>
-            <Button className="h-7" disabled={running} onClick={() => void exec("all")} title="Run everything (Ctrl+Shift+Enter)">
-              Run all
-            </Button>
+            {!compactToolbar && <Button className="h-7" disabled={running} onClick={() => void exec("all")} title="Run everything (Ctrl+Shift+Enter)">Run all</Button>}
             <Button className="h-7" disabled={!running} onClick={cancel} title="Stop the query on the server (Ctrl+.)">
               <Square size={12} /> Cancel
             </Button>
           </>
         )}
         <span className="mx-1 h-5 w-px bg-line" />
-        <span className="text-xs text-muted">DB</span>
-        <Select className="h-7 max-w-[200px] text-xs" value={meta.database ?? ""} onChange={(e) => void switchDb(e.target.value)} disabled={!tree?.databases.length}>
+        <span className="hidden text-xs text-muted @[650px]:inline">DB</span>
+        <Select aria-label="Database" className="h-7 min-w-0 max-w-[200px] flex-1 text-xs" value={meta.database ?? ""} onChange={(e) => void switchDb(e.target.value)} disabled={!tree?.databases.length}>
           {!meta.database && <option value="">(none)</option>}
           {(tree?.databases ?? (meta.database ? [meta.database] : [])).map((d) => (
             <option key={d} value={d}>
@@ -400,22 +412,24 @@ export function SqlTab({ tabKey, sessionId, extra, label, env, visible = true, r
           ))}
         </Select>
         <ConnectionMode sessionId={sessionId} label={label} env={env} />
-        <span className="text-xs text-muted">Tx: {meta.txOpen ? <b className="text-warn">open</b> : "none"}</span>
+        <span className="hidden text-xs text-muted @[650px]:inline">Tx: {meta.txOpen ? <b className="text-warn">open</b> : "none"}</span>
         {running ? (
-          <span className="flex items-center gap-1 text-xs text-accent">
+          <span className="hidden items-center gap-1 text-xs text-accent @[650px]:flex">
             <Loader2 size={12} className="animate-spin" /> running…
           </span>
         ) : (
-          run && <span className="text-xs text-muted">{totalMs} ms</span>
+          run && <span className="hidden text-xs text-muted @[650px]:inline">{totalMs} ms</span>
         )}
-        <span className="ml-auto flex items-center gap-1.5">
-          <Button className="h-7" onClick={() => void saveSqlSnippet(editorText())} title="Save the selection (or the whole editor) as an SQL snippet">
-            <Bookmark size={12} /> Save as snippet
-          </Button>
-          <Button className={clsx("h-7", panel && "border-accent-line bg-accent-bg")} onClick={() => setPanel((p) => (p ? null : "history"))} title="Query history and SQL snippets">
-            <History size={12} /> History
-          </Button>
-          {extra}
+        <span className="ml-auto flex shrink-0 items-center gap-1.5">
+          <DatabaseFiles sessionId={sessionId} active={visible} requestsActive={requestsActive} enabled={meta.state === "connected" && !meta.txOpen} actions={[
+            ...(compactToolbar ? [
+              { label: "Run all", icon: <Play size={12} />, disabled: running || !queryActive, onClick: () => void exec("all") },
+              { label: "Reconnect database", icon: <RefreshCw size={14} />, disabled: reconnecting || meta.state === "reconnecting", onClick: () => void reconnect() },
+            ] : []),
+            { label: "Save as snippet", icon: <Bookmark size={12} />, onClick: () => void saveSqlSnippet(editorText()) },
+            { label: "History", icon: <History size={12} />, checked: !!panel, onClick: () => setPanel((p) => p ? null : "history") },
+            ...(extra ?? []),
+          ]} />
         </span>
       </div>
 

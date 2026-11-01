@@ -1,6 +1,11 @@
 import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
 import clsx from "clsx";
 import { AlertTriangle, FolderOpen, Loader2, Plus, Radio, ShieldAlert, ShieldQuestion, Terminal as TermIcon, X } from "lucide-react";
+import { COMPUTER_ID } from "../local/target";
+import { ComputerDatabases } from "../local/ComputerDatabases";
+import { useLocalShells } from "../local/LocalTab";
+import { useKeys } from "../../stores/keys";
+import { Select } from "../../ui/primitives";
 import { isProblem, useDocker } from "../../stores/docker";
 import { useFiles } from "../../stores/files";
 import { useEditor } from "../../stores/editor";
@@ -62,26 +67,28 @@ interface Props {
  * so terminals, scroll and inputs survive switching views or tabs.
  */
 export function ServerTab({ hostId, active, onEditHost }: Props) {
+  const local = hostId === COMPUTER_ID;
+  const enabled = useKeys((s) => s.loaded && s.app.showThisComputer);
   const host = useHosts((s) => s.hosts.find((h) => h.id === hostId));
   const views = useTabs((s) => s.views[hostId]);
   const setView = useTabs((s) => s.setView);
   const info = useSessions((s) => s.byHost[hostId]);
   const attach = useSessions((s) => s.attach);
-  const [everConnected, setEverConnected] = useState(false);
+  const [everConnected, setEverConnected] = useState(local);
   const [visited, setVisited] = useState<View[]>([]);
   const windowActive = useUi((s) => s.windowActive);
   const unlocked = useVault((s) => !!s.status?.unlocked);
-  const resourceActive = active && windowActive && unlocked && info?.state === "connected";
+  const deferred = useTabs((s) => !!s.deferred[hostId]);
+  const resourceActive = active && windowActive && unlocked && (local ? enabled && !deferred : info?.state === "connected");
 
   useEffect(() => {
     if (resourceActive && views) setVisited((current) => current.includes(views.active) ? current : [...current, views.active]);
   }, [resourceActive, views?.active]);
 
-  const deferred = useTabs((s) => !!s.deferred[hostId]);
   // Connect when the tab is shown for the first time (not before). Restored tabs wait for a click.
   useEffect(() => {
-    if (active && !deferred) void attach(hostId);
-  }, [active, deferred, hostId, attach]);
+    if (!local && active && !deferred) void attach(hostId);
+  }, [active, deferred, hostId, attach, local]);
 
   useEffect(() => {
     if (info?.state === "connected") setEverConnected(true);
@@ -95,9 +102,11 @@ export function ServerTab({ hostId, active, onEditHost }: Props) {
   return (
     <div className="absolute inset-0 flex-col" style={{ display: active ? "flex" : "none" }}>
       <ViewBar hostId={hostId} current={views.active} onSelect={(v) => (v === "settings" && host ? onEditHost(host) : setView(hostId, v))} />
-      <ConnectionBanner hostId={hostId} host={host} onEditHost={onEditHost} />
-      {views.active === "terminal" && <SnippetBar hostId={hostId} />}
-      <div className="relative min-h-0 flex-1 bg-term">
+      {!local && <ConnectionBanner hostId={hostId} host={host} onEditHost={onEditHost} />}
+      {local && deferred && enabled && <div className="flex items-center gap-3 border-b border-line bg-panel px-4 py-2 text-muted">This computer is paused after restoring tabs.<Button onClick={() => useTabs.getState().setDeferred(COMPUTER_ID, false)}>Open This computer</Button></div>}
+      {local && !enabled && <div className="border-b border-line bg-panel px-4 py-2 text-muted">This computer is disabled in Settings. Local requests are paused; drafts and running terminals are retained.</div>}
+      {!local && views.active === "terminal" && <SnippetBar hostId={hostId} />}
+      <div ref={(element) => { if (element && local) element.inert = !resourceActive; }} className="relative min-h-0 flex-1 bg-term">
         {mounted("terminal") && everConnected && <TerminalView hostId={hostId} visible={show("terminal")} active={visible("terminal")} />}
         {views.opened.includes("terminal") && !everConnected && show("terminal") && <Waiting hostId={hostId} />}
         {views.opened.includes("overview") && show("overview") && <OverviewView hostId={hostId} />}
@@ -124,12 +133,12 @@ export function ServerTab({ hostId, active, onEditHost }: Props) {
         )}
         {everConnected && mounted("docker") && (
           <Keep show={show("docker")}>
-            <DockerView hostId={hostId} visible={show("docker")} />
+            <DockerView hostId={hostId} visible={visible("docker")} />
           </Keep>
         )}
         {everConnected && mounted("database") && (
           <Keep show={show("database")}>
-            <ServerDbView hostId={hostId} visible={show("database")} requestsActive={visible("database")} />
+            {local ? <ComputerDatabases visible={show("database")} requestsActive={visible("database")} /> : <ServerDbView hostId={hostId} visible={show("database")} requestsActive={visible("database")} />}
           </Keep>
         )}
         {everConnected && mounted("services") && (
@@ -144,11 +153,11 @@ export function ServerTab({ hostId, active, onEditHost }: Props) {
         )}
         {everConnected && mounted("logs") && (
           <Keep show={show("logs")}>
-            <LogsView hostId={hostId} />
+            <LogsView hostId={hostId} visible={visible("logs")} />
           </Keep>
         )}
       </div>
-      <StatsBar hostId={hostId} visible={active} />
+      {(!local || views.active === "overview") && <StatsBar hostId={hostId} visible={resourceActive} />}
     </div>
   );
 }
@@ -166,7 +175,7 @@ function ViewBar({ hostId, current, onSelect }: { hostId: string; current: View;
   const setActiveTerminal = useTabs((s) => s.setActiveTerminal);
   return (
     <div role="tablist" aria-label="Server views" className="flex min-h-[42px] flex-wrap items-center gap-0.5 border-b border-line bg-term px-2.5">
-      {VIEWS.map((v) => (
+      {VIEWS.filter((v) => hostId !== COMPUTER_ID || !["services", "processes", "logs", "settings"].includes(v.id)).map((v) => (
         <button
           key={v.id}
           role="tab"
@@ -208,7 +217,7 @@ function ViewBar({ hostId, current, onSelect }: { hostId: string; current: View;
           </button>
         </div>
       )}
-      {current === "terminal" && (
+      {hostId !== COMPUTER_ID && current === "terminal" && (
         <button
           onClick={() => setBroadcast(broadcast.mode === "off" ? "tab" : broadcast.mode === "tab" ? "all" : "off", hostId)}
           aria-pressed={broadcast.mode !== "off"}
@@ -258,7 +267,7 @@ function TerminalView({ hostId, visible, active }: { hostId: string; visible: bo
           </div>
         )}
         {views.terminals.map((t) => (
-          <TerminalPane key={t.key} termKey={t.key} hostId={hostId} visible={visible && views.activeTerminal === t.key} active={active && views.activeTerminal === t.key} opts={{ cwd: t.cwd, container: t.container }} />
+          hostId === COMPUTER_ID ? <ComputerTerminal key={t.key} termKey={t.key} visible={visible && views.activeTerminal === t.key} active={active && views.activeTerminal === t.key} cwd={t.cwd} container={t.container} /> : <TerminalPane key={t.key} termKey={t.key} hostId={hostId} visible={visible && views.activeTerminal === t.key} active={active && views.activeTerminal === t.key} opts={{ cwd: t.cwd, container: t.container }} />
         ))}
         {views.terminals.length === 0 && <div className="grid h-full place-items-center text-muted">No terminals. Use + to open one.</div>}
       </div>
@@ -425,20 +434,21 @@ function OverviewView({ hostId }: { hostId: string }) {
   const netMax = Math.max(1, ...rx, ...tx);
   const ramPct = last && last.ram_total_bytes ? (100 * last.ram_used_bytes) / last.ram_total_bytes : null;
   const d = snap?.docker;
+  const loadUnavailable = hostId === COMPUTER_ID && typeof navigator !== "undefined" && /Win/.test(navigator.platform);
   return (
     <div className="absolute inset-0 overflow-auto bg-bg p-5">
       <div className="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-3">
-        <Card label="CPU" value={pct(last?.cpu_pct)} sub={`load ${last?.load1.toFixed(2) ?? "—"}`} pct={last?.cpu_pct ?? 0}>
+        <Card label="CPU" value={pct(last?.cpu_pct)} sub={loadUnavailable ? "" : `load ${last?.load1.toFixed(2) ?? "—"}`} pct={last?.cpu_pct ?? 0}>
           <Spark values={cpu} />
         </Card>
         <Card label="Memory" value={bytes(last?.ram_used_bytes)} sub={`of ${bytes(last?.ram_total_bytes)}`} pct={ramPct ?? 0}>
           <Spark values={ram} />
         </Card>
-        <Card label="Disk /" value={pct(last?.disk_pct)} sub={`${bytes(last?.disk_used_bytes)} of ${bytes(last?.disk_total_bytes)}`} pct={last?.disk_pct ?? 0} />
+        <Card label={hostId === COMPUTER_ID ? "Disk · home volume" : "Disk /"} value={pct(last?.disk_pct)} sub={`${bytes(last?.disk_used_bytes)} of ${bytes(last?.disk_total_bytes)}`} pct={last?.disk_pct ?? 0} />
         <Card label="Network" value={`↓ ${rate(last?.net_rx_bps)}`} sub={`↑ ${rate(last?.net_tx_bps)}`} pct={0}>
           <Spark values={rx.map((v) => (100 * v) / netMax)} second={tx.map((v) => (100 * v) / netMax)} />
         </Card>
-        <Card label="Uptime" value={uptime(last?.uptime_s)} sub={`load ${last ? `${last.load1} · ${last.load5} · ${last.load15}` : "—"}`} pct={0} />
+        <Card label="Uptime" value={uptime(last?.uptime_s)} sub={loadUnavailable ? "" : `load ${last ? `${last.load1} · ${last.load5} · ${last.load15}` : "—"}`} pct={0} />
         {snap && (
           <Card label="Last dashboard sync" value={snap.os ?? "—"} sub={snap.last_ok_at ? ago(snap.last_ok_at) : "failed"} pct={0}>
             <span className="text-xs text-muted">
@@ -447,7 +457,7 @@ function OverviewView({ hostId }: { hostId: string }) {
           </Card>
         )}
       </div>
-      <p className="mt-4 text-xs text-muted">Charts use the same 3-second sample as the stats bar — no extra load on the server. History: last 15 minutes while this tab is open.</p>
+      <p className="mt-4 text-xs text-muted">Charts share the live metrics interval in Settings. Collection pauses when this tab or window is inactive. History is retained while the tab is open.</p>
     </div>
   );
 }
@@ -502,7 +512,8 @@ function StatsBar({ hostId, visible }: { hostId: string; visible: boolean }) {
   const stale = !last || now - last.ts_ms > 30_000;
   const cpu = (m?.history ?? []).slice(-20).map((s) => s.cpu_pct ?? 0);
   const ram = last ? `${bytes(last.ram_used_bytes)} / ${bytes(last.ram_total_bytes)}` : "—";
-  const live = info?.state === "connected" && windowActive && !stale;
+  const interval = useKeys((s) => s.app.metricsIntervalMs);
+  const live = visible && interval > 0 && (hostId === COMPUTER_ID || info?.state === "connected") && windowActive && !stale;
   return (
     <footer className={clsx("flex min-h-8 flex-wrap items-center gap-5 border-t border-line bg-panel px-3.5 text-xs text-muted", stale && "opacity-70")}>
       <span className="flex items-center gap-2">
@@ -531,4 +542,21 @@ function StatsBar({ hostId, visible }: { hostId: string; visible: boolean }) {
       </span>
     </footer>
   );
+}
+
+function ComputerTerminal({ termKey, visible, active, cwd, container }: {termKey:string;visible:boolean;active:boolean;cwd?:string;container?:string}) {
+  const shells=useLocalShells((s)=>s.shells);
+  const [shellId,setShellId]=useState<string | null>(null);
+  const [started,setStarted]=useState(false);
+  useEffect(()=>{if(active) void useLocalShells.getState().load();},[active]);
+  const chosen=shellId ?? shells?.[0]?.id;
+  return <div className="absolute inset-0 flex-col" style={{display:visible?"flex":"none"}}>
+    <div className="flex h-9 shrink-0 items-center gap-2 border-b border-line bg-panel px-3 text-xs text-muted">
+      <span>{container ? `Container · ${container}` : "Local shell"}</span>
+      {chosen && <Select aria-label="Local shell" value={chosen} disabled={started} onChange={(e)=>setShellId(e.target.value)}>{shells?.map((s)=><option key={s.id} value={s.id}>{s.label}</option>)}</Select>}
+      {!started && chosen && <Button disabled={!active} onClick={()=>setStarted(true)}>Start terminal</Button>}
+      {!shells && <span>Loading shells…</span>}{shells?.length===0 && <span>No local shells found. Reload Rookery after installing one.</span>}
+    </div>
+    <div className="relative min-h-0 flex-1">{started && chosen && <TerminalPane termKey={termKey} hostId={COMPUTER_ID} visible={visible} active={active} opts={{localShell:chosen,cwd,container}} />}</div>
+  </div>;
 }

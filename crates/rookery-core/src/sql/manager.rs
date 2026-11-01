@@ -180,7 +180,11 @@ struct Session {
     st: Mutex<State>,
     closed: AtomicBool,
     stop: tokio::sync::watch::Sender<bool>,
-    operation: tokio::sync::Mutex<()>,
+    operation: Arc<tokio::sync::Mutex<()>>,
+    native_params: ConnParams,
+    native_host: Option<String>,
+    native_prod: bool,
+    native_saved: Option<String>,
     revision: AtomicU64,
     last_event: Mutex<Option<CoreEvent>>,
     /// Through a server: the loopback forward (holds the SSH lease) for this session.
@@ -357,6 +361,12 @@ impl SqlManager {
         let conn_key = conn_key(&target);
         let engine = params.engine;
         let database_hint = params.database.clone();
+        let native_params = params.clone();
+        let native_host = match &route { Route::Ssh(id) => Some(id.clone()), Route::Direct => None };
+        let native_prod = match &target {
+            SqlTarget::Saved { id } => self.db.get_db_connection(id)?.env_label == EnvLabel::Prod,
+            _ => false,
+        } || native_host.as_ref().is_some_and(|id| self.db.get_host(id).is_ok_and(|h| h.env_label == EnvLabel::Prod));
         let forward = self.forward(&mut params, &route).await?;
         let (mut conn, cancel, version, ended) = Conn::connect(&params).await?;
         let database = tokio::time::timeout(Duration::from_secs(15), conn.database()).await
@@ -383,7 +393,9 @@ impl SqlManager {
             }),
             closed: AtomicBool::new(false),
             stop: tokio::sync::watch::channel(false).0,
-            operation: tokio::sync::Mutex::new(()),
+            operation: Arc::new(tokio::sync::Mutex::new(())),
+            native_params, native_host, native_prod,
+            native_saved: match &target { SqlTarget::Saved { id } => Some(id.clone()), _ => None },
             revision: AtomicU64::new(0),
             last_event: Mutex::new(None),
             forward: Mutex::new(forward),
@@ -398,6 +410,55 @@ impl SqlManager {
 
     fn session(&self, id: &str) -> Result<Arc<Session>> {
         self.sessions.lock().get(id).cloned().ok_or_else(|| Error::NotFound("database session (reopen the tab)".into()))
+    }
+
+    pub(crate) async fn native_context(&self, id: &str, write: bool, confirmed: bool) -> Result<super::backup::NativeContext> {
+        if !self.vault.lock().is_unlocked() { return Err(Error::VaultLocked); }
+        let sess = self.session(id)?;
+        let guard = sess.operation.clone().try_lock_owned().map_err(|_| Error::Other("A database operation is running; wait or cancel it".into()))?;
+        let mut params = sess.native_params.clone();
+        let production = sess.native_prod
+            || sess.native_saved.as_ref().map(|id| self.db.get_db_connection(id)).transpose()?.is_some_and(|c| c.env_label == EnvLabel::Prod)
+            || sess.native_host.as_ref().map(|id| self.db.get_host(id)).transpose()?.is_some_and(|h| h.env_label == EnvLabel::Prod);
+        {
+            let st = sess.st.lock();
+            if sess.closed.load(Ordering::SeqCst) || st.running || st.tx_open { return Err(Error::Other("Finish the active query or transaction before a database file operation".into())); }
+            if write && st.writes_until.is_some() { return Err(Error::Other("Enable persistent Edit mode before native import; timed write access cannot cover an unbounded import".into())); }
+            if write && st.read_only { return Err(Error::Other("Enable Edit mode before importing or restoring a database".into())); }
+            if write && production && !confirmed { return Err(Error::Other("Confirm this PROD database operation first".into())); }
+            params.database = st.database.clone();
+        }
+        if params.database.as_ref().is_none_or(|d| d.is_empty()) { return Err(Error::Other("Select a database first".into())); }
+        Ok(super::backup::NativeContext { params, host_id: sess.native_host.clone(), production, conn_key: sess.conn_key.clone(), stop: sess.stop.subscribe(), _guard: guard })
+    }
+
+    pub(crate) async fn native_tables(self: &Arc<Self>, id: &str) -> Result<Vec<super::backup::BackupTable>> {
+        let sess = self.session(id)?;
+        let mut stop = sess.stop.subscribe();
+        let mut guard = sess.conn.lock().await;
+        let work = async {
+            self.ensure_conn(&sess, &mut guard).await?;
+            match guard.as_mut().unwrap() { Conn::Pg(c) => c.backup_tables().await, Conn::My(c, _) => c.backup_tables().await }
+        };
+        tokio::select! {
+            result = tokio::time::timeout(Duration::from_secs(30), work) => match result {
+                Ok(result) => result,
+                Err(_) => { self.invalidate(&sess, &mut guard, "Export metadata timed out; reconnect before retrying"); Err(Error::Other("Export metadata timed out".into())) }
+            },
+            _ = stop.changed() => { self.invalidate(&sess, &mut guard, "Session closed during export metadata"); Err(Error::Other("Session closed during export metadata".into())) }
+        }
+    }
+
+    pub async fn backup_tables(self: &Arc<Self>, id: &str) -> Result<Vec<super::backup::BackupTable>> {
+        let sess = self.session(id)?;
+        self.metadata(&sess, async {
+            let mut guard = sess.conn.lock().await;
+            self.ensure_conn(&sess, &mut guard).await?;
+            match guard.as_mut().unwrap() {
+                Conn::Pg(c) => c.backup_tables().await,
+                Conn::My(c, _) => c.backup_tables().await,
+            }
+        }).await
     }
 
     fn emit(&self, s: &Session, state: &str, message: Option<String>) {
@@ -623,6 +684,7 @@ impl SqlManager {
                     return;
                 }
                 for s in all {
+                    let Ok(_operation) = s.operation.try_lock() else { continue };
                     let idle = {
                         let st = s.st.lock();
                         !st.running && !st.tx_open && st.last_used.elapsed() > IDLE_CLOSE
@@ -654,6 +716,7 @@ impl SqlManager {
     fn start(self: &Arc<Self>, session_id: &str, sql: String, opts: SqlRunOpts, history: bool) -> Result<String> {
         let sess = self.session(session_id)?;
         {
+            let _operation = sess.operation.try_lock().map_err(|_| Error::Other("A database file operation is running".into()))?;
             let mut st = sess.st.lock();
             if st.running {
                 return Err(Error::Other("a query is already running in this tab".into()));

@@ -2,6 +2,7 @@
 // A restored server tab shows "Not connected — Connect" until you click it (or connects
 // right away if "Connect restored tabs automatically" is on).
 import { useEffect } from "react";
+import { COMPUTER_ID } from "../features/local/target";
 import { api } from "../ipc/api";
 import { useHosts } from "../stores/hosts";
 import { useKeys } from "../stores/keys";
@@ -30,6 +31,7 @@ export async function restoreSession() {
   const hosts = useHosts.getState().hosts;
   const conns = useSql.getState().conns;
   const tabs = saved.tabs
+    .filter((t) => t.kind !== "computer" || useKeys.getState().app.showThisComputer)
     .filter((t) => t.kind !== "server" || hosts.some((h) => h.id === t.hostId))
     .filter((t) => t.kind !== "db" || t.target.kind === "url" || conns.some((c) => c.id === (t.target as { id: string }).id))
     .map(tabForSave);
@@ -40,6 +42,11 @@ export async function restoreSession() {
   for (const t of tabs) {
     // Database tabs come back disconnected too; they connect on first click.
     if (t.kind === "db" && !auto) deferred[t.id] = true;
+    if (t.kind === "computer") {
+      views[COMPUTER_ID] = { active: "overview", opened: ["overview"], terminals: [], activeTerminal: null, termCounter: 0 };
+      deferred[COMPUTER_ID] = true;
+      continue;
+    }
     if (t.kind !== "server") continue;
     const v = saved.views[t.hostId];
     const terminals = (v?.terminals?.length ? v.terminals : [{ title: "shell 1" }]).map((x) => ({ key: `r${Date.now().toString(36)}${n++}`, title: x.title, cwd: x.cwd }));

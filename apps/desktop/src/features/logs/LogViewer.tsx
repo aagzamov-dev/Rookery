@@ -6,7 +6,7 @@ import { copyText } from "../../ipc/clipboard";
 import { levelOf, splitTs, type Level } from "../../stores/logs";
 
 
-interface Props {
+export interface Props {
   title: ReactNode;
   lines: string[];
   ended: string | null;
@@ -134,6 +134,7 @@ export function LogViewer({ title, lines, ended, live, onClear, actions, dropped
         </div>
         {lines.length === 0 && <div className="px-1.5 py-2 text-muted">{live ? "Waiting for log lines…" : "No lines yet."}</div>}
       </div>
+      <div className="flex items-center gap-2 border-t border-line px-3 py-1 text-[11px] text-muted"><span>{shown.length.toLocaleString()} shown · {lines.length.toLocaleString()} retained</span><button className="ml-auto text-accent" onClick={() => setStick(!stick)}>{stick ? "Following bottom · pause" : "Follow bottom"}</button></div>
       {!stick && (
         <button
           onClick={() => setStick(true)}

@@ -2,6 +2,7 @@
 //! webview on the single `core` channel (docs/01-ARCHITECTURE.md §6).
 
 mod commands;
+mod notifications;
 
 use std::collections::HashMap;
 
@@ -68,6 +69,9 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            notifications::desktop_notification_permission,
+            notifications::desktop_notification_request_permission,
+            notifications::desktop_notification_send,
             commands::vault_status,
             commands::vault_create,
             commands::vault_unlock_master,
@@ -109,6 +113,7 @@ pub fn run() {
             commands::term_resize,
             commands::term_close,
             commands::subscribe,
+            commands::log_history,
             commands::unsubscribe,
             commands::refresh_effective,
             commands::snapshots_list,
@@ -159,6 +164,11 @@ pub fn run() {
             commands::services_list,
             commands::shell_integration_install,
             commands::debug_active_subscriptions,
+            commands::database_file_info,
+            commands::database_backups,
+            commands::database_file_start,
+            commands::database_file_status,
+            commands::database_file_cancel,
             commands::sql_conns_list,
             commands::sql_conn_save,
             commands::sql_conn_delete,

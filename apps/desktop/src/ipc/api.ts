@@ -1,5 +1,7 @@
 // Typed wrappers for Tauri commands (crates/rookery-tauri/src/commands.rs).
 // Tauri converts snake_case Rust argument names to camelCase on the JS side.
+import { askConfirm } from "../stores/dialogs";
+import { COMPUTER_ID } from "../features/local/target";
 import { invoke } from "@tauri-apps/api/core";
 import type { CoreEvent } from "./bindings/CoreEvent";
 import type { Transfer } from "./bindings/Transfer";
@@ -55,6 +57,11 @@ import type { GitDiff } from "./bindings/GitDiff";
 import type { GitAction } from "./bindings/GitAction";
 import type { PinCredential } from "./bindings/PinCredential";
 
+import type { DatabaseFileInfo } from "./bindings/DatabaseFileInfo";
+import type { DatabaseBackup } from "./bindings/DatabaseBackup";
+import type { DatabaseOperation } from "./bindings/DatabaseOperation";
+import type { DatabaseJob } from "./bindings/DatabaseJob";
+
 export type CoreErrorKind =
   | "db" | "io" | "json"
   | "vault_locked" | "vault_not_initialised" | "wrong_password" | "wrong_pin"
@@ -81,6 +88,16 @@ export interface IdentitySecrets {
   key?: string;
   passphrase?: string;
   sudo?: string;
+}
+
+async function remoteChange<T>(command: string, args: Record<string, unknown>, preview: string, confirmed = false, alwaysConfirm = false): Promise<T> {
+  const hosts = args.hostId === COMPUTER_ID ? [] : await invoke<Host[]>("hosts_list");
+  const host = hosts.find((h) => h.id === args.hostId);
+  if ((host?.env_label === "prod" || alwaysConfirm) && !confirmed) {
+    confirmed = await askConfirm({ title: host?.env_label === "prod" ? `Change PRODUCTION server ${host.name}?` : "Overwrite server copy?", body: "Review this change before applying it to the server.", preview, confirmLabel: "Apply change", danger: true });
+    if (!confirmed) throw new Error("Change cancelled.");
+  }
+  return invoke<T>(command, { ...args, confirmed });
 }
 
 export const api = {
@@ -125,7 +142,7 @@ export const api = {
   syncSettingsSet: (settings: SyncSettings) => invoke<SyncSettings>("sync_settings_set", { settings }),
   refreshGlobalSet: (setting: RefreshSetting) => invoke<RefreshSetting>("refresh_global_set", { setting }),
   syncSetAuto: (groupIds: string[], on: boolean) => invoke<void>("sync_set_auto", { groupIds, on }),
-  syncWindowVisible: (visible: boolean) => invoke<void>("sync_window_visible", { visible }),
+  syncWindowVisible: (visible: boolean, hostId: string | null = null) => invoke<void>("sync_window_visible", { visible, hostId }),
 
   // backup & device sync (passwords go to the vault in Rust and never come back)
   backupStatus: () => invoke<BackupStatus>("backup_status"),
@@ -157,14 +174,14 @@ export const api = {
 
   // local terminals
   localShells: () => invoke<LocalShell[]>("local_shells"),
-  localTermOpen: (shellId: string, cols: number, rows: number) => invoke<string>("local_term_open", { shellId, cols, rows }),
+  localTermOpen: (shellId: string, cols: number, rows: number, cwd?: string, container?: string) => invoke<string>("local_term_open", { shellId, cols, rows, cwd: cwd ?? null, container: container ?? null }),
   localTermWrite: (termId: string, data: string) => invoke<void>("local_term_write", { termId, data }),
   localTermResize: (termId: string, cols: number, rows: number) => invoke<void>("local_term_resize", { termId, cols, rows }),
   localTermClose: (termId: string) => invoke<void>("local_term_close", { termId }),
 
   // processes, sudo
   processesList: (hostId: string) => invoke<Process[]>("processes_list", { hostId }),
-  processKill: (hostId: string, pid: number, force: boolean) => invoke<void>("process_kill", { hostId, pid, force }),
+  processKill: (hostId: string, pid: number, force: boolean, confirmed = false) => remoteChange<void>("process_kill", { hostId, pid, force }, `kill -${force ? "KILL" : "TERM"} ${pid}`, confirmed),
   termSudoFill: (termId: string) => invoke<void>("term_sudo_fill", { termId }),
 
   // import / export (paths come from file dialogs)
@@ -192,6 +209,7 @@ export const api = {
       source,
       params: params ? { interval_ms: null, container: null, path: null, since: null, ...params } : null,
     }),
+  logHistory: (hostId: string, source: "docker" | "file", target: string, since: string, until: string) => invoke<string[]>("log_history", { hostId, source, target, since, until }),
   unsubscribe: (subId: string) => invoke<void>("unsubscribe", { subId }),
 
   // files (SFTP)
@@ -206,25 +224,25 @@ export const api = {
   editorBackupRead: (hostId: string, path: string, id: string) => invoke<string>("editor_backup_read", { hostId, path, id }),
 
   sftpList: (hostId: string, path: string) => invoke<FileEntry[]>("sftp_list", { hostId, path }),
-  sftpMkdir: (hostId: string, path: string) => invoke<void>("sftp_mkdir", { hostId, path }),
-  sftpArchive: (hostId: string, path: string, name: string, extract: boolean) => invoke<void>("sftp_archive", { hostId, path, name, extract }),
-  sftpRename: (hostId: string, from: string, to: string) => invoke<void>("sftp_rename", { hostId, from, to }),
-  sftpDelete: (hostId: string, path: string, isDir: boolean, recursive: boolean) =>
-    invoke<void>("sftp_delete", { hostId, path, isDir, recursive }),
+  sftpMkdir: (hostId: string, path: string) => remoteChange<void>("sftp_mkdir", { hostId, path }, `Create folder ${path}`),
+  sftpArchive: (hostId: string, path: string, name: string, extract: boolean) => remoteChange<void>("sftp_archive", { hostId, path, name, extract }, `${extract ? "Extract" : "Archive"} ${path} → ${name}`),
+  sftpRename: (hostId: string, from: string, to: string) => remoteChange<void>("sftp_rename", { hostId, from, to }, `Rename ${from} → ${to}`),
+  sftpDelete: (hostId: string, path: string, isDir: boolean, recursive: boolean, confirmed = false) =>
+    remoteChange<void>("sftp_delete", { hostId, path, isDir, recursive }, `Delete ${path}`, confirmed),
   sftpUpload: (hostId: string, localPaths: string[], remoteDir: string) =>
-    invoke<string[]>("sftp_upload", { hostId, localPaths, remoteDir }),
+    remoteChange<string[]>("sftp_upload", { hostId, localPaths, remoteDir }, `Upload ${localPaths.join(", ")} → ${remoteDir}`),
   sftpDownload: (hostId: string, remote: string, local: string) => invoke<string>("sftp_download", { hostId, remote, local }),
   sftpClose: (hostId: string) => invoke<void>("sftp_close", { hostId }),
   transferCancel: (id: string) => invoke<void>("transfer_cancel", { id }),
   editOpen: (hostId: string, remote: string) => invoke<string>("edit_open", { hostId, remote }),
-  editUpload: (hostId: string, remote: string, force: boolean) => invoke<void>("edit_upload", { hostId, remote, force }),
+  editUpload: (hostId: string, remote: string, force: boolean) => remoteChange<void>("edit_upload", { hostId, remote, force }, `${force ? "Overwrite" : "Upload local changes to"} ${remote}`, false, force),
   editStop: (hostId: string, remote: string) => invoke<void>("edit_stop", { hostId, remote }),
 
   // docker, services, shell
-  dockerAction: (hostId: string, container: string, action: "start" | "stop" | "restart" | "kill" | "remove") =>
-    invoke<void>("docker_action", { hostId, container, action }),
+  dockerAction: (hostId: string, container: string, action: "start" | "stop" | "restart" | "kill" | "remove", confirmed = false) =>
+    remoteChange<void>("docker_action", { hostId, container, action }, `docker ${action} ${container}`, confirmed),
   servicesList: (hostId: string) => invoke<Service[]>("services_list", { hostId }),
-  shellIntegrationInstall: (hostId: string) => invoke<number>("shell_integration_install", { hostId }),
+  shellIntegrationInstall: (hostId: string, confirmed = false) => remoteChange<number>("shell_integration_install", { hostId }, "Update ~/.bashrc and ~/.zshrc", confirmed),
 
   // snippets
   snippetsList: () => invoke<Snippet[]>("snippets_list"),
@@ -244,6 +262,11 @@ export const api = {
   sqlDetectLocal: () => invoke<LocalDb[]>("sql_detect_local"),
   /** Laravel .env → prefill; DB_PASSWORD stays in Rust (`password_ref`). */
   sqlEnvImport: (source: EnvSource) => invoke<SqlPrefill>("sql_env_import", { source }),
+  databaseFileInfo: (sessionId: string, includeTables = false) => invoke<DatabaseFileInfo>("database_file_info", { sessionId, includeTables }),
+  databaseBackups: (sessionId: string) => invoke<DatabaseBackup[]>("database_backups", { sessionId }),
+  databaseFileStart: (sessionId: string, operation: DatabaseOperation, confirmed = false) => invoke<string>("database_file_start", { sessionId, operation, confirmed }),
+  databaseFileStatus: () => invoke<DatabaseJob[]>("database_file_status"),
+  databaseFileCancel: (jobId: string) => invoke<void>("database_file_cancel", { jobId }),
   sqlOpen: (target: SqlTarget) => invoke<SqlOpened>("sql_open", { target }),
   sqlSessionStates: () => invoke<CoreEvent[]>("sql_session_states"),
   sqlActiveQueries: () => invoke<string[]>("sql_active_queries"),

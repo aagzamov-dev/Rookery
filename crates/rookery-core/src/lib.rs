@@ -18,6 +18,7 @@ pub mod error;
 pub mod events;
 pub mod forward;
 pub mod git;
+pub mod computer;
 pub mod importers;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod local;
@@ -56,6 +57,7 @@ pub struct Core {
     pub sync: Arc<sync::SyncEngine>,
     pub backup: Arc<backup::Backup>,
     pub sql: Arc<sql::SqlManager>,
+    pub database_files: Arc<sql::backup::DatabaseFiles>,
     pub editor: Arc<editor::Editor>,
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     pub local: Arc<local::LocalTerminals>,
@@ -85,10 +87,11 @@ impl Core {
             connections.clone(),
             events.clone(),
         ));
-        let sftp = Arc::new(sftp::Sftp::new(connections.clone(), events.clone(), data_dir.join("cache")));
+        let sftp = Arc::new(sftp::Sftp::new(connections.clone(), db.clone(), vault.clone(), events.clone(), data_dir.join("cache")));
         let sync = Arc::new(sync::SyncEngine::new(db.clone(), vault.clone(), connections.clone(), events.clone()));
         let backup = Arc::new(backup::Backup::new(db.clone(), vault.clone(), events.clone()));
         let sql = Arc::new(sql::SqlManager::new(db.clone(), vault.clone(), connections.clone(), events.clone()));
+        let database_files = Arc::new(sql::backup::DatabaseFiles::new(sql.clone(), db.clone(), sftp.clone(), connections.clone(), events.clone(), data_dir.join("database-jobs")));
         // Local copies of edited files: never synced, never in backups (they may hold secrets).
         let editor = Arc::new(editor::Editor::new(sftp.clone(), db.clone(), vault.clone(), data_dir.join("editor-backups")));
 
@@ -103,6 +106,7 @@ impl Core {
             sync,
             backup,
             sql,
+            database_files,
             editor,
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             local: Arc::new(local::LocalTerminals::new(events.clone())),
@@ -126,6 +130,7 @@ impl Core {
     pub async fn lock(&self, close_sessions: bool) {
         self.sync.cancel_all();
         self.backup.lock();
+        self.database_files.cancel_all();
         self.sql.close_all().await;
         self.subscriptions.stop_all().await;
         if close_sessions {

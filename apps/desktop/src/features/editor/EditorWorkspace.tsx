@@ -1,3 +1,4 @@
+import { COMPUTER_ID } from "../local/target";
 // Server tab → Editor (docs/08): folders on the left, files in tabs on the right, safe saving.
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import clsx from "clsx";
@@ -74,6 +75,7 @@ export function EditorWorkspace({ hostId, visible }: { hostId: string; visible: 
   const active = he?.active ?? null;
   const doc = docs.find((d) => d.key === active) ?? null;
   const isProd = host?.env_label === "prod";
+  const location = hostId === COMPUTER_ID ? "this computer" : "the server";
   const unlocked = useVault((s) => !!s.status?.unlocked);
 
   const [note, setNote] = useState<Note>(null);
@@ -125,11 +127,13 @@ export function EditorWorkspace({ hostId, visible }: { hostId: string; visible: 
 
   // ------------------------------------------------------------ server changes (never polled)
   const lastCheck = useRef(0);
+  const requestsActive = useRef(visible);
+  requestsActive.current = visible;
   const check = useCallback(
     (keys?: string[]) => {
       if (!keys && Date.now() - lastCheck.current < 1500) return;
       if (!keys) lastCheck.current = Date.now();
-      void checkServer(hostId, keys);
+      void checkServer(hostId, keys, () => requestsActive.current);
     },
     [hostId],
   );
@@ -164,7 +168,7 @@ export function EditorWorkspace({ hostId, visible }: { hostId: string; visible: 
 
   const openPath = async () => {
     const dir = doc ? parentPath(doc.path) : "~";
-    const p = await askText({ title: "Open file", label: "Path on the server (absolute, or ~/…)", value: dir.endsWith("/") ? dir : `${dir}/`, confirmLabel: "Open" });
+    const p = await askText({ title: "Open file", label: hostId === COMPUTER_ID ? "Path on this computer (absolute, or ~/…)" : "Path on the server (absolute, or ~/…)", value: dir.endsWith("/") ? dir : `${dir}/`, confirmLabel: "Open" });
     if (p) await open(p);
   };
 
@@ -202,7 +206,7 @@ export function EditorWorkspace({ hostId, visible }: { hostId: string; visible: 
     if (out.kind === "conflict") {
       if (out.deleted) {
         const c = await askChoice({
-          title: "The file was deleted on the server",
+          title: `The file was deleted on ${location}`,
           body: `${d.realPath} no longer exists. Nothing was written.\n\nCreate it again with your text?`,
           choices: [{ id: "create", label: "Create it again", variant: "primary" }],
         });
@@ -278,7 +282,7 @@ export function EditorWorkspace({ hostId, visible }: { hostId: string; visible: 
 
   const dropMine = async (d: EditorDoc) => {
     if (d.dirty) {
-      const ok = await askConfirm({ title: `Reload ${d.name} from the server?`, body: "Your unsaved changes in this tab are lost.", confirmLabel: "Reload", danger: true });
+      const ok = await askConfirm({ title: `Reload ${d.name} from ${location}?`, body: "Your unsaved changes in this tab are lost.", confirmLabel: "Reload", danger: true });
       if (!ok) return;
     }
     await reload(d.key).catch((e) => setNote({ kind: "error", text: asCoreError(e).message }));
@@ -332,7 +336,7 @@ export function EditorWorkspace({ hostId, visible }: { hostId: string; visible: 
               <button className="truncate" onClick={() => useEditor.getState().activate(hostId, d.key)}>
                 {d.name}
               </button>
-              {d.changed && <AlertTriangle size={11} className="flex-none text-warn" aria-label="changed on the server" />}
+              {d.changed && <AlertTriangle size={11} className="flex-none text-warn" aria-label={`changed on ${location}`} />}
               <button
                 aria-label={d.dirty ? `Close ${d.name} (unsaved changes)` : `Close ${d.name}`}
                 onClick={() => void closeDoc(d.key)}
@@ -380,7 +384,7 @@ export function EditorWorkspace({ hostId, visible }: { hostId: string; visible: 
                 {prefs.hideEnvValues ? <EyeOff size={13} /> : <Eye size={13} />}
               </Tool>
             )}
-            <Tool label="History: the server's version before each save" onClick={() => setHistory(true)}>
+            <Tool label={hostId === COMPUTER_ID ? "History: local version before each save" : "History: the server's version before each save"} onClick={() => setHistory(true)}>
               <History size={13} />
             </Tool>
             {canFormat(doc.lang) && !doc.readOnly && (
@@ -463,15 +467,15 @@ export function EditorWorkspace({ hostId, visible }: { hostId: string; visible: 
           }}
           onTakeTheirs={async () => {
             const d = getDoc(merge.key)!;
-            const ok = await askConfirm({ title: "Use the server's version?", body: "Your changes in this tab are replaced by the file as it is on the server now.", confirmLabel: "Use theirs", danger: true });
+            const ok = await askConfirm({ title: "Use the stored version?", body: `Your changes in this tab are replaced by the file as it is on ${location} now.`, confirmLabel: "Use theirs", danger: true });
             if (!ok) return;
             setMerge(null);
             await reload(d.key).catch((e) => setNote({ kind: "error", text: asCoreError(e).message }));
           }}
           onOverwrite={async () => {
             const ok = await askConfirm({
-              title: "Overwrite the server's version with yours?",
-              body: "Their changes are lost on the server. (Their version is kept in History on this PC.)",
+              title: "Overwrite the stored version with yours?",
+              body: `Their changes are lost on ${location}. Their version is kept in History on this PC.`,
               confirmLabel: "Overwrite",
               danger: true,
             });
@@ -486,7 +490,7 @@ export function EditorWorkspace({ hostId, visible }: { hostId: string; visible: 
         <ReviewDialog
           doc={getDoc(review.key)!}
           text={review.text}
-          hostName={host?.name ?? "server"}
+          hostName={hostId === COMPUTER_ID ? "This computer" : host?.name ?? "server"}
           onCancel={() => setReview(null)}
           onSave={() => {
             const r = review;
@@ -503,7 +507,7 @@ export function EditorWorkspace({ hostId, visible }: { hostId: string; visible: 
           onRestore={(text) => {
             replaceText(doc.key, text);
             setHistory(false);
-            flash({ kind: "info", text: "Restored into the editor (undo with Ctrl+Z). Save to write it to the server." }, 6000);
+            flash({ kind: "info", text: `Restored into the editor (undo with Ctrl+Z). Save to write it to ${location}.` }, 6000);
           }}
         />
       )}
@@ -521,12 +525,13 @@ function Tool({ label, on, onClick, children }: { label: string; on?: boolean; o
 
 function Banners({ doc, onCompare, onReload }: { doc: EditorDoc; onCompare: () => void; onReload: () => void }) {
   const items: ReactNode[] = [];
+  const location = doc.hostId === COMPUTER_ID ? "this computer" : "the server";
   if (doc.changed) {
     items.push(
       <div key="changed" className="flex flex-none items-center gap-2 border-b border-[#7A6420] bg-[#33301F] px-3 py-1.5 text-[13px] text-[#F7CB6A]">
         <AlertTriangle size={13} className="flex-none" />
         <span className="flex-1">
-          {doc.changed.exists ? `Changed on the server ${when(doc.changed.mtime)} while you edit.` : "Deleted on the server."} Saving will show both versions first.
+          {doc.changed.exists ? `Changed on ${location} ${when(doc.changed.mtime)} while you edit.` : `Deleted on ${location}.`} Saving will show both versions first.
         </span>
         {doc.changed.exists && (
           <button onClick={onCompare} className="rounded px-2 py-0.5 font-medium hover:bg-[#44391A]">
@@ -543,7 +548,7 @@ function Banners({ doc, onCompare, onReload }: { doc: EditorDoc; onCompare: () =
     items.push(
       <div key="reloaded" className="flex flex-none items-center gap-2 border-b border-line bg-panel px-3 py-1.5 text-[13px] text-muted">
         <Info size={13} className="flex-none text-accent" />
-        <span className="flex-1">Reloaded: the file changed on the server (you had no unsaved changes). Ctrl+Z brings back the previous text.</span>
+        <span className="flex-1">Reloaded: the file changed on {location} (you had no unsaved changes). Ctrl+Z brings back the previous text.</span>
         <button onClick={() => useEditor.getState().patch(doc.key, { reloadedAt: null })} aria-label="Dismiss" className="hover:text-text">
           <X size={13} />
         </button>

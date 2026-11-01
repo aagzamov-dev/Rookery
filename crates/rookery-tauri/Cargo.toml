@@ -30,6 +30,9 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 parking_lot.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+mac-usernotifications = { version = "=0.3.1", default-features = false }
+
 # Desktop only: self-update, relaunch, the global show/hide hotkey
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-global-shortcut = "2.4"

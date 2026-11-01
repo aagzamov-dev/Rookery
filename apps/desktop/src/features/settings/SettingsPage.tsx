@@ -1,3 +1,4 @@
+import { DesktopNotificationPermission } from "../../ui/NotificationCenter";
 import { Diagnostics } from "./Diagnostics";
 import { useState } from "react";
 import clsx from "clsx";
@@ -29,14 +30,29 @@ export function SettingsPage() {
       <Notifications />
       <Triggers />
       <Startup />
+      <Section title="This computer">
+        <AppToggle k="showThisComputer" label="Show This computer in the SSH sidebar" hint="Enabled by default. Turning it off hides the entry and pauses local workspace requests. Open tabs, drafts and running terminals stay available until you close them." />
+      </Section>
       <Security />
       <SessionLogs />
       <GlobalHotkey />
+      <Section title="Live server metrics">
+        <Row label="Refresh interval" hint="CPU, memory and network update in the active connected server tab or This computer’s visible Overview. Off stops live collection; cached values remain.">
+          <MetricsInterval />
+        </Row>
+      </Section>
       <DashboardSync />
       <Diagnostics />
       <About />
     </div>
   );
+}
+
+function MetricsInterval() {
+  const interval = useKeys((s) => s.app.metricsIntervalMs);
+  return <Select aria-label="Live metrics interval" value={interval} onChange={(e) => void useKeys.getState().setApp({ metricsIntervalMs: Number(e.target.value) })}>
+    {[0, 3000, 5000, 10000, 30000, 60000].map((ms) => <option key={ms} value={ms}>{ms ? `Every ${ms / 1000} seconds` : "Off"}</option>)}
+  </Select>;
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -222,6 +238,7 @@ function Notifications() {
   const set = useKeys((s) => s.setTerminal);
   return (
     <Section title="Notifications">
+      <DesktopNotificationPermission showTest />
       <Toggle
         k="notifyLongCommands"
         label="Notify when a long command finishes while you're elsewhere"
@@ -272,12 +289,7 @@ function DashboardSync() {
   return (
     <Section title="Dashboard sync">
       {check("Pause auto-sync everywhere", "Group switches keep their state. Sync now still works.", settings.paused, (v) => void setSettings({ paused: v }))}
-      {check(
-        "Keep auto-syncing while the window is minimised",
-        "Off: auto-sync stops a minute after you minimise Rookery and resumes when you come back.",
-        settings.run_when_hidden,
-        (v) => void setSettings({ run_when_hidden: v }),
-      )}
+      <p className="px-3 py-2 text-xs text-muted">Automatic sync only runs in the active connected server’s Overview while this window is focused and live metrics are on. Other hosts refresh through explicit Sync now.</p>
       <Row label="Default interval" hint="Used by groups and servers set to Inherit.">
         <Select className="w-36" value={global.interval_s ?? 300} onChange={(e) => void setGlobal({ interval_s: Number(e.target.value) })}>
           {INTERVALS.map((i) => (

@@ -28,9 +28,11 @@ export function TransfersStrip({ hostId }: { hostId: string }) {
             {e.state === "uploaded" ? <Check size={13} className="text-ok" /> : <AlertTriangle size={13} />}
             <span className="min-w-0 flex-1 truncate">
               {e.state === "uploaded" && `Saved ${name} to the server`}
+              {e.state === "pending" && `${name}: local changes await upload approval`}
               {e.state === "conflict" && `${name} changed on the server since you opened it`}
               {e.state === "error" && `${name}: ${e.message}`}
             </span>
+            {(e.state === "pending" || e.state === "error") && <button className="text-accent" onClick={() => void api.editUpload(e.hostId, e.remote, false).catch((x) => setEdit({ ...e, state: "error", message: asCoreError(x).message }))}>Review upload</button>}
             {e.state === "conflict" && (
               <>
                 <button

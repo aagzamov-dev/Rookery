@@ -1,4 +1,5 @@
 // SFTP browsing state per server tab. Listings are cached; re-showing within FRESH_MS never re-lists.
+import { normalizeLocalPath } from "../features/local/target";
 import { create } from "zustand";
 import { api, asCoreError } from "../ipc/api";
 import type { FileEntry } from "../ipc/bindings/FileEntry";
@@ -12,6 +13,8 @@ interface Listing {
 }
 
 export interface HostFiles {
+  visible: boolean;
+  visibleViews: Partial<Record<"panel" | "full", boolean>>;
   path: string | null;
   home: string | null;
   listings: Record<string, Listing>;
@@ -29,6 +32,8 @@ export interface HostFiles {
 const requests = new Map<string, number>();
 
 const empty = (): HostFiles => ({
+  visible: false,
+  visibleViews: {},
   path: null,
   home: null,
   listings: {},
@@ -44,7 +49,7 @@ export interface EditState {
   hostId: string;
   remote: string;
   local: string;
-  state: "open" | "uploaded" | "conflict" | "error";
+  state: "open" | "pending" | "uploaded" | "conflict" | "error";
   message: string | null;
   at: number;
 }
@@ -53,6 +58,7 @@ interface FilesState {
   byHost: Record<string, HostFiles>;
   transfers: Record<string, Transfer>;
   edits: Record<string, EditState>;
+  setVisible: (hostId: string, variant: "panel" | "full", visible: boolean) => void;
   patch: (hostId: string, p: Partial<HostFiles>) => void;
   /** Open `path` (or home). Uses the cache unless `force` or stale. */
   open: (hostId: string, path?: string | null, force?: boolean) => Promise<void>;
@@ -72,6 +78,11 @@ export const useFiles = create<FilesState>((set, get) => ({
   transfers: {},
   edits: {},
 
+  setVisible: (hostId, variant, visible) => {
+    const visibleViews = { ...get().byHost[hostId]?.visibleViews, [variant]: visible };
+    get().patch(hostId, { visibleViews, visible: Object.values(visibleViews).some(Boolean) });
+  },
+
   patch: (hostId, p) => set((s) => ({ byHost: { ...s.byHost, [hostId]: { ...(s.byHost[hostId] ?? empty()), ...p } } })),
 
   open: async (hostId, path, force = false) => {
@@ -82,7 +93,7 @@ export const useFiles = create<FilesState>((set, get) => ({
     try {
       if (!target) {
         const home = st.home ?? (await api.sftpHome(hostId));
-        if (requests.get(hostId) !== request) return;
+        if (requests.get(hostId) !== request || (st.visible && !get().byHost[hostId]?.visible)) return;
         get().patch(hostId, { home });
         target = home;
       }
@@ -107,7 +118,7 @@ export const useFiles = create<FilesState>((set, get) => ({
     if (st.terminalCwd === cwd) return;
     get().patch(hostId, { terminalCwd: cwd });
     // Follow only if the files UI has been opened (never triggers SFTP on its own).
-    if (st.follow && st.path !== null && st.path !== cwd) void get().open(hostId, cwd);
+    if (st.visible && st.follow && st.path !== null && st.path !== cwd) void get().open(hostId, cwd);
   },
 
   setTransfer: (t) => set((s) => ({ transfers: { ...s.transfers, [t.id]: t } })),
@@ -136,12 +147,21 @@ export const useFiles = create<FilesState>((set, get) => ({
     }),
 }));
 
-export function joinPath(dir: string, name: string): string {
-  return dir === "/" ? `/${name}` : `${dir.replace(/\/+$/, "")}/${name}`;
+export function pathRoot(path: string): string {
+  const normalized = normalizeLocalPath(path);
+  if (/^[A-Za-z]:\//.test(normalized)) return normalized.slice(0, 3);
+  const unc = /^\/\/[^/]+\/[^/]+(?:\/|$)/.exec(normalized);
+  return unc ? `${unc[0].replace(/\/+$/, "")}/` : "/";
 }
 
-export function parentPath(p: string): string {
+export function joinPath(dir: string, name: string): string {
+  return `${dir.replace(/\/+$/, "")}/${name}`;
+}
+
+export function parentPath(path: string): string {
+  const p = normalizeLocalPath(path);
+  const root = pathRoot(p);
   const t = p.replace(/\/+$/, "");
   const i = t.lastIndexOf("/");
-  return i <= 0 ? "/" : t.slice(0, i);
+  return i < root.length ? root : t.slice(0, i);
 }

@@ -1,3 +1,4 @@
+import { COMPUTER_ID, isAbsolutePath, normalizeLocalPath } from "../local/target";
 import { useEffect, useState } from "react";
 import { ArrowUp, Folder, Loader2 } from "lucide-react";
 import { api, asCoreError } from "../../ipc/api";
@@ -6,7 +7,7 @@ import { parentPath } from "../../stores/files";
 import { Button, Modal, TextInput } from "../../ui/primitives";
 
 export function FolderPicker({ hostId, initialPath, onPick, onClose }: { hostId: string; initialPath: string; onPick: (path: string) => void; onClose: () => void }) {
-  const [path, setPath] = useState(initialPath.startsWith("/") ? initialPath : "");
+  const [path, setPath] = useState(isAbsolutePath(initialPath) ? normalizeLocalPath(initialPath) : "");
   const [draft, setDraft] = useState(path);
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -36,9 +37,9 @@ export function FolderPicker({ hostId, initialPath, onPick, onClose }: { hostId:
   const go = (next: string) => { setPath(next); setDraft(next); };
   return (
     <Modal title="Select a repository folder" onClose={onClose} width={620}>
-      <form className="flex items-center gap-2" onSubmit={(event) => { event.preventDefault(); if (draft.trim().startsWith("/")) go(draft.trim()); }}>
+      <form className="flex items-center gap-2" onSubmit={(event) => { event.preventDefault(); if (isAbsolutePath(draft.trim())) go(hostId === COMPUTER_ID ? normalizeLocalPath(draft.trim()) : draft.trim()); }}>
         <Button type="button" aria-label="Up one folder" disabled={!path || path === "/" || loading} onClick={() => go(parentPath(path))}><ArrowUp size={14} /></Button>
-        <TextInput mono className="min-w-0 flex-1" aria-label="Remote folder path" value={draft} onChange={(event) => setDraft(event.target.value)} />
+        <TextInput mono className="min-w-0 flex-1" aria-label={hostId === COMPUTER_ID ? "Local folder path" : "Remote folder path"} value={draft} onChange={(event) => setDraft(event.target.value)} />
         <Button type="submit" disabled={loading}>Open</Button>
       </form>
       <div className="h-[min(50vh,360px)] overflow-auto rounded-lg border border-line bg-bg p-1">

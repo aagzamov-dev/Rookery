@@ -257,6 +257,13 @@ pub async fn read_env(sftp: &crate::sftp::Sftp, source: &EnvSource) -> Result<En
 
 /// One `docker inspect` on the server (through its SSH session) → prefill for its Database view.
 pub async fn docker_inspect(conns: &ConnectionManager, host_id: &str, container: &str) -> Result<SqlPrefill> {
+    if host_id == crate::computer::ID {
+        if !crate::collectors::valid_container_ref(container) {return Err(Error::Other("Invalid container.".into()));}
+        let raw=crate::computer::run("docker",&crate::computer::args(&["inspect",container]),None,15).await?;
+        let prefill=parse_docker_inspect(&raw)?;
+        if prefill.address != "127.0.0.1" && prefill.address != "localhost" {return Err(Error::Other("Publish this container's database port to this computer first.".into()));}
+        return Ok(prefill);
+    }
     if !valid_container_ref(container) {
         return Err(Error::Other("invalid container".into()));
     }

@@ -99,7 +99,7 @@ Global defaults: mode `auto`, 5 min, basic + docker. `auto` only means "follow t
 ### 4.4 Scheduler
 - A single tokio task owns a priority queue keyed by `next_due(host)`. Concurrency semaphore (default 3, max 6). Timeout 10 s per host (connect + collect). Reuses an open session if the host tab is open (adds a lease), otherwise opens a temporary session and closes it right after.
 - Backoff: 3 consecutive failures → interval ×2 (cap 30 min) → reset on success. Offline hosts are probed with a 3 s TCP connect first to fail fast.
-- Pause conditions (no network at all): app locked, window hidden/minimised for > 60 s (desktop; configurable to keep running), OS sleep, master pause, mobile: screen off / not Wi-Fi (if set) / battery < 15 %.
+- Desktop automatic sync additionally requires the active connected server’s Overview, a focused visible window, an unlocked vault and live metrics enabled. It never opens unrelated hosts; explicit Sync now remains available. Master pause and per-group/server opt-in still apply. Mobile policy remains screen off / not Wi-Fi (if set) / battery < 15 %.
 - A collect never prompts: missing passphrase/password → `locked`.
 
 ### 4.5 Snapshots
@@ -174,6 +174,10 @@ plaintext = { format:"rookery-data", version:1, groups, hosts, identities (+ the
 - Termius: no official export; skip.
 
 ---
+
+## 7.1 Native local workspace
+
+This computer is not saved/synced as an SSH host. `ui.computer.enabled`, `ui.computer.editor` and `ui.git.folders.__computer__` stay on this device alongside the existing local session/draft keys. Local file contents remain only in editor memory and existing private editor backups. Local saves are bounded and version checked; destructive file/Git/Docker actions require review. SQL retains the current environment/read-only/restore guards. Docker’s native adapter pins local endpoints instead of inheriting a remote Docker context. Disabling hides the sidebar entry and stops passive workspace requests; it does not discard drafts or terminate user-started work.
 
 ## 8. Privacy / telemetry
 - No telemetry. No network except SSH to the user's servers, Google Drive when the user clicks, and the updater check (opt-out).

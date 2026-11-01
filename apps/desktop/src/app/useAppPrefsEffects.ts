@@ -29,8 +29,7 @@ export function useAppPrefsEffects() {
     const un = listen("rookery://hotkey", () => {
       const tabs = useTabs.getState();
       if (tabs.tabs.length === 0) {
-        const shell = useLocalShells.getState().shells?.[0];
-        if (shell) tabs.openLocal(shell.id, shell.label);
+        void useLocalShells.getState().load().then(() => { const shell = useLocalShells.getState().shells?.[0]; if (shell && useTabs.getState().tabs.length === 0) useTabs.getState().openLocal(shell.id, shell.label); });
         return;
       }
       requestAnimationFrame(() => {

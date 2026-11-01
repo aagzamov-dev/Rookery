@@ -32,6 +32,18 @@ Drag the sidebar edge or focus it and use Left/Right to resize. Width is saved o
 - Filter box filters by name, address, tag.
 - Labels: PROD = red tag + red tab top border; STAGING amber; others by group color.
 
+### 1.4.1 This computer — native local workspace
+
+- **This computer** sits above SSH groups and is enabled by default. Settings → This computer hides the entry and pauses its workspace requests. An already open workspace, editor drafts, SQL sessions and running terminals/jobs remain until explicitly closed. Closing asks about dirty editor files and SQL transactions through the same guards as server tabs.
+- Opens one cohesive tab with **Overview, Terminal, Files, Editor, Git, Docker, Database**. There are no Services, Processes, Logs or server Settings views. Docker container logs remain inside Docker. No SSH connection, localhost host entry or SSH installation is needed.
+- **Overview:** native CPU, RAM, disk space for the home volume, network rates and uptime on macOS and Windows. CPU/network rates need a second sample; load averages are omitted on Windows. Collects only while Overview and the unlocked window are visible, using Settings’ live metrics interval/Off. It never scans processes or starts Docker/database discovery. Returning resumes with a fresh baseline.
+- **Terminal:** discovers installed shells only when opening Terminal or the + menu. Select zsh/login shell, PowerShell or another installed shell and Start terminal. Folder actions launch with native cwd; container shells use native Docker argv. Existing standalone local terminal tabs remain available.
+- **Files / Editor:** native local directory browsing, new folders, exclusive rename and confirmed delete; drive and UNC paths are supported. Text reads are bounded to 20 MiB, editable content to 5 MiB; nonregular/binary/non-UTF-8 files are refused. Saves preserve UTF-8 BOM/EOL, compare the opened hash, back up the previous bytes and prepare a sibling replacement before checking again. Conflicts retain the draft. Local elevated saves, SSH transfers and archive actions are unavailable; Open with default app opens the actual local file.
+- **Git:** add/browse an explicit repository, then reuse the existing Git status/diff/stage/commit/branch/remote/stash/conflict UI and editor drafts. Commands use native argv on both platforms, with bounded output/timeouts and interactive credential prompts disabled. Destructive actions require confirmation. Local repository folders/editor pins/tree roots stay on this device.
+- **Docker:** uses the installed CLI with local-only endpoints: Windows `npipe:////./pipe/docker_engine`; macOS `~/.docker/run/docker.sock` when present, otherwise `/var/run/docker.sock`. Ambient Docker host/context/TLS overrides are removed for reads, actions, logs and container shells. Remote and alternate contexts such as Colima are intentionally not used. Missing CLI/stopped daemon shows a status and **Reload Docker**, with no retry loop. List/events/stats/container logs run only in visible Docker; background streams are killed on unsubscribe. Container quick-command snippets remain a remote-server feature.
+- **Database:** shows saved direct localhost/127.0.0.1/::1 connections; Add connection and Docker → Open in SQL use the existing connection dialog. Selecting one embeds the existing SQL/schema/tables and native Export / Import / Backups UI. Nothing is scanned or connected before selection. Choosing a nonlocal route in the connection dialog opens its normal database tab. Existing production/edit-mode/restore confirmations still apply.
+- Restored This computer tabs always reopen at a paused Overview, including when automatic remote reconnection is enabled. Hidden views keep their UI state; passive collectors stop. Commands, terminals, SQL sessions and jobs already explicitly started retain their normal lifecycle.
+
 ### 1.5 Tab bar
 - Mixed **server tabs** (dot + name + env tag) and **page tabs** (icon + name). Close ×, middle-click close, drag to reorder, Ctrl+Tab / Ctrl+Shift+Tab, Ctrl+W.
 - One tab per server. Opening an already-open server focuses its tab.
@@ -129,16 +141,23 @@ Drag the sidebar edge or focus it and use Left/Right to resize. Width is saved o
 - One SFTP channel per server via `russh-sftp`, opened on first use, closed when the tab closes. Listings cached 60 s.
 - Uploads: toolbar button (file picker) or drag files from the OS onto the browser. Folders are skipped for now.
 - Downloads: save dialog, written to `<name>.rookerypart` and renamed when complete.
-- Edit locally: files ≤ 20 MB are copied to the app cache and opened with the OS default app; each save is uploaded back. If the server copy changed since opening, nothing is overwritten — the strip offers "Overwrite server copy" or "Reopen server copy".
+- Edit locally: files ≤ 20 MB are copied to the app cache and opened with the OS default app; local saves remain pending until Review upload. If the server copy changed since opening, nothing is overwritten — the strip offers "Overwrite server copy" or "Reopen server copy".
 - Delete asks first; folders are deleted with `rm -rf` on the server after a red confirmation.
 
 ### 4.4 Edit locally
 - The built-in way is now the **Editor** view (double-click a file in Files): see [08-EDITOR.md](08-EDITOR.md). Edit locally stays for big files and your own programs.
-- Double-click text file → download to a temp dir → open in built-in CodeMirror tab or external editor (setting). A watcher re-uploads on save with a toast; conflict check via mtime.
+- Double-click text file → download to a temp dir → open in built-in CodeMirror tab or external editor (setting). A local watcher reports pending saves without contacting the server. Review upload sends changes explicitly; production requires confirmation and conflict checks use the original remote mtime. Locking preserves local drafts and prevents uploading.
 
 ---
 
 ## 5. Docker, Services, Logs, Processes (all inside the server tab)
+
+Current limits: Docker startup/relist failures pause until explicit Reload Docker; event/stats streams have at most three attempts. Stats start only after a successful list. Shared one-shot SSH commands reject combined output over 8 MiB and close their channels on errors, timeout and cancellation.
+
+Logs offer Latest/live, Yesterday and a custom local time range. History reads occur only on explicit selection/Load while visible and stay separate from live resume cursors. Docker uses native since/until plus tail 2,000. File history reads only the last 2 MiB (up to 20,000 lines), recognizes ISO and YYYY-MM-DD HH:mm:ss timestamps, then keeps the newest 2,000 matching lines; unzoned timestamps use the computer’s time zone. Continuations inherit the preceding recognized date. History is always labeled partial; rotated files are not scanned. Live starts/resumes with up to 500 Docker lines or 200 file lines, retaining at most 5,000 lines / 4 MiB per stream. Follow bottom can be paused and resumed; trimmed history is indicated.
+
+Settings → Live server metrics persists Off or a 3/5/10/30/60-second interval. Collectors require the active connected tab, focused visible window and unlocked vault. Opt-in automatic snapshots additionally require the Overview view and metrics on. Other hosts refresh only through explicit Sync now.
+
 
 ### Git view (unreleased)
 

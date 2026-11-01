@@ -60,6 +60,7 @@ Want to inspect the interface before connecting anything? [Run the local demo](#
 
 Open terminals, follow logs and manage containers alongside the server's files. Snippets keep repeat commands within reach; the command palette and configurable shortcuts help you move quickly.
 
+- **This computer:** enabled by default at the top of the SSH sidebar. One local workspace for Overview, Terminal, Files, Editor, Git, Docker and Database, using native tools without an SSH server. Settings can hide it and pause local requests while retaining open work.
 - **Terminal:** search, error highlighting, themes, snippets and broadcast typing. Local shells are supported too.
 - **Docker:** containers grouped by Compose project, live logs, resource usage, start/stop/restart and a container shell.
 - **Git:** repository dropdown, compact folder tree or flat list, resizable panes, editable working-tree diffs with safe Save / Save & stage, read-only staged diffs, commits, branches, remotes, stashes and conflicts through the editor. Loads only when opened; production mutations require confirmation. First-open discovery stays within two levels of the configured folder.
@@ -69,7 +70,7 @@ Open terminals, follow logs and manage containers alongside the server's files. 
 
 [See the Docker view](docs/screenshots/docker.png) · [Explore desktop features](docs/03-DESKTOP-FEATURES.md)
 
-In **Logs**, browse server folders and click a file to follow it. In **Files**, select a file to download from the toolbar, ZIP a file or folder, or unzip a selected archive into a new folder. ZIP operations require Python 3 on the server.
+In **Logs**, browse server folders and click a file to follow it, or select Yesterday / a time range for bounded partial history. In **Files**, select a file to download from the toolbar, ZIP a file or folder, or unzip a selected archive into a new folder. ZIP operations require Python 3 on the server.
 
 ### Inspect the database next to the deployment
 
@@ -97,7 +98,7 @@ Before saving, Rookery checks whether the remote file changed. If it did, you ca
 
 - **Local storage:** connection settings and workspace data live in SQLite on your computer. Passwords and private keys are stored separately in an encrypted vault using Argon2id and XChaCha20-Poly1305. The local database and optional session logs are not covered by vault encryption.
 - **No Rookery account or hosted sync service:** use an encrypted backup file, or sync through a folder you choose in Drive, OneDrive or Dropbox.
-- **Connections when needed:** tools share an SSH session per server. Dashboard snapshots are cached; refresh them yourself or opt into auto-sync per group. View-specific collectors stop when their view is no longer active.
+- **Connections when needed:** tools share an SSH session per server. Dashboard snapshots are cached; refresh them yourself or opt into auto-sync per group while that server’s Overview is active. Live metric intervals and Off are in Settings. View-specific collectors stop when their view is no longer active.
 - **Updates from GitHub:** automatic update checks can be disabled in Settings.
 
 Built with a Rust core and Tauri's native webview. [Read about data, sync and security](docs/04-DATA-SYNC-SECURITY.md).

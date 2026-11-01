@@ -1,6 +1,8 @@
 // Which language a file is, by its name and folder (docs/08 §3). Pure: no CodeMirror imports here,
 // so tests and the file tree can use it cheaply; the language packs load in `languages.ts`.
 
+import { normalizeLocalPath } from "../local/target";
+
 export type LangId =
   | "env"
   | "json"
@@ -153,9 +155,13 @@ export function baseName(path: string): string {
 
 /** `/a/b/c` → [["/", "/"], ["a", "/a"], ["b", "/a/b"], ["c", "/a/b/c"]] */
 export function crumbs(path: string): [string, string][] {
-  const out: [string, string][] = [["/", "/"]];
-  let acc = "";
-  for (const seg of path.split("/").filter(Boolean)) {
+  const normalized = normalizeLocalPath(path);
+  const drive = /^[A-Za-z]:\//.exec(normalized)?.[0];
+  const unc = /^\/\/[^/]+\/[^/]+(?:\/|$)/.exec(normalized)?.[0];
+  const root = drive ?? (unc ? `${unc.replace(/\/+$/, "")}/` : "/");
+  const out: [string, string][] = [[root, root]];
+  let acc = root.replace(/\/+$/, "");
+  for (const seg of normalized.slice(root.length).split("/").filter(Boolean)) {
     acc += `/${seg}`;
     out.push([seg, acc]);
   }

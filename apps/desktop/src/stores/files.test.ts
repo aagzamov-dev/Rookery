@@ -24,3 +24,21 @@ it("does not resurrect a closed file browser when a request completes", async ()
   await pending;
   expect(useFiles.getState().byHost.host).toBeUndefined();
 });
+it("does not list when a hidden browser receives terminal cwd events", () => {
+  useFiles.getState().patch("host", { path: "/old", follow: true });
+  useFiles.getState().setTerminalCwd("host", "/new");
+  expect(list).not.toHaveBeenCalled();
+  expect(useFiles.getState().byHost.host.terminalCwd).toBe("/new");
+});
+it("keeps visible panel activity independent of the hidden full browser", async () => {
+  list.mockResolvedValue([]);
+  const files = useFiles.getState();
+  files.patch("host", { path: "/old", follow: true });
+  files.setVisible("host", "panel", true);
+  files.setVisible("host", "full", false);
+  files.setTerminalCwd("host", "/new");
+  expect(list).toHaveBeenCalledExactlyOnceWith("host", "/new");
+  files.setVisible("host", "panel", false);
+  files.setTerminalCwd("host", "/hidden");
+  expect(list).toHaveBeenCalledTimes(1);
+});

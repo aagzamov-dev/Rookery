@@ -1,0 +1,31 @@
+import { expect, it, vi } from "vitest";
+const ipc = vi.hoisted(() => ({ get: vi.fn(), set: vi.fn() }));
+vi.mock("../../ipc/api", () => ({ api: { settingGet: ipc.get, settingSet: ipc.set } }));
+import { useTabs } from "../../stores/tabs";
+import { useKeys, DEFAULT_APP_PREFS } from "../../stores/keys";
+import { useHosts } from "../../stores/hosts";
+import { useSql } from "../../stores/sql";
+import { restoreSession } from "../../app/session";
+import { COMPUTER_ID, COMPUTER_TAB_ID } from "./target";
+
+it("enables This computer by default, restores it paused and preserves open workspace on disable", async () => {
+  expect(DEFAULT_APP_PREFS.showThisComputer).toBe(true);
+  useTabs.setState({ tabs: [], views: {}, deferred: {}, activeTabId: null });
+  useHosts.setState({ loaded: true });
+  useSql.setState({ connsLoaded: true });
+  useKeys.setState({ app: { ...DEFAULT_APP_PREFS, autoConnectRestored: true } });
+  ipc.get.mockResolvedValue({ tabs: [{ id: COMPUTER_TAB_ID, kind: "computer", hostId: COMPUTER_ID }], activeTabId: COMPUTER_TAB_ID, views: { [COMPUTER_ID]: { active: "terminal", terminals: [{ title: "old shell" }] } } });
+  ipc.set.mockResolvedValue(undefined);
+  await restoreSession();
+  expect(useTabs.getState().deferred[COMPUTER_ID]).toBe(true);
+  expect(useTabs.getState().views[COMPUTER_ID]).toMatchObject({ active: "overview", terminals: [] });
+  useTabs.getState().activate(COMPUTER_TAB_ID);
+  expect(useTabs.getState().deferred[COMPUTER_ID]).toBeUndefined();
+  const tabs = useTabs.getState().tabs;
+  const views = useTabs.getState().views;
+  await useKeys.getState().setApp({ showThisComputer: false });
+  expect(useTabs.getState().tabs).toBe(tabs);
+  expect(useTabs.getState().views).toBe(views);
+  expect(ipc.set).toHaveBeenCalledWith("ui.computer.enabled", false);
+  expect(ipc.get).toHaveBeenCalledTimes(1);
+});

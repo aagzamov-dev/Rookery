@@ -298,13 +298,14 @@ impl Editor {
         }
         if meta.size.unwrap_or(0) > VIEW_MAX {
             return Err(Error::Other(format!(
-                "this file is larger than {} MB; open it with Files → Edit locally or download it",
+                "this file is larger than {} MB; download it or use Database → Import for a database dump",
                 VIEW_MAX / 1024 / 1024
             )));
         }
-        let mut f = c.s.open(path).await.map_err(|e| Error::Other(format!("cannot open {path}: {e}")))?;
+        let f = c.s.open(path).await.map_err(|e| Error::Other(format!("cannot open {path}: {e}")))?;
         let mut data = Vec::new();
-        f.read_to_end(&mut data).await?;
+        f.take(VIEW_MAX + 1).read_to_end(&mut data).await?;
+        if data.len() as u64 > VIEW_MAX { return Err(Error::Other("file is larger than 20 MB; download it or use Database → Import for a database dump".into())); }
         Ok((data, meta))
     }
 
@@ -553,13 +554,182 @@ impl Editor {
         }
     }
 
+    pub fn local_open(&self, value: &str) -> Result<EditorFile> {
+        let asked = crate::computer::path(value)?;
+        let real = std::fs::canonicalize(&asked)?;
+        let real_path = crate::computer::display(&real);
+        let (bytes, meta) = crate::computer::read(&real_path, VIEW_MAX)?;
+        let d = decode(&bytes).map_err(Error::Other)?;
+        let read_only = bytes.len() as u64 > EDIT_MAX || meta.permissions().readonly();
+        Ok(EditorFile {
+            path: crate::computer::display(&asked),
+            real_path,
+            content: d.text,
+            version: local_version(&bytes, &meta),
+            eol: d.eol,
+            mixed_eol: d.mixed,
+            bom: d.bom,
+            read_only,
+            read_only_reason: read_only
+                .then(|| "This local file is read-only or larger than 5 MB.".into()),
+            owned: true,
+            mode: String::new(),
+        })
+    }
+
+    pub fn local_stat(&self, value: &str) -> Result<FileStamp> {
+        match std::fs::metadata(crate::computer::path(value)?) {
+            Ok(m) => Ok(FileStamp {
+                size: m.len(),
+                mtime: crate::computer::mtime(&m),
+                exists: true,
+            }),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(FileStamp {
+                size: 0,
+                mtime: 0,
+                exists: false,
+            }),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub fn local_save(
+        &self,
+        value: &str,
+        content: &str,
+        eol: Eol,
+        bom: bool,
+        base: &FileVersion,
+        mode: SaveMode,
+        confirmed: bool,
+    ) -> Result<SaveOutcome> {
+        use std::io::Write;
+        if mode == SaveMode::Sudo {
+            return Err(Error::Other(
+                "Local elevated saves are unavailable. Choose a writable file.".into(),
+            ));
+        }
+        if mode == SaveMode::Overwrite && !confirmed {
+            return Err(Error::Other(
+                "Confirm overwriting the local file first.".into(),
+            ));
+        }
+        let path = crate::computer::path(value)?;
+        if std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_symlink()) {
+            return Err(Error::Other(
+                "The file became a symbolic link. Reopen it before saving.".into(),
+            ));
+        }
+        let new_bytes = encode(content, eol, bom);
+        if new_bytes.len() as u64 > EDIT_MAX {
+            return Err(Error::Other("The text exceeds the 5 MB save limit.".into()));
+        }
+        let current = match crate::computer::read(value, VIEW_MAX) {
+            Ok(v) => Some(v),
+            Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e),
+        };
+        if let Some((bytes, meta)) = &current {
+            if meta.permissions().readonly() {
+                return Err(Error::Other(
+                    "This local file is read-only. Choose a writable file.".into(),
+                ));
+            }
+            if sha256_hex(bytes) == sha256_hex(&new_bytes) {
+                return Ok(SaveOutcome::Saved {
+                    version: local_version(bytes, meta),
+                    method: "unchanged".into(),
+                });
+            }
+        }
+        if mode != SaveMode::Overwrite
+            && current
+                .as_ref()
+                .is_none_or(|(b, _)| sha256_hex(b) != base.sha256)
+        {
+            return match current {
+                Some((b, m)) => Ok(SaveOutcome::Conflict {
+                    theirs: decode(&b).map_err(Error::Other)?.text,
+                    theirs_version: local_version(&b, &m),
+                    deleted: false,
+                }),
+                None => Ok(SaveOutcome::Conflict {
+                    theirs: String::new(),
+                    theirs_version: FileVersion {
+                        size: 0,
+                        mtime: 0,
+                        sha256: String::new(),
+                    },
+                    deleted: true,
+                }),
+            };
+        }
+        if let Some((bytes, _)) = &current {
+            self.store.add(crate::computer::ID, value, bytes)?;
+        }
+        let parent = path
+            .parent()
+            .ok_or_else(|| Error::Other("Choose a file.".into()))?;
+        let temp = parent.join(format!(".rookery-{}.tmp", new_id()));
+        let result = (|| -> Result<SaveOutcome> {
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut f = options.open(&temp)?;
+            f.write_all(&new_bytes)?;
+            f.sync_all()?;
+            if let Some((_, meta)) = &current {
+                std::fs::set_permissions(&temp, meta.permissions())?;
+            }
+            drop(f);
+            // Recheck after preparing the replacement to avoid overwriting a concurrent save.
+            let latest = crate::computer::read(value, VIEW_MAX).ok();
+            if latest.as_ref().map(|(b, _)| sha256_hex(b))
+                != current.as_ref().map(|(b, _)| sha256_hex(b))
+                || std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_symlink())
+            {
+                return Err(Error::Other("The local file changed while saving. Your draft is retained; reload and merge before retrying.".into()));
+            }
+            std::fs::rename(&temp, &path)?;
+            let (back, meta) = crate::computer::read(value, VIEW_MAX)?;
+            if back != new_bytes {
+                return Err(Error::Other("The file changed immediately after saving. Your draft and previous backup are retained.".into()));
+            }
+            Ok(SaveOutcome::Saved {
+                version: local_version(&back, &meta),
+                method: "atomic".into(),
+            })
+        })();
+        let _ = std::fs::remove_file(temp);
+        result
+    }
+
     pub fn backups(&self, host_id: &str, real_path: &str) -> Result<Vec<EditorBackup>> {
-        self.store.list(host_id, &clean_path(real_path)?)
+        self.store.list(host_id, &backup_path(host_id, real_path)?)
     }
 
     pub fn backup_read(&self, host_id: &str, real_path: &str, id: &str) -> Result<String> {
-        let bytes = self.store.read(host_id, &clean_path(real_path)?, id)?;
+        let bytes = self.store.read(host_id, &backup_path(host_id, real_path)?, id)?;
         decode(&bytes).map(|d| d.text).map_err(Error::Other)
+    }
+}
+
+fn local_version(bytes: &[u8], meta: &std::fs::Metadata) -> FileVersion {
+    FileVersion {
+        size: bytes.len() as u64,
+        mtime: crate::computer::mtime(meta),
+        sha256: sha256_hex(bytes),
+    }
+}
+fn backup_path(host_id: &str, path: &str) -> Result<String> {
+    if host_id == crate::computer::ID {
+        Ok(crate::computer::display(&crate::computer::path(path)?))
+    } else {
+        clean_path(path)
     }
 }
 
@@ -710,5 +880,97 @@ mod tests {
         assert!(b.read("h1", "/srv/app/.env", "../../x").is_err());
         assert!(b.list("h2", "/srv/app/.env").unwrap().is_empty(), "per server");
         assert!(b.list("h1", "/srv/app/.env.bak").unwrap().is_empty(), "per file");
+    }
+}
+
+#[cfg(test)]
+mod local_tests {
+    use super::*;
+    #[test]
+    fn local_editor_keeps_bom_eol_backups_and_rejects_conflicts() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = crate::Core::init(dir.path().join("data")).unwrap();
+        let file = dir.path().join("quoted '$() &.txt");
+        let path = crate::computer::display(&file);
+        std::fs::write(&file, b"\xef\xbb\xbfhello\r\n").unwrap();
+        let opened = core.editor.local_open(&path).unwrap();
+        assert!(opened.bom);
+        assert_eq!(opened.eol, Eol::Crlf);
+        assert_eq!(opened.content, "hello\n");
+        std::fs::write(&file, b"theirs\n").unwrap();
+        let outcome = core
+            .editor
+            .local_save(
+                &opened.real_path,
+                "mine\n",
+                opened.eol,
+                opened.bom,
+                &opened.version,
+                SaveMode::Normal,
+                false,
+            )
+            .unwrap();
+        assert!(matches!(
+            outcome,
+            SaveOutcome::Conflict { deleted: false, .. }
+        ));
+        assert_eq!(std::fs::read(&file).unwrap(), b"theirs\n");
+        assert!(core
+            .editor
+            .local_save(
+                &opened.real_path,
+                "mine\n",
+                opened.eol,
+                opened.bom,
+                &opened.version,
+                SaveMode::Overwrite,
+                false
+            )
+            .is_err());
+        let outcome = core
+            .editor
+            .local_save(
+                &opened.real_path,
+                "mine\n",
+                opened.eol,
+                opened.bom,
+                &opened.version,
+                SaveMode::Overwrite,
+                true,
+            )
+            .unwrap();
+        assert!(matches!(outcome, SaveOutcome::Saved { .. }));
+        assert_eq!(std::fs::read(&file).unwrap(), b"\xef\xbb\xbfmine\r\n");
+        let backups = core
+            .editor
+            .backups(crate::computer::ID, &opened.real_path)
+            .unwrap();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(
+            core.editor
+                .backup_read(crate::computer::ID, &opened.real_path, &backups[0].id)
+                .unwrap(),
+            "theirs\n"
+        );
+        #[cfg(unix)]
+        {
+            std::fs::remove_file(&file).unwrap();
+            let target = dir.path().join("target");
+            std::fs::write(&target, b"target").unwrap();
+            std::os::unix::fs::symlink(&target, &file).unwrap();
+            assert!(core
+                .editor
+                .local_save(
+                    &path,
+                    "changed",
+                    Eol::Lf,
+                    false,
+                    &opened.version,
+                    SaveMode::Overwrite,
+                    true
+                )
+                .is_err());
+            assert_eq!(std::fs::read(&target).unwrap(), b"target");
+        }
     }
 }

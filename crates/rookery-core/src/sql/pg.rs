@@ -423,6 +423,11 @@ impl PgConn {
         })
     }
 
+    pub async fn backup_tables(&mut self) -> Result<Vec<super::backup::BackupTable>> {
+        let rows = self.rows("SELECT n.nspname, c.relname, c.relkind::text, pg_table_size(c.oid)::text, pg_indexes_size(c.oid)::text FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind IN ('r','p','v','m') AND n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg_toast%' ORDER BY 1,2").await?;
+        Ok(super::backup::tables_from_rows(rows))
+    }
+
     pub async fn schema(&self, system: bool) -> Result<SchemaTree> {
         let ns = if system { "TRUE".to_string() } else { "n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname !~ '^pg_(toast|temp)'".to_string() };
         let kinds = "c.relkind IN ('r','v','m','p','f')";

@@ -2,7 +2,25 @@
 
 The release workflow copies the section for the version (e.g. `## 0.7.0`), plus any versions since the last published release, into the GitHub Release notes, which the in-app updater shows under "What's new".
 
+## 1.0.0
+
+- **Global notifications:** a shared notification center keeps operation results available across workspaces, with unread counts, clear-all controls and desktop notification permission/testing.
+
+- **macOS notifications:** test and operation notifications share an awaited UserNotifications route with foreground banners, real authorization checks and visible submission errors. Windows retains its existing notification route. macOS Focus and notification settings still control presentation; packaged-app banner delivery has not been runtime verified.
+
+- **Gzip SQL backups:** MySQL/MariaDB exports now offer SQL or gzip SQL (`.sql.gz`), streaming only the chosen output locally or on SSH servers (`gzip -1` required remotely). Import/restore validates gzip before streaming into native clients without an uncompressed staging file; compressed bytes retain SHA-256 checks and existing PROD/cancellation guards. PostgreSQL custom exports and old backup records remain compatible. ZIP archives are unsupported. Verified with local native fixtures and mocked UI; live restores remain unverified.
+
+- **Database backup feedback:** exact PROD confirmation disables browser capitalization/correction. Confirmation, access checks and running jobs have separate status text; bounded timestamped logs stream native verbose activity, real SSH stages and redacted errors without polling or invented percentages.
+
+- **This computer:** enabled by default at the top of the SSH sidebar, with a Settings toggle. The local workspace reuses Overview, Terminal, Files, Editor, Git, Docker and Database; no Services or Logs tabs and no localhost SSH setup. Native CPU/RAM/home-volume/network/uptime collection runs only in visible Overview and follows the live interval/Off setting. Local Git/Docker use argv, local files retain bounded version-aware saves/backups, and local databases reuse SQL plus native export/import. Docker is pinned to the local default/Desktop socket; remote/custom contexts are not used. Disabling preserves drafts and running terminals/jobs while pausing workspace requests. Restored computer tabs wait for a click. Verified with mocked UI and temporary native fixtures; Windows execution and live system/Docker/database behavior remain unverified.
+
+- **Database files:** Export / Import / Backups dialogs use installed native PostgreSQL and MySQL/MariaDB tools. Export defaults to all tables with search, selection, per-table structure/data modes and approximate storage totals. Local files and SSH-server files stream through private local staging, with progress/cancel, no-overwrite destinations, and core PROD/edit-mode checks. Backups records only Rookery exports with SHA-256 and download/restore/delete; export completion is explicitly not restore verification. Large dumps never enter the SQL editor or automatically fall back to an external editor. Mocked UI and local native-process fixtures pass; live database restores remain unverified. See [scope and limits](07-SQL-CONNECTIONS.md#native-database-file-operations).
+
 ## 0.9.0
+
+- **Production changes:** Files operations, Docker actions, process signals and shell integration enforce confirmation against the saved host in Rust. External-editor saves remain local until **Review upload**; pending drafts survive locking, and locked uploads are rejected. Production snippet and container quick commands always ask before running.
+- **Visible work only:** live metrics have a persisted interval / Off control. Hidden Files follow/transfer refreshes and editor read chains pause. Opt-in automatic snapshots only run in the active connected Overview while focused with metrics on; explicit Sync now remains available for other hosts. Docker failures stop collection until **Reload Docker**, with at most three stream attempts.
+- **Bounded logs:** Yesterday and custom local time ranges load explicit partial history, with **Latest / follow** to return. Docker history returns up to 2,000 lines; file history inspects at most the final 2 MiB / 20,000 lines, filters supported timestamps, and shows the newest 2,000 matches. No rotated files or full-file scans. Live Docker resumes always include a 500-line cap; local streams retain at most 5,000 lines / 4 MiB. Shared SSH exec output stops at 8 MiB combined stdout/stderr and closes channels on failure, timeout or cancellation.
 
 - **Git refresh:** editor saves, completed remote terminal commands and reconnects mark cached repositories stale. Git refreshes the visible clean repository on demand or after returning to a stale cache, without polling or hidden requests; dirty drafts and failed requests stay protected. React/CodeMirror interaction tests cover folder actions, production confirmation, visibility, refresh races and draft preservation.
 

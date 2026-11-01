@@ -1,3 +1,5 @@
+import { allowDatabaseSessionClose, databaseSessionsForTabs } from "../features/sql/jobGuard";
+import { COMPUTER_ID } from "../features/local/target";
 import { terminalRegistry } from "../features/server-tab/terminal/registry";
 import { tabPasswords } from "../features/sql/DbTab";
 import { sqlKeyForHost } from "../features/sql/registry";
@@ -19,20 +21,22 @@ import { useTabs, type Tab } from "../stores/tabs";
  * in its Editor are asked about first.
  */
 export async function closeTab(tab: Tab): Promise<boolean> {
-  if (tab.kind === "server" && !(await settleEditor(tab.hostId, "closing this tab"))) return false;
-  const keys = tab.kind === "db" ? [tab.id] : tab.kind === "server" ? [sqlKeyForHost(tab.hostId)] : [];
+  if ((tab.kind === "server" || tab.kind === "computer") && !(await settleEditor(tab.hostId, "closing this tab"))) return false;
+  const keys = tab.kind === "db" ? [tab.id] : (tab.kind === "server" || tab.kind === "computer") ? [sqlKeyForHost(tab.hostId)] : [];
+  if (!(await allowDatabaseSessionClose(databaseSessionsForTabs(keys)))) return false;
   if (keys.length && !(await settleTransactions(openTransactions(keys), "closing this tab"))) return false;
   useTabs.getState().close(tab.id);
   if (tab.kind === "local") terminalRegistry.disposeHost(tab.id);
   if (tab.kind === "db") tabPasswords.delete(tab.id); // the tab's session closes when it unmounts
-  if (tab.kind === "server") {
+  if ((tab.kind === "server" || tab.kind === "computer")) {
     terminalRegistry.disposeHost(tab.hostId);
-    void api.sftpClose(tab.hostId);
+    if (tab.kind === "server") void api.sftpClose(tab.hostId);
+    if (tab.kind === "computer") tabPasswords.delete(sqlKeyForHost(COMPUTER_ID));
     useFiles.getState().forget(tab.hostId);
     useDocker.getState().forget(tab.hostId);
     useLogs.getState().forgetHost(tab.hostId);
     forgetEditor(tab.hostId);
-    void useSessions.getState().detach(tab.hostId);
+    if (tab.kind === "server") void useSessions.getState().detach(tab.hostId);
   }
   return true;
 }
@@ -63,7 +67,7 @@ export async function settleEditor(hostId: string | null, action: string): Promi
   if (c === "show") {
     const d = dirty[0];
     const tabs = useTabs.getState();
-    const t = tabs.tabs.find((x) => x.kind === "server" && x.hostId === d.hostId);
+    const t = tabs.tabs.find((x) => (x.kind === "server" || x.kind === "computer") && x.hostId === d.hostId);
     if (t) tabs.activate(t.id);
     tabs.setView(d.hostId, "editor");
     useEditor.getState().activate(d.hostId, d.key);
@@ -75,7 +79,7 @@ export async function settleEditor(hostId: string | null, action: string): Promi
 export function activeServerHostId(): string | null {
   const { tabs, activeTabId } = useTabs.getState();
   const t = tabs.find((x) => x.id === activeTabId);
-  return t?.kind === "server" ? t.hostId : null;
+  return t?.kind === "server" || t?.kind === "computer" ? t.hostId : null;
 }
 
 export function cycleTab(dir: 1 | -1) {
