@@ -17,7 +17,7 @@ pub enum DockerAction {
     Remove,
 }
 
-pub async fn docker_action(conns: &ConnectionManager, host_id: &str, container: &str, action: DockerAction) -> Result<()> {
+pub async fn docker_action(conns: &ConnectionManager, sudo: &crate::sudo::Sudo, host_id: &str, container: &str, action: DockerAction) -> Result<()> {
     if !valid_container_ref(container) {
         return Err(Error::Other("invalid container".into()));
     }
@@ -34,7 +34,7 @@ pub async fn docker_action(conns: &ConnectionManager, host_id: &str, container: 
     }
     let lease = conns.acquire(host_id).await?;
     let h = lease.handle().await?;
-    let out = exec(&h, &format!("docker {verb} {container} 2>&1"), Duration::from_secs(90)).await?;
+    let out = sudo.exec_docker(&h, host_id, &format!("{verb} {container}"), Duration::from_secs(90)).await?;
     if out.exit.unwrap_or(0) != 0 {
         return Err(Error::Other(out.stdout.trim().to_string()));
     }

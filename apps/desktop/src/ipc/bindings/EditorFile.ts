@@ -26,4 +26,8 @@ owned: boolean,
 /**
  * Octal permissions, e.g. "644".
  */
-mode: string, };
+mode: string, 
+/**
+ * Opened with sudo (the login cannot read it): saving and reloading use sudo too.
+ */
+sudo: boolean, };

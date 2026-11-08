@@ -16,7 +16,8 @@ import { noteChange, openFile, openInEditor, replaceText, saveRaw, stateOf, text
 import { langOf } from "../editor/lang";
 import { AddRepositoryDialog } from "./AddRepositoryDialog";
 import { ChangeSection } from "./ChangeSection";
-import { changeView, type ChangeView } from "./tree";
+import { useGitHistory } from "./history";
+import { changeView, discardPlan, discardPreview, type ChangeView } from "./tree";
 
 interface Selection { folder: string; file: GitFile; staged: boolean }
 interface LoadedDiff { key: string; folder: string; path: string; staged: boolean; data: GitDiff; docKey: string | null }
@@ -155,7 +156,8 @@ export function GitView({ hostId, visible }: { hostId: string; visible: boolean 
     setNotice(null);
   };
 
-  const mutate = async (action: GitAction, label: string, destructive = false) => {
+  /** `confirm` replaces the default confirmation text (folder discard lists its files). */
+  const mutate = async (action: GitAction, label: string, destructive = false, confirm?: { body: string; preview: string; typeToConfirm?: string }) => {
     if (!folder || !status || !live.current || working.current || cached?.loading) return;
     const target = folder;
     working.current = true;
@@ -168,8 +170,9 @@ export function GitView({ hostId, visible }: { hostId: string; visible: boolean 
       if (production || destructive) {
         confirmed = await askConfirm({
           title: `${label}${production ? ` on PROD — ${host.name}` : ""}?`,
-          body: action.kind === "discard" ? `This permanently discards the selected file's changes on ${hostId === COMPUTER_ID ? "this computer" : "the server"}. Untracked files are deleted.` : action.kind === "stash_drop" ? "This permanently deletes this stash." : production ? "This operation changes the production repository or its remote." : "This changes the working tree. Uncommitted work may be affected.",
-          preview: `${status.root}\n${label}`,
+          body: confirm?.body ?? (action.kind === "discard" ? `This permanently discards the selected file's changes on ${hostId === COMPUTER_ID ? "this computer" : "the server"}. Untracked files are deleted.` : action.kind === "stash_drop" ? "This permanently deletes this stash." : production ? "This operation changes the production repository or its remote." : "This changes the working tree. Uncommitted work may be affected."),
+          preview: confirm?.preview ?? `${status.root}\n${label}`,
+          typeToConfirm: confirm?.typeToConfirm,
           confirmLabel: label,
           danger: production || destructive,
         });
@@ -180,7 +183,7 @@ export function GitView({ hostId, visible }: { hostId: string; visible: boolean 
         const output = await api.gitAction(hostId, target, action, confirmed);
         setNotice(output.trim() || `${label} completed.`);
         if (action.kind === "commit") setMessage("");
-        if (action.kind === "discard" || action.kind === "switch" || action.kind === "create_branch" || action.kind === "pull" || action.kind.startsWith("stash_") && action.kind !== "stash_drop" || action.kind === "abort_merge" || action.kind === "abort_rebase" || action.kind === "continue_rebase" || action.kind === "commit") {
+        if (action.kind === "discard" || action.kind === "discard_paths" || action.kind === "switch" || action.kind === "create_branch" || action.kind === "pull" || action.kind.startsWith("stash_") && action.kind !== "stash_drop" || action.kind === "abort_merge" || action.kind === "abort_rebase" || action.kind === "continue_rebase" || action.kind === "commit") {
           setSelection(null);
           diffCache.current = null;
         }
@@ -188,6 +191,24 @@ export function GitView({ hostId, visible }: { hostId: string; visible: boolean 
       useGit.getState().invalidate(hostId, status.root);
       if (live.current && !dirtyFiles().length) await useGit.getState().refresh(hostId, target);
     } finally { working.current = false; setBusy(false); }
+  };
+
+  /** Revert every unstaged change in a folder: exactly the files listed in the confirmation. */
+  const discardFolder = async (path: string, children: GitFile[]) => {
+    const plan = discardPlan(children);
+    const count = plan.tracked.length + plan.untracked.length;
+    if (!count) return;
+    const name = path.slice(path.lastIndexOf("/") + 1);
+    const where = hostId === COMPUTER_ID ? "this computer" : "the server";
+    const parts = [
+      plan.tracked.length ? `${plan.tracked.length} changed file${plan.tracked.length === 1 ? "" : "s"} go back to the last staged or committed version` : "",
+      plan.untracked.length ? `${plan.untracked.length} new (untracked) file${plan.untracked.length === 1 ? " is" : "s are"} deleted` : "",
+    ].filter(Boolean);
+    await mutate({ kind: "discard_paths", ...plan }, `Discard ${count} change${count === 1 ? "" : "s"} in ${path}`, true, {
+      body: `This permanently discards changes on ${where} and cannot be undone: ${parts.join("; ")}. Staged changes are kept. Only the files listed are touched.`,
+      preview: discardPreview(path, plan),
+      typeToConfirm: count >= 10 || host?.env_label === "prod" ? name : undefined,
+    });
   };
 
   const save = async (stage: boolean) => {
@@ -257,6 +278,7 @@ export function GitView({ hostId, visible }: { hostId: string; visible: boolean 
     onDiscard={(file) => void mutate({ kind: "discard", path: file.path, untracked: file.index === "?" }, `Discard ${file.path}`, true)}
     onAll={label === "Conflicts" ? undefined : () => void mutate({ kind: index ? "unstage" : "stage", paths: filePaths(files, index) }, `${index ? "Unstage" : "Stage"} all`)}
     onFolder={label === "Conflicts" ? undefined : (path, children) => void mutate({ kind: index ? "unstage" : "stage", paths: filePaths(children, index) }, `${index ? "Unstage" : "Stage"} folder ${path}`)}
+    onDiscardFolder={label === "Changes" ? (path, children) => void discardFolder(path, children) : undefined}
   />;
 
   return (
@@ -286,7 +308,7 @@ export function GitView({ hostId, visible }: { hostId: string; visible: boolean 
           </ResizablePanel>
           <div className="flex min-w-0 flex-1 flex-col gap-2 p-3">
             {selected ? <>
-              <div className="flex flex-wrap items-center gap-2"><span className="min-w-0 flex-1 break-all font-mono text-xs">{selected.path}{doc?.dirty ? " · unsaved" : ""}</span>{editable && <><Button disabled={disabled || !doc?.dirty} onClick={() => void save(false)}>Save</Button><Button variant="primary" disabled={disabled} onClick={() => void save(true)}>Save & stage</Button></>}<Button disabled={busy} onClick={() => void edit()}>Open in editor</Button></div>
+              <div className="flex flex-wrap items-center gap-2"><span className="min-w-0 flex-1 break-all font-mono text-xs">{selected.path}{doc?.dirty ? " · unsaved" : ""}</span>{editable && <><Button disabled={disabled || !doc?.dirty} onClick={() => void save(false)}>Save</Button><Button variant="primary" disabled={disabled} onClick={() => void save(true)}>Save & stage</Button></>}<Button disabled={busy} onClick={() => void edit()}>Open in editor</Button>{selected.index !== "?" && status && <><Button onClick={() => useGitHistory.getState().show({ hostId, root: status.root, path: selected.path, tab: "history" })}>History</Button><Button onClick={() => useGitHistory.getState().show({ hostId, root: status.root, path: selected.path, tab: "blame" })}>Blame</Button></>}</div>
 
               {doc?.readOnlyReason && <p className="m-0 text-xs text-warn">{doc.readOnlyReason}</p>}{doc?.mixedEol && <p className="m-0 text-xs text-warn">Mixed line endings. Saving uses {doc.eol.toUpperCase()}.</p>}
               {selected.conflicted && <p className="m-0 text-xs text-warn">Resolve conflict markers in Editor, save, return and reload, then Resolve to stage the saved file.</p>}

@@ -2,7 +2,7 @@
 import { api } from "./api";
 import { listen } from "@tauri-apps/api/event";
 import type { CoreEvent } from "./bindings/CoreEvent";
-import { useDocker } from "../stores/docker";
+import { useDocker, useDockerSudo, useLogExports } from "../stores/docker";
 import { editKey, useFiles } from "../stores/files";
 import { useLogs } from "../stores/logs";
 import { useSessions } from "../stores/sessions";
@@ -94,6 +94,9 @@ export function dispatch(ev: CoreEvent) {
     case "database_job":
       useDatabaseFiles.getState().received(ev.job, true);
       break;
+    case "log_export":
+      useLogExports.getState().received(ev.job);
+      break;
     case "sql_result":
       useSql.getState().onResult(ev);
       break;
@@ -102,6 +105,7 @@ export function dispatch(ev: CoreEvent) {
       break;
     case "vault_locked":
       useVault.getState().markLocked();
+      useDockerSudo.getState().clear();
       break;
     case "vault_unlocked":
       break;

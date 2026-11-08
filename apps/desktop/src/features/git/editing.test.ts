@@ -8,7 +8,7 @@ import { close, forgetHost, noteChange, openFile, replaceText, saveRaw, textOf }
 import { useEditor } from "../../stores/editor";
 import { normalizeGitText } from "./GitView";
 
-const file: EditorFile = { path: "/repo/file.txt", real_path: "/repo/file.txt", content: "original\n", version: { size: 13, mtime: 1, sha256: "original" }, eol: "crlf", mixed_eol: false, bom: true, read_only: false, read_only_reason: null, owned: true, mode: "644" };
+const file: EditorFile = { path: "/repo/file.txt", real_path: "/repo/file.txt", content: "original\n", version: { size: 13, mtime: 1, sha256: "original" }, eol: "crlf", mixed_eol: false, bom: true, read_only: false, read_only_reason: null, owned: true, mode: "644", sudo: false };
 beforeEach(() => {
   open.mockReset().mockResolvedValue(file);
   save.mockReset().mockResolvedValue({ kind: "saved", version: { size: 14, mtime: 2, sha256: "updated" }, method: "atomic" });

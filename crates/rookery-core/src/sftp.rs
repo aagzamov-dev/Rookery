@@ -18,7 +18,7 @@ use tokio::sync::{broadcast, Semaphore};
 use tokio::task::JoinHandle;
 
 use crate::model::{FileEntry, FileKind, Transfer, TransferState};
-use crate::ssh::{exec, ConnectionManager, Lease};
+use crate::ssh::{exec, exec_stream, ConnectionManager, Lease, StreamChunk};
 use crate::terminal::shell_quote;
 use crate::{new_id, CoreEvent, Error, Result};
 
@@ -55,6 +55,48 @@ pub struct Sftp {
     edits: Mutex<HashMap<String, EditWatch>>,
     transfer_slots: Arc<Semaphore>,
     status: Mutex<HashMap<String, Transfer>>,
+    /// Running ZIP / tar.gz jobs by the id the UI gave them, for Cancel.
+    archives: Mutex<HashMap<String, Arc<tokio::sync::Notify>>>,
+}
+
+/// Archive kinds `archive.py` understands.
+pub const ARCHIVE_MODES: [&str; 4] = ["zip", "unzip", "targz", "untargz"];
+const ARCHIVE_MAX: Duration = Duration::from_secs(3 * 3600);
+
+/// Size of a file or folder and the free space beside it, for "this is big, continue?".
+/// `None` when it could not be measured in time (huge folder, slow disk, no permission).
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../apps/desktop/src/ipc/bindings/")]
+pub struct PathUsage {
+    #[ts(type = "number | null")]
+    pub size: Option<u64>,
+    #[ts(type = "number | null")]
+    pub free: Option<u64>,
+}
+
+/// A single name for a new file or folder (no separators, not `.` / `..`). Names without
+/// an extension (`Dockerfile`, `Makefile`) and dot files (`.env`) are fine.
+pub fn check_new_name(name: &str) -> Result<()> {
+    if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\\', '\0']) || name.len() > 255 || name.trim() != name {
+        return Err(Error::Other("Enter a name without slashes or spaces at the start or end.".into()));
+    }
+    Ok(())
+}
+
+fn check_new_path(path: &str) -> Result<&str> {
+    let (parent, name) = path.rsplit_once('/').ok_or_else(|| Error::Other("Enter an absolute path.".into()))?;
+    if !path.starts_with('/') || parent.contains('\0') {
+        return Err(Error::Other("Enter an absolute path.".into()));
+    }
+    check_new_name(name)?;
+    Ok(name)
+}
+
+struct ArchiveJob<'a>(&'a Mutex<HashMap<String, Arc<tokio::sync::Notify>>>, String);
+impl Drop for ArchiveJob<'_> {
+    fn drop(&mut self) {
+        self.0.lock().remove(&self.1);
+    }
 }
 
 impl Sftp {
@@ -70,6 +112,7 @@ impl Sftp {
             edits: Default::default(),
             transfer_slots: Arc::new(Semaphore::new(4)),
             status: Default::default(),
+            archives: Default::default(),
         }
     }
 
@@ -153,40 +196,171 @@ impl Sftp {
     }
 
     pub async fn mkdir(&self, host_id: &str, path: &str) -> Result<()> {
+        check_new_path(path)?;
         let c = self.conn(host_id).await?;
         let r = c.s.create_dir(path).await;
+        self.exists_err(host_id, &c, path, r).await
+    }
+
+    /// Create an empty file; never replaces an existing one (O_CREAT | O_EXCL on the server).
+    pub async fn create_file(&self, host_id: &str, path: &str) -> Result<()> {
+        check_new_path(path)?;
+        let c = self.conn(host_id).await?;
+        let r = c.s.open_with_flags_and_attributes(path, OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::EXCLUDE, FileAttributes::empty()).await;
+        let mut f = self.exists_err(host_id, &c, path, r).await?;
+        f.shutdown().await?;
+        Ok(())
+    }
+
+    /// Copy a regular file to `to` in the same folder (`cp -p`); never replaces anything.
+    pub async fn duplicate(&self, host_id: &str, from: &str, to: &str) -> Result<()> {
+        check_new_path(to)?;
+        if !from.starts_with('/') || from.contains('\0') {
+            return Err(Error::Other("Select a file.".into()));
+        }
+        let lease = self.conns.acquire(host_id).await?;
+        let h = lease.handle().await?;
+        let (src, dst) = (shell_quote(from), shell_quote(to));
+        let command = format!(
+            "if [ ! -f {src} ] || [ -L {src} ]; then echo 'Only regular files can be duplicated.'; exit 1; fi; \
+             if [ -e {dst} ] || [ -L {dst} ]; then echo 'A file or folder with this name already exists; nothing was replaced.'; exit 1; fi; \
+             cp -p -- {src} {dst} 2>&1"
+        );
+        let out = exec(&h, &command, Duration::from_secs(600)).await?;
+        if out.exit != Some(0) {
+            return Err(Error::Other(out.stdout.trim().to_string()));
+        }
+        Ok(())
+    }
+
+    /// Set permission bits (`0o7777` at most) of one file or folder; never recursive.
+    pub async fn chmod(&self, host_id: &str, path: &str, mode: u32) -> Result<()> {
+        if !path.starts_with('/') || path == "/" || path.contains('\0') || mode > 0o7777 {
+            return Err(Error::Other("Select a file or folder and valid permissions.".into()));
+        }
+        let c = self.conn(host_id).await?;
+        let mut a = FileAttributes::empty();
+        a.permissions = Some(mode);
+        let r = c.s.set_metadata(path, a).await;
         self.on_err(host_id, r).await
     }
 
+    /// Owner and group names of `path` (`stat`), for the permissions dialog.
+    pub async fn owner(&self, host_id: &str, path: &str) -> Result<(String, String)> {
+        if !path.starts_with('/') || path.contains('\0') {
+            return Err(Error::Other("Select a file or folder.".into()));
+        }
+        let lease = self.conns.acquire(host_id).await?;
+        let h = lease.handle().await?;
+        let out = exec(&h, &format!("LC_ALL=C stat -c '%U %G' -- {} 2>&1", shell_quote(path)), Duration::from_secs(10)).await?;
+        let mut it = out.stdout.split_whitespace();
+        match (out.exit, it.next(), it.next()) {
+            (Some(0), Some(u), Some(g)) => Ok((u.to_string(), g.to_string())),
+            _ => Err(Error::Other(out.stdout.trim().to_string())),
+        }
+    }
+
+    /// SFTP v3 reports "already exists" as a generic failure: say what happened.
+    async fn exists_err<T>(&self, host_id: &str, c: &Conn, path: &str, r: std::result::Result<T, russh_sftp::client::error::Error>) -> Result<T> {
+        if r.is_err() && c.s.symlink_metadata(path).await.is_ok() {
+            return Err(Error::Other("A file or folder with this name already exists; nothing was replaced.".into()));
+        }
+        self.on_err(host_id, r).await
+    }
+
+    /// Size of `path` (du, at most ~20 s) and free space in its folder (df).
+    pub async fn usage(&self, host_id: &str, path: &str) -> Result<PathUsage> {
+        if !path.starts_with('/') || path.contains('\0') {
+            return Err(Error::Other("Enter an absolute path.".into()));
+        }
+        let parent = match path.trim_end_matches('/').rsplit_once('/') {
+            Some(("", _)) | None => "/",
+            Some((p, _)) => p,
+        };
+        let lease = self.conns.acquire(host_id).await?;
+        let h = lease.handle().await?;
+        let command = format!(
+            "export LC_ALL=C; if command -v timeout >/dev/null 2>&1; then T='timeout 20'; else T=; fi; $T du -sk -- {} 2>/dev/null | tail -n 1 | cut -f1; echo @@; df -Pk -- {} 2>/dev/null | awk 'NR==2{{print $4}}'",
+            shell_quote(path),
+            shell_quote(parent)
+        );
+        let Ok(out) = exec(&h, &command, Duration::from_secs(30)).await else {
+            return Ok(PathUsage { size: None, free: None });
+        };
+        let (size, free) = out.stdout.split_once("@@").unwrap_or((&out.stdout, ""));
+        let kb = |s: &str| s.trim().parse::<u64>().ok().map(|k| k.saturating_mul(1024));
+        Ok(PathUsage { size: kb(size), free: kb(free) })
+    }
+
     pub async fn rename(&self, host_id: &str, from: &str, to: &str) -> Result<()> {
+        check_new_path(to)?;
         let c = self.conn(host_id).await?;
+        if c.s.symlink_metadata(to).await.is_ok() {
+            return Err(Error::Other("A file or folder with this name already exists; nothing was replaced.".into()));
+        }
         let r = c.s.rename(from, to).await;
         self.on_err(host_id, r).await
     }
 
-    pub async fn archive(&self, host_id: &str, path: &str, name: &str, extract: bool) -> Result<()> {
-        if !path.starts_with('/') || path == "/" || path.contains('\0')
-            || name.is_empty() || name == "." || name == ".."
-            || name.contains(['/', '\\', '\0'])
-        {
+    /// ZIP / tar.gz a file or folder, or extract one, beside it (`archive.py`). Runs on a pty,
+    /// so [`Self::archive_cancel`] (closing the channel) stops it on the server, and the
+    /// script removes its temporary output: the result appears complete or not at all.
+    pub async fn archive(&self, host_id: &str, path: &str, name: &str, mode: &str, job: &str) -> Result<()> {
+        if !path.starts_with('/') || path == "/" || path.contains('\0') || check_new_name(name).is_err() {
             return Err(Error::Other("select a file or folder and enter a valid destination name".into()));
         }
+        if !ARCHIVE_MODES.contains(&mode) {
+            return Err(Error::Other("unknown archive type".into()));
+        }
+        if job.is_empty() || job.len() > 64 {
+            return Err(Error::Other("invalid job id".into()));
+        }
+        let cancel = Arc::new(tokio::sync::Notify::new());
+        {
+            let mut jobs = self.archives.lock();
+            if jobs.contains_key(job) {
+                return Err(Error::Other("this archive job is already running".into()));
+            }
+            jobs.insert(job.to_string(), cancel.clone());
+        }
+        let _job = ArchiveJob(&self.archives, job.to_string());
         let lease = self.conns.acquire(host_id).await?;
         let h = lease.handle().await?;
         let command = format!(
-            "command -v python3 >/dev/null 2>&1 || {{ echo 'ZIP and Unzip require Python 3 on this server.'; exit 1; }}; python3 -c {} {} {} {} 2>&1",
-            shell_quote(include_str!("archive.py")), shell_quote(path), shell_quote(name), if extract { "1" } else { "0" },
+            "command -v python3 >/dev/null 2>&1 || {{ echo 'ZIP, tar.gz and extracting need Python 3 on this server.'; exit 1; }}; exec python3 -c {} {} {} {} 2>&1",
+            shell_quote(include_str!("archive.py")), shell_quote(path), shell_quote(name), mode,
         );
-        let out = exec(&h, &command, Duration::from_secs(1800)).await?;
-        if out.exit != Some(0) {
-            let message = out.stdout.trim();
-            return Err(Error::Other(if message.is_empty() {
-                "Archive operation did not complete. Check the destination for partial output.".into()
-            } else {
-                format!("{message} Check the destination for partial output before retrying.")
-            }));
+        let mut rx = exec_stream(&h, &command, true).await?;
+        let mut output = Vec::new();
+        let mut exit = None;
+        let deadline = tokio::time::sleep(ARCHIVE_MAX);
+        tokio::pin!(deadline);
+        loop {
+            tokio::select! {
+                chunk = rx.recv() => match chunk {
+                    Some(StreamChunk::Data(b)) => if output.len() < 16 * 1024 { output.extend_from_slice(&b) },
+                    Some(StreamChunk::Exit(code)) => exit = code,
+                    None => break,
+                },
+                // Dropping the receiver closes the channel: the server sends SIGHUP and the
+                // script deletes its temporary file or folder.
+                _ = cancel.notified() => return Err(Error::Other("Cancelled; nothing was created.".into())),
+                _ = &mut deadline => return Err(Error::Other("Stopped after 3 hours; nothing was created.".into())),
+            }
+        }
+        if exit != Some(0) {
+            let text = String::from_utf8_lossy(&output).replace('\r', "");
+            let message = text.trim();
+            return Err(Error::Other(if message.is_empty() { "The archive was not created (the connection closed).".into() } else { message.to_string() }));
         }
         Ok(())
+    }
+
+    /// Stop a running [`Self::archive`]; unknown or finished jobs are ignored.
+    pub fn archive_cancel(&self, job: &str) {
+        if let Some(n) = self.archives.lock().get(job) {
+            n.notify_one();
+        }
     }
 
     /// Delete a file or empty folder; `recursive` uses `rm -rf` on the server.
@@ -706,6 +880,30 @@ pub(crate) async fn exercise_staged_uploads(core: &crate::Core, host_id: &str) {
 mod guard_tests {
     use super::*;
     use crate::model::{EnvLabel, Host, RefreshSetting, StartView};
+
+    #[test]
+    fn new_names_allow_no_extension_and_dot_files_only() {
+        for ok in ["Dockerfile", "Makefile", ".env", "a.b.c", "файл", "with space"] {
+            assert!(check_new_name(ok).is_ok(), "{ok}");
+        }
+        for bad in ["", ".", "..", "a/b", "a\\b", "a\0", " lead", "trail "] {
+            assert!(check_new_name(bad).is_err(), "{bad:?}");
+        }
+        assert!(check_new_path("/srv/app/Dockerfile").is_ok());
+        assert!(check_new_path("relative/x").is_err());
+        assert!(check_new_path("/srv/app/").is_err());
+    }
+
+    #[tokio::test]
+    async fn archive_rejects_bad_input_before_connecting() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = crate::Core::init(dir.path()).unwrap();
+        for (path, name, mode) in [("/", "x.zip", "zip"), ("rel", "x.zip", "zip"), ("/a", "../x", "zip"), ("/a", "x", "rm -rf"), ("/a", "", "unzip")] {
+            assert!(core.sftp.archive("h", path, name, mode, "job").await.is_err());
+        }
+        assert!(core.connections.all_info().is_empty());
+        core.sftp.archive_cancel("unknown");
+    }
 
     #[tokio::test]
     async fn external_upload_uses_saved_environment_and_lock_before_connecting() {

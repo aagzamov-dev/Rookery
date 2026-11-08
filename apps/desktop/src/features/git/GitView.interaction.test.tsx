@@ -58,7 +58,7 @@ beforeEach(() => {
   ipc.status.mockReset().mockImplementation(async () => current);
   ipc.action.mockReset().mockResolvedValue("");
   ipc.diff.mockReset().mockResolvedValue({ left: "base\n", right: "server\n", notice: null });
-  ipc.open.mockReset().mockImplementation(async (_host: string, path: string): Promise<EditorFile> => ({ path, real_path: path, content: "server\n", version: { size: 7, mtime: 1, sha256: "server" }, eol: "lf", mixed_eol: false, bom: false, read_only: false, read_only_reason: null, owned: true, mode: "644" }));
+  ipc.open.mockReset().mockImplementation(async (_host: string, path: string): Promise<EditorFile> => ({ path, real_path: path, content: "server\n", version: { size: 7, mtime: 1, sha256: "server" }, eol: "lf", mixed_eol: false, bom: false, read_only: false, read_only_reason: null, owned: true, mode: "644", sudo: false }));
   ipc.save.mockReset();
   ipc.settings.mockReset().mockResolvedValue(null);
   ipc.discover.mockReset().mockResolvedValue([]);
@@ -209,4 +209,29 @@ it("retains edits made while an earlier clean status request completes", async (
   expect(ipc.status).toHaveBeenCalledTimes(1);
   expect(rightEditor()).toBe(view);
   expect(view.state.selection.main.head).toBe(4);
+});
+
+it("folder discard lists the files, sends nothing on cancel and exactly the listed files on accept", async () => {
+  seed([file("src/app.ts"), file("src/new.ts", "?", "?"), file("src/staged.ts", "M", "."), file("src-other/skip.ts")]);
+  await render();
+  await click("Discard folder src");
+  expect(document.body.textContent).toContain("revert  src/app.ts");
+  expect(document.body.textContent).toContain("delete  src/new.ts");
+  expect(document.body.textContent).not.toContain("src-other/skip.ts");
+  expect(document.body.textContent).toContain("Staged changes are kept");
+  await click("Cancel", document.body);
+  expect(ipc.action).not.toHaveBeenCalled();
+  await click("Discard folder src");
+  await click("Discard 2 changes in src", document.body);
+  expect(ipc.action).toHaveBeenCalledTimes(1);
+  expect(ipc.action.mock.calls[0][2]).toEqual({ kind: "discard_paths", tracked: ["src/app.ts"], untracked: ["src/new.ts"] });
+  expect(ipc.action.mock.calls[0][3]).toBe(true);
+});
+
+it("folder discard of many files needs the folder name typed", async () => {
+  seed(Array.from({ length: 12 }, (_, i) => file(`lib/f${i}.ts`)));
+  await render();
+  await click("Discard folder lib");
+  expect(button("Discard 12 changes in lib", document.body).disabled).toBe(true);
+  expect(ipc.action).not.toHaveBeenCalled();
 });

@@ -11,7 +11,7 @@ use ts_rs::TS;
 use super::{default_port, manager::parse_url};
 use crate::collectors::valid_container_ref;
 use crate::model::DbEngine;
-use crate::ssh::{exec, ConnectionManager};
+use crate::ssh::ConnectionManager;
 use crate::{Error, Result};
 
 /// Connection settings found by a shortcut. Never holds a password.
@@ -256,7 +256,7 @@ pub async fn read_env(sftp: &crate::sftp::Sftp, source: &EnvSource) -> Result<En
 }
 
 /// One `docker inspect` on the server (through its SSH session) → prefill for its Database view.
-pub async fn docker_inspect(conns: &ConnectionManager, host_id: &str, container: &str) -> Result<SqlPrefill> {
+pub async fn docker_inspect(conns: &ConnectionManager, sudo: &crate::sudo::Sudo, host_id: &str, container: &str) -> Result<SqlPrefill> {
     if host_id == crate::computer::ID {
         if !crate::collectors::valid_container_ref(container) {return Err(Error::Other("Invalid container.".into()));}
         let raw=crate::computer::run("docker",&crate::computer::args(&["inspect",container]),None,15).await?;
@@ -269,7 +269,7 @@ pub async fn docker_inspect(conns: &ConnectionManager, host_id: &str, container:
     }
     let lease = conns.acquire(host_id).await?;
     let h = lease.handle().await?;
-    let out = exec(&h, &format!("docker inspect --type container {container} 2>&1"), Duration::from_secs(20)).await?;
+    let out = sudo.exec_docker(&h, host_id, &format!("inspect --type container {container}"), Duration::from_secs(20)).await?;
     if out.exit.unwrap_or(0) != 0 {
         return Err(Error::Other(first_line(&out.stdout)));
     }

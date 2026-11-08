@@ -98,6 +98,13 @@ export function useContextMenu(className?: string) {
       e.stopPropagation();
       setState({ x: e.clientX, y: e.clientY, items: typeof items === "function" ? items() : items });
     },
+    /** For a ⋮ button: opens under the button (also when pressed with the keyboard). */
+    below: (items: MenuItem[] | (() => MenuItem[])) => (e: React.MouseEvent<HTMLElement>) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const r = e.currentTarget.getBoundingClientRect();
+      setState({ x: r.left, y: r.bottom + 2, items: typeof items === "function" ? items() : items });
+    },
     node: state && unlocked && <ContextMenu x={state.x} y={state.y} items={state.items} onClose={() => setState(null)} className={className} />,
   };
 }

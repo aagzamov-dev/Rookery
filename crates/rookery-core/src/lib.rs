@@ -20,6 +20,8 @@ pub mod forward;
 pub mod git;
 pub mod computer;
 pub mod importers;
+pub mod logexport;
+pub mod search;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod local;
 pub mod model;
@@ -28,6 +30,7 @@ pub mod sftp;
 pub mod sql;
 pub mod ssh;
 pub mod subscriptions;
+pub mod sudo;
 pub mod sync;
 pub mod terminal;
 pub mod vault;
@@ -59,6 +62,9 @@ pub struct Core {
     pub sql: Arc<sql::SqlManager>,
     pub database_files: Arc<sql::backup::DatabaseFiles>,
     pub editor: Arc<editor::Editor>,
+    pub sudo: Arc<sudo::Sudo>,
+    pub log_exports: Arc<logexport::LogExports>,
+    pub search: Arc<search::Search>,
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     pub local: Arc<local::LocalTerminals>,
     pub events: broadcast::Sender<CoreEvent>,
@@ -82,17 +88,21 @@ impl Core {
             vault.clone(),
             events.clone(),
         ));
-        let terminals = Arc::new(terminal::Terminals::new(connections.clone(), events.clone(), db.clone(), data_dir.join("logs")));
+        let sudo = Arc::new(sudo::Sudo::new(db.clone(), vault.clone()));
+        let terminals = Arc::new(terminal::Terminals::new(connections.clone(), events.clone(), db.clone(), sudo.clone(), data_dir.join("logs")));
         let subscriptions = Arc::new(subscriptions::Subscriptions::new(
             connections.clone(),
+            sudo.clone(),
             events.clone(),
         ));
         let sftp = Arc::new(sftp::Sftp::new(connections.clone(), db.clone(), vault.clone(), events.clone(), data_dir.join("cache")));
-        let sync = Arc::new(sync::SyncEngine::new(db.clone(), vault.clone(), connections.clone(), events.clone()));
+        let sync = Arc::new(sync::SyncEngine::new(db.clone(), vault.clone(), connections.clone(), sudo.clone(), events.clone()));
         let backup = Arc::new(backup::Backup::new(db.clone(), vault.clone(), events.clone()));
         let sql = Arc::new(sql::SqlManager::new(db.clone(), vault.clone(), connections.clone(), events.clone()));
         let database_files = Arc::new(sql::backup::DatabaseFiles::new(sql.clone(), db.clone(), sftp.clone(), connections.clone(), events.clone(), data_dir.join("database-jobs")));
         // Local copies of edited files: never synced, never in backups (they may hold secrets).
+        let log_exports = Arc::new(logexport::LogExports::new(db.clone(), connections.clone(), sudo.clone(), events.clone()));
+        let search = Arc::new(search::Search::new(connections.clone()));
         let editor = Arc::new(editor::Editor::new(sftp.clone(), db.clone(), vault.clone(), data_dir.join("editor-backups")));
 
         Ok(Self {
@@ -108,6 +118,9 @@ impl Core {
             sql,
             database_files,
             editor,
+            sudo,
+            log_exports,
+            search,
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             local: Arc::new(local::LocalTerminals::new(events.clone())),
             events,
@@ -131,6 +144,7 @@ impl Core {
         self.sync.cancel_all();
         self.backup.lock();
         self.database_files.cancel_all();
+        self.log_exports.cancel_all();
         self.sql.close_all().await;
         self.subscriptions.stop_all().await;
         if close_sessions {
@@ -138,6 +152,7 @@ impl Core {
             self.connections.close_all().await;
         }
         self.vault.lock().lock();
+        self.sudo.clear();
         let _ = self.events.send(CoreEvent::VaultLocked);
     }
 }

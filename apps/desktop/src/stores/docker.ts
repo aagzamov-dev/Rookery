@@ -1,6 +1,9 @@
 import { create } from "zustand";
 import type { Container } from "../ipc/bindings/Container";
 import type { ContainerStats } from "../ipc/bindings/ContainerStats";
+import type { LogExportJob } from "../ipc/bindings/LogExportJob";
+import type { SudoState } from "../ipc/bindings/SudoState";
+import { api } from "../ipc/api";
 
 export interface HostDocker {
   containers: Container[];
@@ -57,3 +60,55 @@ export function statsFor(d: HostDocker | undefined, c: Container): ContainerStat
 export function isProblem(c: Container): boolean {
   return c.state === "restarting" || c.state === "dead" || c.health === "unhealthy" || (c.state === "exited" && !/Exited \(0\)/.test(c.status));
 }
+
+interface SudoStore {
+  /** Auto sudo per server, as last read from the core. */
+  byHost: Record<string, SudoState>;
+  load: (hostId: string) => Promise<SudoState | null>;
+  set: (hostId: string, enabled: boolean, password?: string, save?: boolean) => Promise<SudoState>;
+  clear: () => void;
+}
+
+/** Auto sudo: Docker runs as `sudo docker` and terminals fill `[sudo]` prompts (per server). */
+export const useDockerSudo = create<SudoStore>((set) => ({
+  byHost: {},
+  load: async (hostId) => {
+    try {
+      const st = await api.sudoState(hostId);
+      set((s) => ({ byHost: { ...s.byHost, [hostId]: st } }));
+      return st;
+    } catch {
+      return null;
+    }
+  },
+  set: async (hostId, enabled, password, save = false) => {
+    const st = await api.sudoSet(hostId, enabled, password, save);
+    set((s) => ({ byHost: { ...s.byHost, [hostId]: st } }));
+    return st;
+  },
+  clear: () => set({ byHost: {} }),
+}));
+
+/** `docker` to type into a terminal: with auto sudo, `sudo docker` with the prompt the terminal fills. */
+export async function dockerCli(hostId: string): Promise<string> {
+  const st = useDockerSudo.getState().byHost[hostId] ?? (await useDockerSudo.getState().load(hostId));
+  return st?.enabled ? "sudo -p '[sudo] password for %u: ' docker" : "docker";
+}
+
+interface LogExportsState {
+  jobs: Record<string, LogExportJob>;
+  received: (job: LogExportJob) => void;
+  dismiss: (id: string) => void;
+}
+
+/** "Download logs" jobs, from `log_export` events. */
+export const useLogExports = create<LogExportsState>((set) => ({
+  jobs: {},
+  received: (job) => set((s) => ({ jobs: { ...s.jobs, [job.id]: job } })),
+  dismiss: (id) =>
+    set((s) => {
+      const jobs = { ...s.jobs };
+      delete jobs[id];
+      return { jobs };
+    }),
+}));

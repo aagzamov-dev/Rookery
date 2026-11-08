@@ -15,7 +15,7 @@ it("guards local dirty files and SQL transactions before freeing local work", as
   useTabs.setState({ tabs: [], views: {}, deferred: {}, activeTabId: null });
   useTabs.getState().openServer(COMPUTER_ID, "overview");
   const tab = useTabs.getState().tabs[0];
-  const doc = useEditor.getState().put(COMPUTER_ID, { path: "/fixture/file.txt", real_path: "/fixture/file.txt", content: "text", version: { size: 4, mtime: 1, sha256: "fixture" }, eol: "lf", mixed_eol: false, bom: false, read_only: false, read_only_reason: null, owned: true, mode: "" });
+  const doc = useEditor.getState().put(COMPUTER_ID, { path: "/fixture/file.txt", real_path: "/fixture/file.txt", content: "text", version: { size: 4, mtime: 1, sha256: "fixture" }, eol: "lf", mixed_eol: false, bom: false, read_only: false, read_only_reason: null, owned: true, mode: "", sudo: false });
   useEditor.getState().patch(doc.key, { dirty: true });
   guards.choice.mockResolvedValue("show");
   expect(await closeTab(tab)).toBe(false);

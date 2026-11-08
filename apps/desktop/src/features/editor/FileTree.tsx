@@ -17,12 +17,19 @@ import {
   Home,
   Link2,
   Loader2,
+  MoreVertical,
   Pin,
   PinOff,
   RefreshCw,
+  Search,
   SquareTerminal,
+  Upload,
   X,
 } from "lucide-react";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { entryMenu, folderMenu, onFilesChanged, relocate, type FileCtx } from "../files/fileActions";
+import { ArchiveJobs } from "../files/ArchiveJobs";
+import { isMac } from "../../keys/chord";
 import { COMPUTER_ID, normalizeLocalPath } from "../local/target";
 import { api, asCoreError } from "../../ipc/api";
 import { copyText } from "../../ipc/clipboard";
@@ -40,7 +47,7 @@ type Listing = FileEntry[] | "loading" | { error: string };
 
 const cleanDir = (path: string) => { const p = normalizeLocalPath(path); const root = pathRoot(p); const clean = p.replace(/\/+$/, ""); return clean.length < root.length ? root : clean; };
 
-function Tool({ label, onClick, disabled, children }: { label: string; onClick: () => void; disabled?: boolean; children: ReactNode }) {
+function Tool({ label, onClick, disabled, children }: { label: string; onClick: (e: React.MouseEvent<HTMLButtonElement>) => void; disabled?: boolean; children: ReactNode }) {
   return (
     <button
       aria-label={label}
@@ -54,12 +61,13 @@ function Tool({ label, onClick, disabled, children }: { label: string; onClick: 
   );
 }
 
-export function FileTree({ hostId, visible, activePath, onOpen, onOpenPath }: {
+export function FileTree({ hostId, visible, activePath, onOpen, onOpenPath, onQuickOpen }: {
   hostId: string;
   visible: boolean;
   activePath: string | null;
   onOpen: (path: string) => void;
   onOpenPath: () => void;
+  onQuickOpen: () => void;
 }) {
   const filesPath = useFiles((s) => s.byHost[hostId]?.path ?? null);
   const loaded = useEditor((s) => s.loaded);
@@ -70,6 +78,8 @@ export function FileTree({ hostId, visible, activePath, onOpen, onOpenPath }: {
   const [lists, setLists] = useState<Record<string, Listing>>({});
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const menu = useContextMenu();
+  const [note, setNote] = useState<string | null>(null);
+  const ctx: FileCtx = { hostId, note: setNote };
   const self = useRef<HTMLDivElement>(null);
   const active = useRef(visible);
   active.current = visible;
@@ -132,6 +142,47 @@ export function FileTree({ hostId, visible, activePath, onOpen, onOpenPath }: {
     for (const p of Object.keys(open)) if (open[p]) void load(p);
   };
 
+  // Something changed a folder (here or in Files): reload it if it is shown.
+  const listsRef = useRef(lists);
+  listsRef.current = lists;
+  useEffect(
+    () =>
+      onFilesChanged((h, dirs, moved) => {
+        if (h !== hostId) return;
+        const next = rootRef.current && moved ? relocate(rootRef.current, moved) : null;
+        if (next) return go(next, false); // the folder on top was renamed or deleted
+        for (const d of dirs) if (listsRef.current[d] !== undefined) void load(d);
+      }),
+    [hostId, load, go],
+  );
+
+  /** After New file / New folder: open the file, or show the folder expanded. */
+  const afterCreate = (path: string, kind: "file" | "folder") => {
+    const dir = parentPath(path);
+    if (dir !== rootRef.current) setOpen((o) => ({ ...o, [dir]: true }));
+    if (kind === "file") onOpen(path);
+  };
+
+  const upload = async (dir: string) => {
+    const picked = await openDialog({ multiple: true, title: `Upload to ${dir}` });
+    const list = picked == null ? [] : Array.isArray(picked) ? picked : [picked];
+    if (list.length) await api.sftpUpload(hostId, list, dir).catch((x) => setNote(asCoreError(x).message));
+  };
+
+  /** ⋮ in the header and right-click on empty space: the folder shown on top. */
+  const rootItems = (): MenuItem[] =>
+    root
+      ? folderMenu(ctx, root, {
+          afterCreate,
+          more: [
+            ...(hostId !== COMPUTER_ID ? [{ label: "Upload files…", icon: <Upload size={13} />, onClick: () => void upload(root) }] : []),
+            { label: "Refresh", icon: <RefreshCw size={13} />, onClick: refresh },
+            { label: "cd here in terminal", icon: <SquareTerminal size={13} />, onClick: () => cdInTerminal(root) },
+            { label: "Copy path", icon: <Copy size={13} />, onClick: () => void copyText(root) },
+          ],
+        })
+      : [];
+
   const toggle = async (e: FileEntry) => {
     if (open[e.path]) return setOpen((o) => ({ ...o, [e.path]: false }));
     if (e.kind === "link" && !(await load(e.path))) {
@@ -173,17 +224,20 @@ export function FileTree({ hostId, visible, activePath, onOpen, onOpenPath }: {
   const itemsFor = (e: FileEntry): MenuItem[] => {
     const pinned = pins.includes(e.path);
     const folderish = e.kind !== "file";
-    return [
-      ...(folderish ? [{ label: "Show only this folder", icon: <FolderInput size={13} />, onClick: () => void enter(e) }] : []),
-      ...(e.kind !== "dir" ? [{ label: "Open", icon: <FileIcon size={13} />, onClick: () => onOpen(e.path) }] : []),
-      ...(e.kind !== "dir"
-        ? [{ label: pinned ? "Unpin" : "Pin", icon: pinned ? <PinOff size={13} /> : <Pin size={13} />, onClick: () => useEditor.getState().togglePin(hostId, e.path) }]
-        : []),
-      ...(e.kind === "dir" ? [{ label: "Refresh", icon: <RefreshCw size={13} />, onClick: () => void load(e.path) }] : []),
-      { kind: "separator" as const },
-      { label: "cd here in terminal", icon: <SquareTerminal size={13} />, onClick: () => cdInTerminal(e.kind === "dir" ? e.path : parentPath(e.path)) },
-      { label: "Copy path", icon: <Copy size={13} />, onClick: () => void copyText(e.path) },
-    ];
+    return entryMenu(ctx, e, {
+      afterCreate,
+      top: [
+        ...(folderish ? [{ label: "Show only this folder", icon: <FolderInput size={13} />, onClick: () => void enter(e) }] : []),
+        ...(e.kind !== "dir" ? [{ label: "Open", icon: <FileIcon size={13} />, onClick: () => onOpen(e.path) }] : []),
+        ...(e.kind !== "dir"
+          ? [{ label: pinned ? "Unpin" : "Pin", icon: pinned ? <PinOff size={13} /> : <Pin size={13} />, onClick: () => useEditor.getState().togglePin(hostId, e.path) }]
+          : []),
+      ],
+      more: [
+        ...(e.kind === "dir" ? [{ label: "Refresh", icon: <RefreshCw size={13} />, onClick: () => void load(e.path) }] : []),
+        { label: "cd here in terminal", icon: <SquareTerminal size={13} />, onClick: () => cdInTerminal(e.kind === "dir" ? e.path : parentPath(e.path)) },
+      ],
+    });
   };
 
   const onKeyDown = (k: KeyboardEvent) => {
@@ -219,6 +273,7 @@ export function FileTree({ hostId, visible, activePath, onOpen, onOpenPath }: {
       );
     return l.map((e) => (
       <div key={e.path}>
+        <div className="group/t relative">
         <button
           onClick={() => (e.kind === "file" ? onOpen(e.path) : void toggle(e))}
           onDoubleClick={() => void enter(e)}
@@ -226,7 +281,7 @@ export function FileTree({ hostId, visible, activePath, onOpen, onOpenPath }: {
           title={e.kind === "file" ? e.path : `${e.path}\nDouble-click to show only this folder`}
           style={{ paddingLeft: 6 + depth * 14 }}
           className={clsx(
-            "flex h-6 w-full items-center gap-1 pr-2 text-left text-[13px] outline-none hover:bg-panel2 focus-visible:bg-panel2",
+            "flex h-6 w-full items-center gap-1 pr-7 text-left text-[13px] outline-none group-hover/t:bg-panel2 focus-visible:bg-panel2",
             activePath === e.path ? "bg-accent-bg text-text" : e.name.startsWith(".") ? "text-muted" : "text-text",
           )}
         >
@@ -244,6 +299,15 @@ export function FileTree({ hostId, visible, activePath, onOpen, onOpenPath }: {
           )}
           <span className="truncate">{e.name}</span>
         </button>
+        <button
+          aria-label={`Actions for ${e.name}`}
+          title="Actions"
+          onClick={menu.below(() => itemsFor(e))}
+          className="absolute top-0 right-0.5 grid h-6 w-6 place-items-center rounded text-muted opacity-0 group-hover/t:opacity-100 hover:bg-line hover:text-text focus-visible:opacity-100"
+        >
+          <MoreVertical size={13} />
+        </button>
+        </div>
         {open[e.path] && rows(e.path, depth + 1)}
       </div>
     ));
@@ -273,8 +337,14 @@ export function FileTree({ hostId, visible, activePath, onOpen, onOpenPath }: {
         <Tool label="Reload folders" onClick={refresh}>
           <RefreshCw size={12} />
         </Tool>
+        <Tool label={`Quick open: recent files and names (${isMac ? "⌘P" : "Ctrl+P"})`} onClick={onQuickOpen}>
+          <Search size={13} />
+        </Tool>
         <Tool label="Open file by path… (Ctrl+O)" onClick={onOpenPath}>
           <FilePlus2 size={13} />
+        </Tool>
+        <Tool label="New file, new folder, upload…" onClick={menu.below(rootItems)} disabled={!root}>
+          <MoreVertical size={13} />
         </Tool>
       </div>
       <nav aria-label="Folder path" className="flex h-7 flex-none items-center overflow-hidden border-b border-line px-1.5 font-mono text-[11px]">
@@ -318,9 +388,18 @@ export function FileTree({ hostId, visible, activePath, onOpen, onOpenPath }: {
           ))}
         </div>
       )}
-      <div className="min-h-0 flex-1 overflow-auto py-1" onContextMenu={menu.open(() => (root ? [{ label: "Refresh", icon: <RefreshCw size={13} />, onClick: refresh }, { kind: "separator" as const }, { label: "cd here in terminal", icon: <SquareTerminal size={13} />, onClick: () => cdInTerminal(root) }, { label: "Copy path", icon: <Copy size={13} />, onClick: () => void copyText(root) }] : []))}>
+      <div className="min-h-0 flex-1 overflow-auto py-1" onContextMenu={menu.open(rootItems)}>
         {root && rows(root, 0)}
       </div>
+      {note && (
+        <div role="alert" className="flex flex-none items-start gap-2 border-t border-line px-3 py-2 text-xs text-muted">
+          <span className="min-w-0 flex-1 break-words">{note}</span>
+          <button onClick={() => setNote(null)} className="flex-none text-accent">
+            OK
+          </button>
+        </div>
+      )}
+      {hostId !== COMPUTER_ID && <ArchiveJobs hostId={hostId} />}
       {menu.node}
     </div>
   );

@@ -70,7 +70,8 @@ export function useSessionPersistence() {
         const views: Saved["views"] = {};
         for (const [id, v] of Object.entries(s.views)) {
           views[id] = {
-            active: v.active,
+            // Saved as Files: Rookery 1.0.0 shares this setting and has no Search view.
+            active: v.active === "search" ? "files" : v.active,
             // Container shells are not restored (the container may be gone).
             terminals: v.terminals.filter((t) => !t.container).map((t) => ({ title: t.title, cwd: t.cwd })),
           };

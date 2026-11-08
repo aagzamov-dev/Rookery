@@ -14,9 +14,13 @@ import {
   EyeOff,
   File as FileIcon,
   FilePlus2,
+  FolderOpen,
+  GitCommitHorizontal,
   History,
   Info,
   Loader2,
+  MoreVertical,
+  Pencil,
   Pilcrow,
   Pin,
   PinOff,
@@ -31,10 +35,17 @@ import { copyText } from "../../ipc/clipboard";
 import type { SaveMode } from "../../ipc/bindings/SaveMode";
 import { askChoice, askConfirm, askText } from "../../stores/dialogs";
 import { useEditor, type EditorDoc } from "../../stores/editor";
-import { parentPath } from "../../stores/files";
+import { parentPath, useFiles } from "../../stores/files";
+import { useTabs } from "../../stores/tabs";
+import type { FileEntry } from "../../ipc/bindings/FileEntry";
+import { useContextMenu, type MenuItem } from "../../ui/ContextMenu";
+import { renameEntry } from "../files/fileActions";
+import { showFileHistory } from "../git/history";
 import { useHosts } from "../../stores/hosts";
 import { useKeys } from "../../stores/keys";
-import { applyPrefs, checkServer, close, hooks, mounted, openFile, rebase, reload, replaceText, saveRaw, stateOf, textOf } from "./actions";
+import { QuickOpen } from "./QuickOpen";
+import { isMac } from "../../keys/chord";
+import { applyPrefs, checkServer, close, hooks, mounted, openFileOrSudo, pendingReveal, rebase, reload, replaceText, saveRaw, stateOf, textOf } from "./actions";
 import { states } from "./docs";
 import { HistoryDialog, MergeDialog, ReviewDialog, when, type MergeInput } from "./Dialogs";
 import { formatText } from "./format";
@@ -84,6 +95,9 @@ export function EditorWorkspace({ hostId, visible }: { hostId: string; visible: 
   const [merge, setMerge] = useState<MergeInput | null>(null);
   const [review, setReview] = useState<{ key: string; text: string; mode: SaveMode } | null>(null);
   const [history, setHistory] = useState(false);
+  const [quick, setQuick] = useState(false);
+  const tabMenu = useContextMenu();
+  const treeRoot = useEditor((s) => s.roots[hostId] ?? null);
   const editorEl = useRef<HTMLDivElement>(null);
   const savingKeys = useRef(new Set<string>());
 
@@ -117,6 +131,10 @@ export function EditorWorkspace({ hostId, visible }: { hostId: string; visible: 
     if (active && next) {
       m.view.setState(next);
       m.key = active;
+      if (pendingReveal.delete(active)) {
+        const at = next.selection.main.head;
+        requestAnimationFrame(() => m.view.dispatch({ effects: EditorView.scrollIntoView(at, { y: "center" }) }));
+      }
       setPos(posOf(next));
       if (visible) requestAnimationFrame(() => m.view.focus());
     } else {
@@ -157,7 +175,7 @@ export function EditorWorkspace({ hostId, visible }: { hostId: string; visible: 
   const open = useCallback(
     async (path: string) => {
       try {
-        await openFile(hostId, path);
+        await openFileOrSudo(hostId, path);
         setNote(null);
       } catch (e) {
         setNote({ kind: "error", text: asCoreError(e).message });
@@ -175,11 +193,13 @@ export function EditorWorkspace({ hostId, visible }: { hostId: string; visible: 
   // ------------------------------------------------------------ save
   const getDoc = (key: string) => useEditor.getState().byHost[hostId]?.docs.find((d) => d.key === key);
 
-  const save = async (key: string, mode: SaveMode = "normal", reviewed = false): Promise<boolean> => {
+  const save = async (key: string, asked: SaveMode = "normal", reviewed = false): Promise<boolean> => {
     const d = getDoc(key);
     if (!d || d.readOnly || savingKeys.current.has(key)) return false;
+    // Opened with sudo: it can only be written with sudo.
+    const mode: SaveMode = d.sudo && asked === "normal" ? "sudo" : asked;
     const text = textOf(key);
-    if (mode === "normal" && text === d.baseText) {
+    if (asked === "normal" && text === d.baseText) {
       flash({ kind: "info", text: "No changes to save." }, 2000);
       return true;
     }
@@ -273,7 +293,7 @@ export function EditorWorkspace({ hostId, visible }: { hostId: string; visible: 
 
   const compare = async (d: EditorDoc) => {
     try {
-      const f = await api.editorOpen(hostId, d.realPath);
+      const f = d.sudo ? await api.editorOpenSudo(hostId, d.realPath) : await api.editorOpen(hostId, d.realPath);
       setMerge({ key: d.key, mine: textOf(d.key), theirs: f.content, theirsVersion: f.version, compare: true });
     } catch (e) {
       setNote({ kind: "error", text: asCoreError(e).message });
@@ -288,9 +308,20 @@ export function EditorWorkspace({ hostId, visible }: { hostId: string; visible: 
     await reload(d.key).catch((e) => setNote({ kind: "error", text: asCoreError(e).message }));
   };
 
+  /** Quick open: ⌘P on macOS (Ctrl+P moves the cursor up there), Ctrl+P elsewhere; before the editor sees it. */
+  const onKeyCapture = (e: ReactKeyboardEvent) => {
+    if (merge || review || history || quick) return;
+    const mod = isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
+    if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "p") {
+      e.preventDefault();
+      e.stopPropagation();
+      setQuick(true);
+    }
+  };
+
   const onKey = (e: ReactKeyboardEvent) => {
     // The merge / review / history dialogs have their own buttons: no shortcut saves behind them.
-    if (e.defaultPrevented || merge || review || history) return;
+    if (e.defaultPrevented || merge || review || history || quick) return;
     const mod = e.ctrlKey || e.metaKey;
     if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "o") {
       e.preventDefault();
@@ -309,9 +340,43 @@ export function EditorWorkspace({ hostId, visible }: { hostId: string; visible: 
   const view = () => mounted.get(hostId)?.view ?? null;
   const pinned = !!doc && (pins ?? []).includes(doc.path);
 
+  /** Close several tabs one by one (each unsaved one asks first; Cancel stops). */
+  const closeMany = async (keys: string[]) => {
+    for (const k of keys) {
+      const before = getDoc(k);
+      await closeDoc(k);
+      if (before?.dirty && getDoc(k)) return; // kept open: stop here
+    }
+  };
+  const tabItems = (d: EditorDoc): MenuItem[] => {
+    const all = (useEditor.getState().byHost[hostId]?.docs ?? []).map((x) => x.key);
+    const ctx = { hostId, note: (text: string) => setNote({ kind: "error", text }) };
+    const entry: FileEntry = { name: d.name, path: d.path, kind: "file", size: d.base.size, mtime: d.base.mtime, mode: null };
+    return [
+      { label: "Close", icon: <X size={13} />, onClick: () => void closeDoc(d.key) },
+      { label: "Close others", onClick: () => void closeMany(all.filter((k) => k !== d.key)), disabled: all.length < 2 },
+      { label: "Close saved tabs", onClick: () => void closeMany((useEditor.getState().byHost[hostId]?.docs ?? []).filter((x) => !x.dirty).map((x) => x.key)) },
+      { label: "Close all", onClick: () => void closeMany(all) },
+      { kind: "separator" },
+      { label: "Rename…", icon: <Pencil size={13} />, onClick: () => void renameEntry(ctx, entry), disabled: d.dirty },
+      { label: "Copy path", icon: <Copy size={13} />, onClick: () => void copyText(d.path).catch(() => {}) },
+      {
+        label: "Show in Files",
+        icon: <FolderOpen size={13} />,
+        onClick: () => {
+          void useFiles.getState().open(hostId, parentPath(d.path));
+          useTabs.getState().setView(hostId, "files");
+        },
+      },
+      { kind: "separator" },
+      { label: "Git history", icon: <GitCommitHorizontal size={13} />, onClick: () => void showFileHistory(hostId, d.realPath, "history").catch((e) => ctx.note(asCoreError(e).message)) },
+      { label: "Git blame", icon: <GitCommitHorizontal size={13} />, onClick: () => void showFileHistory(hostId, d.realPath, "blame").catch((e) => ctx.note(asCoreError(e).message)) },
+    ];
+  };
+
   return (
-    <div className="relative isolate flex h-full min-h-0 overflow-hidden bg-bg" onKeyDown={onKey}>
-      <FileTree hostId={hostId} visible={visible} activePath={doc?.path ?? null} onOpen={(p) => void open(p)} onOpenPath={() => void openPath()} />
+    <div className="relative isolate flex h-full min-h-0 overflow-hidden bg-bg" onKeyDown={onKey} onKeyDownCapture={onKeyCapture}>
+      <FileTree hostId={hostId} visible={visible} activePath={doc?.path ?? null} onOpen={(p) => void open(p)} onOpenPath={() => void openPath()} onQuickOpen={() => setQuick(true)} />
 
       <div className="flex min-w-0 flex-1 flex-col" style={{ ["--ed-font" as string]: fontFamily, ["--ed-size" as string]: `${fontSize}px` }}>
         {/* tabs */}
@@ -328,6 +393,7 @@ export function EditorWorkspace({ hostId, visible }: { hostId: string; visible: 
                   void closeDoc(d.key);
                 }
               }}
+              onContextMenu={tabMenu.open(() => tabItems(d))}
               className={clsx(
                 "group/t flex max-w-[220px] flex-none items-center gap-1.5 border-r border-line pr-1 pl-3 text-[13px]",
                 d.key === active ? "bg-[#171D29] text-text" : "text-muted hover:text-text",
@@ -337,6 +403,9 @@ export function EditorWorkspace({ hostId, visible }: { hostId: string; visible: 
                 {d.name}
               </button>
               {d.changed && <AlertTriangle size={11} className="flex-none text-warn" aria-label={`changed on ${location}`} />}
+              <button aria-label={`Actions for ${d.name}`} title="Actions" onClick={tabMenu.below(() => tabItems(d))} className="grid h-5 w-4 flex-none place-items-center rounded text-muted opacity-0 group-hover/t:opacity-100 hover:bg-panel2 hover:text-text focus-visible:opacity-100">
+                <MoreVertical size={12} />
+              </button>
               <button
                 aria-label={d.dirty ? `Close ${d.name} (unsaved changes)` : `Close ${d.name}`}
                 onClick={() => void closeDoc(d.key)}
@@ -447,7 +516,7 @@ export function EditorWorkspace({ hostId, visible }: { hostId: string; visible: 
             <span title={doc.mixedEol ? "The file had mixed line endings" : "Line endings are kept as they were"}>{doc.eol === "crlf" ? "CRLF" : "LF"}</span>
             <span>UTF-8{doc.bom ? " BOM" : ""}</span>
             <span className="font-mono" title={doc.owned ? "Your file: saved in one step (temp file + rename)" : "Not your file: written in place, owner kept"}>
-              {doc.mode} {doc.owned ? "· yours" : "· shared"}
+              {doc.mode} {doc.owned ? "· yours" : "· shared"}{doc.sudo ? " · sudo" : ""}
             </span>
           </div>
         )}
@@ -499,6 +568,8 @@ export function EditorWorkspace({ hostId, visible }: { hostId: string; visible: 
           }}
         />
       )}
+      {tabMenu.node}
+      {quick && visible && <QuickOpen hostId={hostId} folder={treeRoot} onOpen={(p) => void open(p)} onClose={() => setQuick(false)} />}
       {history && doc && (
         <HistoryDialog
           doc={doc}

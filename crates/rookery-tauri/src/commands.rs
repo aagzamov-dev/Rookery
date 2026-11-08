@@ -25,6 +25,26 @@ pub async fn git_discover(s: State<'_, AppState>, host_id: String, folder: Strin
 }
 
 #[tauri::command]
+pub async fn git_locate(s: State<'_, AppState>, host_id: String, file: String) -> Result<(String, String)> {
+    rookery_core::git::locate(&s.core.connections, &host_id, &file).await
+}
+
+#[tauri::command]
+pub async fn git_history(s: State<'_, AppState>, host_id: String, folder: String, path: String) -> Result<Vec<rookery_core::git::GitCommit>> {
+    rookery_core::git::history(&s.core.connections, &host_id, &folder, &path).await
+}
+
+#[tauri::command]
+pub async fn git_file_at(s: State<'_, AppState>, host_id: String, folder: String, commit: String, path: String) -> Result<rookery_core::git::GitDiff> {
+    rookery_core::git::file_at(&s.core.connections, &host_id, &folder, &commit, &path).await
+}
+
+#[tauri::command]
+pub async fn git_blame(s: State<'_, AppState>, host_id: String, folder: String, path: String) -> Result<Vec<rookery_core::git::BlameLine>> {
+    rookery_core::git::blame(&s.core.connections, &host_id, &folder, &path).await
+}
+
+#[tauri::command]
 pub async fn git_diff(s: State<'_, AppState>, host_id: String, folder: String, file: rookery_core::git::GitFile, staged: bool) -> Result<rookery_core::git::GitDiff> {
     rookery_core::git::diff(&s.core.connections, &host_id, &folder, &file, staged).await
 }
@@ -170,6 +190,24 @@ pub fn identity_save(
     Ok(saved)
 }
 
+/// "Copy credentials": the login's saved password, only after the master password was typed
+/// again (every time). `None` when the login has no saved password (key login), or when no
+/// login is given (a new login not saved yet: only the master password is checked).
+#[tauri::command]
+pub async fn identity_reveal_password(s: State<'_, AppState>, identity_id: Option<String>, master: String) -> Result<Option<String>> {
+    let core = s.core.clone();
+    blocking(move || {
+        let ident = identity_id.map(|id| core.db.get_identity(&id)).transpose()?;
+        let v = core.vault.lock();
+        v.verify_master(&master)?;
+        match ident {
+            Some(i) => Ok(v.get(&i.secret_id("password"))?.map(|p| p.to_string())),
+            None => Ok(None),
+        }
+    })
+    .await
+}
+
 #[tauri::command]
 pub fn identity_delete(s: State<'_, AppState>, id: String) -> Result<()> {
     s.core.vault.lock().delete_prefix(&format!("identity:{id}:"))?;
@@ -287,9 +325,54 @@ pub async fn sftp_rename(s: State<'_, AppState>, host_id: String, from: String, 
 }
 
 #[tauri::command]
-pub async fn sftp_archive(s: State<'_, AppState>, host_id: String, path: String, name: String, extract: bool, confirmed: bool) -> Result<()> {
+pub async fn sftp_create_file(s: State<'_, AppState>, host_id: String, path: String, confirmed: bool) -> Result<()> {
     require_remote_change(&s, &host_id, confirmed)?;
-    s.core.sftp.archive(&host_id, &path, &name, extract).await
+    if host_id == rookery_core::computer::ID {
+        if let Some(name) = std::path::Path::new(&path).file_name().and_then(|n| n.to_str()) { rookery_core::sftp::check_new_name(name)?; }
+        return blocking(move || rookery_core::computer::create_file(&path)).await;
+    }
+    s.core.sftp.create_file(&host_id, &path).await
+}
+
+#[tauri::command]
+pub async fn sftp_duplicate(s: State<'_, AppState>, host_id: String, from: String, to: String, confirmed: bool) -> Result<()> {
+    require_remote_change(&s, &host_id, confirmed)?;
+    if host_id == rookery_core::computer::ID {
+        if let Some(name) = std::path::Path::new(&to).file_name().and_then(|n| n.to_str()) { rookery_core::sftp::check_new_name(name)?; }
+        return blocking(move || rookery_core::computer::duplicate(&from, &to)).await;
+    }
+    s.core.sftp.duplicate(&host_id, &from, &to).await
+}
+
+#[tauri::command]
+pub async fn sftp_chmod(s: State<'_, AppState>, host_id: String, path: String, mode: u32, confirmed: bool) -> Result<()> {
+    require_remote_change(&s, &host_id, confirmed)?;
+    if host_id == rookery_core::computer::ID { return blocking(move || rookery_core::computer::chmod(&path, mode)).await; }
+    s.core.sftp.chmod(&host_id, &path, mode).await
+}
+
+#[tauri::command]
+pub async fn sftp_owner(s: State<'_, AppState>, host_id: String, path: String) -> Result<(String, String)> {
+    if host_id == rookery_core::computer::ID { return Err(Error::Other("Owner names are shown for servers only.".into())); }
+    s.core.sftp.owner(&host_id, &path).await
+}
+
+#[tauri::command]
+pub async fn sftp_archive(s: State<'_, AppState>, host_id: String, path: String, name: String, mode: String, job: String, confirmed: bool) -> Result<()> {
+    require_remote_change(&s, &host_id, confirmed)?;
+    if host_id == rookery_core::computer::ID { return Err(Error::Other("ZIP and extract work on servers only.".into())); }
+    s.core.sftp.archive(&host_id, &path, &name, &mode, &job).await
+}
+
+#[tauri::command]
+pub fn sftp_archive_cancel(s: State<'_, AppState>, job: String) {
+    s.core.sftp.archive_cancel(&job);
+}
+
+#[tauri::command]
+pub async fn sftp_usage(s: State<'_, AppState>, host_id: String, path: String) -> Result<rookery_core::sftp::PathUsage> {
+    if host_id == rookery_core::computer::ID { return Ok(rookery_core::sftp::PathUsage { size: None, free: None }); }
+    s.core.sftp.usage(&host_id, &path).await
 }
 
 #[tauri::command]
@@ -365,7 +448,35 @@ pub async fn docker_action(
 ) -> Result<()> {
     require_remote_change(&s, &host_id, confirmed)?;
     if host_id == rookery_core::computer::ID && matches!(action, rookery_core::actions::DockerAction::Remove | rookery_core::actions::DockerAction::Kill) && !confirmed { return Err(Error::Other("Confirm this destructive local Docker action first.".into())); }
-    rookery_core::actions::docker_action(&s.core.connections, &host_id, &container, action).await
+    rookery_core::actions::docker_action(&s.core.connections, &s.core.sudo, &host_id, &container, action).await
+}
+
+/// Auto sudo for this server (Docker as `sudo docker`, terminal `[sudo]` prompts filled).
+#[tauri::command]
+pub fn sudo_state(s: State<'_, AppState>, host_id: String) -> rookery_core::sudo::SudoState {
+    s.core.sudo.state(&host_id)
+}
+
+/// `password`: typed now (kept for this app session, or saved to the login with `save`).
+/// Restarts the server's running Docker collectors so they switch right away.
+#[tauri::command]
+pub async fn sudo_set(s: State<'_, AppState>, host_id: String, enabled: bool, password: Option<String>, save: bool) -> Result<rookery_core::sudo::SudoState> {
+    if !s.core.vault.lock().is_unlocked() { return Err(Error::VaultLocked); }
+    let state = s.core.sudo.set(&host_id, enabled, password, save)?;
+    s.core.subscriptions.restart_docker(&host_id).await;
+    Ok(state)
+}
+
+/// Download logs: chosen containers and period → one zip (progress: `log_export` events).
+#[tauri::command]
+pub async fn docker_logs_export(s: State<'_, AppState>, req: rookery_core::logexport::LogExportRequest) -> Result<String> {
+    if !s.core.vault.lock().is_unlocked() { return Err(Error::VaultLocked); }
+    s.core.log_exports.start(req)
+}
+
+#[tauri::command]
+pub fn docker_logs_export_cancel(s: State<'_, AppState>, job_id: String) {
+    s.core.log_exports.cancel(&job_id);
 }
 
 #[tauri::command]
@@ -382,7 +493,7 @@ pub async fn shell_integration_install(s: State<'_, AppState>, host_id: String, 
 #[tauri::command]
 pub async fn log_history(s: State<'_, AppState>, host_id: String, source: String, target: String, since: String, until: String) -> Result<Vec<String>> {
     if !s.core.vault.lock().is_unlocked() { return Err(Error::VaultLocked); }
-    rookery_core::subscriptions::log_history(&s.core.connections, &host_id, &source, &target, &since, &until).await
+    rookery_core::subscriptions::log_history(&s.core.connections, &s.core.sudo, &host_id, &source, &target, &since, &until).await
 }
 
 #[tauri::command]
@@ -808,7 +919,7 @@ pub async fn sql_tx(s: State<'_, AppState>, session_id: String, action: TxAction
 /// Docker → "Open in SQL": one `docker inspect` on the server → prefill (never a password).
 #[tauri::command]
 pub async fn sql_docker_inspect(s: State<'_, AppState>, host_id: String, container: String) -> Result<SqlPrefill> {
-    rookery_core::sql::detect::docker_inspect(&s.core.connections, &host_id, &container).await
+    rookery_core::sql::detect::docker_inspect(&s.core.connections, &s.core.sudo, &host_id, &container).await
 }
 
 /// "Find databases on this PC": TCP probe of 127.0.0.1 + local `docker ps`.
@@ -933,26 +1044,29 @@ pub async fn process_kill(s: State<'_, AppState>, host_id: String, pid: u32, for
 #[tauri::command]
 pub fn term_sudo_fill(s: State<'_, AppState>, term_id: String) -> Result<()> {
     let host_id = s.core.terminals.host_of(&term_id).ok_or_else(|| Error::NotFound("terminal".into()))?;
-    let host = s.core.db.get_host(&host_id)?;
-    let ident_id = s
+    let secret = s
         .core
-        .db
-        .resolve_identity_id(&host)?
-        .ok_or_else(|| Error::SecretRequired("this host has no login identity".into()))?;
-    let ident = s.core.db.get_identity(&ident_id)?;
-    let secret = {
-        let v = s.core.vault.lock();
-        match v.get(&ident.secret_id("sudo"))? {
-            Some(x) => x,
-            None if ident.auth == AuthKind::Password => v
-                .get(&ident.secret_id("password"))?
-                .ok_or_else(|| Error::SecretRequired("no sudo password saved for this login".into()))?,
-            None => return Err(Error::SecretRequired("no sudo password saved for this login — add it in the host editor".into())),
-        }
-    };
+        .sudo
+        .password(&host_id)?
+        .ok_or_else(|| Error::SecretRequired("no sudo password saved for this login — add it in the host editor".into()))?;
     let mut bytes = secret.as_bytes().to_vec();
     bytes.push(b'\r');
     s.core.terminals.write(&term_id, bytes)
+}
+
+/// A `[sudo]` prompt appeared: fill it by itself when auto sudo is on for this server, at most
+/// once per prompt burst (a prompt right after a fill means the password was wrong). `false` =
+/// not filled; the terminal offers the button instead.
+#[tauri::command]
+pub fn term_sudo_auto(s: State<'_, AppState>, term_id: String) -> bool {
+    let Some(host_id) = s.core.terminals.host_of(&term_id) else { return false };
+    if !s.core.sudo.term_auto_allowed(&term_id, &host_id) {
+        return false;
+    }
+    let Ok(Some(secret)) = s.core.sudo.password(&host_id) else { return false };
+    let mut bytes = secret.as_bytes().to_vec();
+    bytes.push(b'\r');
+    s.core.terminals.write(&term_id, bytes).is_ok()
 }
 
 // ------------------------------------------------------- import / export
@@ -1010,6 +1124,13 @@ pub async fn editor_open(s: State<'_, AppState>, host_id: String, path: String) 
 }
 
 /// The cheap "did it change on the server?" check (size and time only).
+/// Open a file the login cannot read, with sudo (after the user chose "Open with sudo").
+#[tauri::command]
+pub async fn editor_open_sudo(s: State<'_, AppState>, host_id: String, path: String) -> Result<EditorFile> {
+    if host_id == rookery_core::computer::ID { return Err(Error::Other("Opening with sudo works on servers only.".into())); }
+    s.core.editor.open_sudo(&host_id, &path).await
+}
+
 #[tauri::command]
 pub async fn editor_stat(s: State<'_, AppState>, host_id: String, path: String) -> Result<FileStamp> {
     if host_id == rookery_core::computer::ID { let editor=s.core.editor.clone(); return blocking(move || editor.local_stat(&path)).await; }
@@ -1076,3 +1197,16 @@ pub async fn database_file_start(s: State<'_, AppState>, session_id: String, ope
 pub fn database_file_status(s: State<'_, AppState>) -> Vec<rookery_core::sql::backup::DatabaseJob> { s.core.database_files.status() }
 #[tauri::command]
 pub fn database_file_cancel(s: State<'_, AppState>, job_id: String) { s.core.database_files.cancel(&job_id); }
+
+// ------------------------------------------------------------------ search
+
+#[tauri::command]
+pub async fn search_run(s: State<'_, AppState>, request: rookery_core::search::SearchRequest) -> Result<rookery_core::search::SearchResult> {
+    if !s.core.vault.lock().is_unlocked() { return Err(Error::VaultLocked); }
+    s.core.search.run(&request).await
+}
+
+#[tauri::command]
+pub fn search_cancel(s: State<'_, AppState>, host_id: String, slot: String) {
+    s.core.search.cancel(&host_id, &slot);
+}

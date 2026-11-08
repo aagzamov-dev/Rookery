@@ -81,6 +81,8 @@ pub enum CoreEvent {
         message: Option<String>,
     },
     DatabaseJob { job: crate::sql::backup::DatabaseJob },
+    /// Docker "Download logs" progress; the last event has state done | failed | cancelled.
+    LogExport { job: crate::logexport::LogExportJob },
     VaultLocked,
     VaultUnlocked,
 }

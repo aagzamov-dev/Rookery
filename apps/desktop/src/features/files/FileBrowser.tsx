@@ -4,6 +4,7 @@ import clsx from "clsx";
 import {
   ArrowUp,
   Check,
+  Clock,
   Copy,
   Download,
   Eye,
@@ -11,19 +12,17 @@ import {
   File as FileIcon,
   Folder,
   FolderPlus,
+  FilePlus,
   FolderUp,
   Home,
   Link2,
   Loader2,
-  Pencil,
+  MoreVertical,
   RefreshCw,
   SquareTerminal,
-  Trash2,
   Upload,
   FileEdit,
   FileCode2,
-  Archive,
-  ArchiveRestore,
 } from "lucide-react";
 import { COMPUTER_ID } from "../local/target";
 import { crumbs as pathCrumbs } from "../editor/lang";
@@ -35,14 +34,18 @@ import { copyText } from "../../ipc/clipboard";
 import { api, asCoreError } from "../../ipc/api";
 import type { FileEntry } from "../../ipc/bindings/FileEntry";
 import { SHELL_INTEGRATION_PREVIEW } from "./shellIntegration";
-import { askConfirm, askText } from "../../stores/dialogs";
-import { joinPath, parentPath, useFiles } from "../../stores/files";
+import { askConfirm } from "../../stores/dialogs";
+import { parentPath, useFiles } from "../../stores/files";
 import { useHosts } from "../../stores/hosts";
 import { useTabs } from "../../stores/tabs";
 import { terminalRegistry, } from "../server-tab/terminal/registry";
 import { shellQuote } from "./quote";
 import { bytes } from "../../ui/format";
 import { TransfersStrip } from "./TransfersStrip";
+import { ArchiveJobs } from "./ArchiveJobs";
+import { useRecent } from "../../stores/recent";
+import { createIn, entryMenu, folderMenu, selectionMenu, type FileCtx } from "./fileActions";
+import { useContextMenu, type MenuItem } from "../../ui/ContextMenu";
 
 interface Props {
   hostId: string;
@@ -76,8 +79,11 @@ export function FileBrowser({ hostId, visible, variant }: Props) {
   const [dropping, setDropping] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
-  const [selection, setSelection] = useState<{ directory: string; path: string } | null>(null);
-  const [archiving, setArchiving] = useState(false);
+  /** Selected rows of the folder shown: click one, Ctrl/⌘-click to add, Shift-click for a range. */
+  const [selection, setSelection] = useState<{ directory: string; paths: string[]; anchor: string } | null>(null);
+  const selectOne = (directory: string, p: string) => setSelection({ directory, paths: [p], anchor: p });
+  const menu = useContextMenu();
+  const ctx: FileCtx = { hostId, note: setNote };
 
   /** Copies the plain path (no `cd`, no quotes) so you can type `cd ` and paste. */
   const copyPath = async (p: string) => {
@@ -92,6 +98,10 @@ export function FileBrowser({ hostId, visible, variant }: Props) {
   };
 
   const path = st?.path ?? null;
+  const recentFolders = useRecent((s) => s.folders[hostId]);
+  useEffect(() => {
+    if (path && visible) useRecent.getState().addFolder(hostId, path);
+  }, [path, visible, hostId]);
   const listing = path ? st?.listings[path] : undefined;
   const showHidden = st?.showHidden ?? false;
 
@@ -136,8 +146,23 @@ export function FileBrowser({ hostId, visible, variant }: Props) {
   const entries = useMemo(() => (listing?.entries ?? []).filter((e) => showHidden || !e.name.startsWith(".")), [listing, showHidden]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const virtual = useVirtualizer({ count: entries.length, getScrollElement: () => scrollRef.current, estimateSize: () => panel ? 28 : 32, overscan: 10 });
-  const selected = selection?.directory === path ? entries.find((e) => e.path === selection.path) : undefined;
-  const selectedZip = selected?.kind === "file" && selected.name.toLowerCase().endsWith(".zip");
+  const picked = selection?.directory === path ? entries.filter((e) => selection.paths.includes(e.path)) : [];
+  const selected = picked.length === 1 ? picked[0] : undefined;
+  const isPicked = (p: string) => picked.some((e) => e.path === p);
+  const clickRow = (ev: React.MouseEvent, e: FileEntry) => {
+    if (!path) return;
+    const cur = selection?.directory === path ? selection : null;
+    if ((ev.metaKey || ev.ctrlKey) && cur) {
+      const paths = cur.paths.includes(e.path) ? cur.paths.filter((p) => p !== e.path) : [...cur.paths, e.path];
+      setSelection({ directory: path, paths, anchor: e.path });
+    } else if (ev.shiftKey && cur) {
+      const a = entries.findIndex((x) => x.path === cur.anchor);
+      const b = entries.findIndex((x) => x.path === e.path);
+      if (a < 0 || b < 0) return selectOne(path, e.path);
+      setSelection({ directory: path, paths: entries.slice(Math.min(a, b), Math.max(a, b) + 1).map((x) => x.path), anchor: cur.anchor });
+    } else selectOne(path, e.path);
+  };
+  const multiMenu = () => selectionMenu(ctx, picked, () => setSelection(null));
 
   const go = (p: string) => active.current && void openDir(hostId, p);
   const refresh = () => active.current && path && void openDir(hostId, path, true);
@@ -191,34 +216,6 @@ export function FileBrowser({ hostId, visible, variant }: Props) {
     await api.sftpDownload(hostId, e.path, target).catch((x) => setNote(asCoreError(x).message));
   };
 
-  const archive = async (entry: FileEntry, extract: boolean) => {
-    const name = await askText({
-      title: extract ? `Unzip ${entry.name}` : `ZIP ${entry.name}`,
-      label: extract ? "Extract into a new folder beside this archive" : "ZIP filename in this folder",
-      value: extract ? entry.name.slice(0, -4) || "extracted" : `${entry.name}.zip`,
-      confirmLabel: extract ? "Unzip" : "Create ZIP",
-    });
-    if (!name) return;
-    const destination = !extract && !name.toLowerCase().endsWith(".zip") ? `${name}.zip` : name;
-    if (destination === "." || destination === ".." || /[/\\\0]/.test(destination)) {
-      setNote("Enter a filename without folder separators.");
-      return;
-    }
-    setArchiving(true);
-    setNote(null);
-    try {
-      await api.sftpArchive(hostId, entry.path, destination, extract);
-      const directory = parentPath(entry.path);
-      if (active.current) await openDir(hostId, directory, true);
-      setSelection({ directory, path: joinPath(directory, destination) });
-    } catch (error) {
-      setNote(asCoreError(error).message);
-      if (active.current) await openDir(hostId, parentPath(entry.path), true);
-    } finally {
-      setArchiving(false);
-    }
-  };
-
   const upload = async (directory = false) => {
     if (!path) return;
     const picked = await openDialog({ multiple: true, directory, title: directory ? `Upload folder to ${path}` : `Upload to ${path}` });
@@ -226,50 +223,24 @@ export function FileBrowser({ hostId, visible, variant }: Props) {
     if (list.length) await api.sftpUpload(hostId, list, path).catch((x) => setNote(asCoreError(x).message));
   };
 
-  const mkdir = async () => {
+  /** New file / folder from the toolbar or the list background: select it once created. */
+  const create = async (kind: "file" | "folder") => {
     if (!path) return;
-    const name = await askText({ title: "New folder", label: `Inside ${path}`, value: "", confirmLabel: "Create" });
-    if (!name) return;
-    if (local && (name === "." || name === ".." || /[/\\\0]/.test(name))) { setNote("Enter a folder name without separators."); return; }
-    try {
-      await api.sftpMkdir(hostId, joinPath(path, name));
-      refresh();
-    } catch (x) {
-      setNote(asCoreError(x).message);
-    }
+    const dir = path;
+    const made = await createIn(ctx, dir, kind);
+    if (made) selectOne(dir, made);
   };
 
-  const rename = async (e: FileEntry) => {
-    const dot = e.kind === "file" ? e.name.lastIndexOf(".") : -1;
-    const name = await askText({ title: `Rename ${e.name}`, label: "New name", value: e.name, confirmLabel: "Rename", selectUntil: dot > 0 ? dot : undefined });
-    if (!name || name === e.name) return;
-    if (local && (name === "." || name === ".." || /[/\\\0]/.test(name))) { setNote("Enter a name without separators."); return; }
-    try {
-      await api.sftpRename(hostId, e.path, joinPath(parentPath(e.path), name));
-      refresh();
-    } catch (x) {
-      setNote(asCoreError(x).message);
-    }
-  };
-
-  const remove = async (e: FileEntry) => {
-    const dir = e.kind === "dir";
-    const prod = host?.env_label === "prod";
-    const ok = await askConfirm({
-      title: dir ? `Delete folder ${e.name}?` : `Delete ${e.name}?`,
-      body: `${dir ? "The folder and everything inside it" : "The file"} will be removed from ${local ? "this computer" : host?.name ?? "the server"}. This cannot be undone.${prod ? " This is a PRODUCTION server." : ""}`,
-      preview: e.path,
-      confirmLabel: "Delete",
-      danger: true,
+  /** ⋮ and right-click on a row. */
+  const itemsFor = (e: FileEntry): MenuItem[] =>
+    entryMenu(ctx, e, {
+      top: [
+        ...(e.kind !== "dir" ? [{ label: "Edit in Rookery", icon: <FileCode2 size={13} />, onClick: () => void editInRookery(e) }] : []),
+        ...(e.kind === "file" ? [{ label: local ? "Open with default app" : "Edit locally…", icon: <FileEdit size={13} />, onClick: () => void editLocally(e) }] : []),
+        ...(!local && e.kind === "file" ? [{ label: "Download…", icon: <Download size={13} />, onClick: () => void download(e) }] : []),
+      ],
+      more: [{ label: "cd here in terminal", icon: <SquareTerminal size={13} />, onClick: () => cdInTerminal(e.kind === "dir" ? e.path : parentPath(e.path)) }],
     });
-    if (!ok) return;
-    try {
-      await api.sftpDelete(hostId, e.path, dir, dir, true);
-      refresh();
-    } catch (x) {
-      setNote(asCoreError(x).message);
-    }
-  };
 
   const cdInTerminal = (p: string) => {
     if (local) { useTabs.getState().addTerminal(hostId, { cwd: p }); return; }
@@ -315,10 +286,20 @@ export function FileBrowser({ hostId, visible, variant }: Props) {
         <Tool label="Home folder" onClick={() => st?.home && go(st.home)} disabled={!st?.home}>
           <Home size={14} />
         </Tool>
+        <Tool
+          label="Recent folders"
+          disabled={!recentFolders?.length}
+          onClick={menu.below(() => (recentFolders ?? []).filter((p) => p !== path).slice(0, 15).map((p) => ({ label: p, icon: <Folder size={13} />, onClick: () => go(p) })))}
+        >
+          <Clock size={14} />
+        </Tool>
         <Tool label="Refresh" onClick={refresh} disabled={!path}>
           <RefreshCw size={13} className={st?.loading ? "animate-spin" : ""} />
         </Tool>
-        <Tool label="New folder" onClick={() => void mkdir()} disabled={!path}>
+        <Tool label="New file" onClick={() => void create("file")} disabled={!path}>
+          <FilePlus size={14} />
+        </Tool>
+        <Tool label="New folder" onClick={() => void create("folder")} disabled={!path}>
           <FolderPlus size={14} />
         </Tool>
         {!local && <Tool label="Upload files" onClick={() => void upload()} disabled={!path}>
@@ -331,16 +312,23 @@ export function FileBrowser({ hostId, visible, variant }: Props) {
           {showHidden ? <EyeOff size={14} /> : <Eye size={14} />}
         </Tool>
         {!local && selected?.kind === "file" && (
-          <Tool label={`Download ${selected.name}`} onClick={() => void download(selected)} disabled={archiving}>
+          <Tool label={`Download ${selected.name}`} onClick={() => void download(selected)}>
             <Download size={14} />
           </Tool>
         )}
-        {!local && selected && (selected.kind === "file" || selected.kind === "dir") && (
-          <Tool label={selectedZip ? `Unzip ${selected.name}` : `ZIP ${selected.name}`} onClick={() => void archive(selected, !!selectedZip)} disabled={archiving}>
-            {archiving ? <Loader2 size={14} className="animate-spin" /> : selectedZip ? <ArchiveRestore size={14} /> : <Archive size={14} />}
+        {selected && (
+          <Tool label={`Actions for ${selected.name}`} onClick={menu.below(() => itemsFor(selected))}>
+            <MoreVertical size={14} />
           </Tool>
         )}
-        {archiving && <span role="status" className="px-1 text-xs text-muted">Working on archive…</span>}
+        {picked.length > 1 && (
+          <>
+            <span className="px-1 text-xs text-muted">{picked.length} selected</span>
+            <Tool label={`Actions for ${picked.length} selected items`} onClick={menu.below(multiMenu)}>
+              <MoreVertical size={14} />
+            </Tool>
+          </>
+        )}
         {!local && panel && (
           <label className="ml-auto flex items-center gap-1.5 text-xs text-muted" title="Follow the folder of this server's terminal">
             <input type="checkbox" checked={st?.follow ?? true} onChange={(e) => patch(hostId, { follow: e.target.checked })} className="accent-accent" />
@@ -389,7 +377,7 @@ export function FileBrowser({ hostId, visible, variant }: Props) {
       {st?.error ? (
         <div className="p-4 text-xs text-[#FFA8A8]">{st.error}</div>
       ) : (
-        <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto p-1" role="grid" aria-label="Files" aria-rowcount={entries.length}>
+        <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto p-1" role="grid" aria-label="Files" aria-rowcount={entries.length} onContextMenu={path ? menu.open(() => folderMenu(ctx, path, { more: [{ label: "Refresh", icon: <RefreshCw size={13} />, onClick: refresh }] })) : undefined}>
           {!panel && (
             <div className="grid grid-cols-[minmax(0,1fr)_90px_110px_100px_120px] gap-x-3 px-2.5 py-1.5 text-[11px] tracking-wider text-muted uppercase">
               <span>Name</span>
@@ -408,23 +396,31 @@ export function FileBrowser({ hostId, visible, variant }: Props) {
               style={{ position: "absolute", top: 0, left: 0, width: "100%", transform: `translateY(${item.start}px)` }}
               role="row"
               aria-rowindex={item.index + 1}
-              aria-selected={selected?.path === e.path}
+              aria-selected={isPicked(e.path)}
               tabIndex={0}
-              onClick={() => path && setSelection({ directory: path, path: e.path })}
-              onFocus={() => path && setSelection({ directory: path, path: e.path })}
+              onClick={(ev) => clickRow(ev, e)}
+              onMouseDown={(ev) => ev.shiftKey && ev.preventDefault() /* no text selection on Shift-click */}
               onDoubleClick={() => void activate(e)}
+              onContextMenu={(ev) => {
+                // Right-click inside a multi-selection acts on all of it; elsewhere on this row.
+                if (picked.length > 1 && isPicked(e.path)) return menu.open(multiMenu)(ev);
+                if (path) selectOne(path, e.path);
+                menu.open(() => itemsFor(e))(ev);
+              }}
               onKeyDown={(k) => {
                 if (k.key === "Enter") void activate(e);
+                if (k.key === "Escape" && picked.length) setSelection(null);
                 if (k.key === "ArrowDown" || k.key === "ArrowUp") {
                   k.preventDefault();
                   const next = Math.max(0, Math.min(entries.length - 1, item.index + (k.key === "ArrowDown" ? 1 : -1)));
+                  if (path && entries[next]) selectOne(path, entries[next].path);
                   virtual.scrollToIndex(next);
                   requestAnimationFrame(() => scrollRef.current?.querySelector<HTMLElement>(`[aria-rowindex="${next + 1}"]`)?.focus());
                 }
               }}
               className={clsx(
                 "group/r items-center gap-x-3 rounded-[5px] px-2 hover:bg-panel2 focus:bg-accent-bg focus:outline-none",
-                selected?.path === e.path && "bg-accent-bg",
+                isPicked(e.path) && "bg-accent-bg",
                 panel ? "flex h-7" : "grid h-8 grid-cols-[minmax(0,1fr)_90px_110px_100px_120px]",
               )}
             >
@@ -462,11 +458,8 @@ export function FileBrowser({ hostId, visible, variant }: Props) {
                 <RowBtn label={copied === e.path ? "Copied" : "Copy path"} onClick={() => void copyPath(e.path)}>
                   {copied === e.path ? <Check size={12} className="text-ok" /> : <Copy size={12} />}
                 </RowBtn>
-                <RowBtn label="Rename" onClick={() => void rename(e)}>
-                  <Pencil size={12} />
-                </RowBtn>
-                <RowBtn label="Delete" onClick={() => void remove(e)}>
-                  <Trash2 size={12} />
+                <RowBtn label={`Actions for ${e.name}`} onClick={menu.below(() => itemsFor(e))}>
+                  <MoreVertical size={13} />
                 </RowBtn>
               </span>
             </div>
@@ -489,7 +482,9 @@ export function FileBrowser({ hostId, visible, variant }: Props) {
           </button>
         </div>
       )}
+      {!local && <ArchiveJobs hostId={hostId} />}
       {!local && <TransfersStrip hostId={hostId} />}
+      {menu.node}
       {dropping && (
         <div className="pointer-events-none absolute inset-1 grid place-items-center rounded-lg border-2 border-dashed border-accent bg-[#1B2230CC] text-accent">
           Drop to upload into {path}
@@ -499,7 +494,7 @@ export function FileBrowser({ hostId, visible, variant }: Props) {
   );
 }
 
-function Tool({ label, onClick, disabled, children }: { label: string; onClick: () => void; disabled?: boolean; children: React.ReactNode }) {
+function Tool({ label, onClick, disabled, children }: { label: string; onClick: (e: React.MouseEvent<HTMLButtonElement>) => void; disabled?: boolean; children: React.ReactNode }) {
   return (
     <button aria-label={label} title={label} onClick={onClick} disabled={disabled} className="grid h-7 w-7 place-items-center rounded-md text-muted hover:bg-panel2 hover:text-text">
       {children}
@@ -507,14 +502,14 @@ function Tool({ label, onClick, disabled, children }: { label: string; onClick: 
   );
 }
 
-function RowBtn({ label, onClick, children }: { label: string; onClick: () => void; children: React.ReactNode }) {
+function RowBtn({ label, onClick, children }: { label: string; onClick: (e: React.MouseEvent<HTMLButtonElement>) => void; children: React.ReactNode }) {
   return (
     <button
       aria-label={label}
       title={label}
       onClick={(e) => {
         e.stopPropagation();
-        onClick();
+        onClick(e);
       }}
       className="grid h-6 w-6 place-items-center rounded text-muted hover:bg-line hover:text-text"
     >

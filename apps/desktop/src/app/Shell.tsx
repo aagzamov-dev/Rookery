@@ -1,3 +1,5 @@
+import { GitHistoryHost } from "../features/git/history";
+import { PermissionsHost } from "../features/files/Permissions";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
 import {
@@ -161,6 +163,8 @@ export function Shell() {
       <CommandPalette onNewHost={() => setHostEditor({})} />
       <ConnDialogHost />
       <DialogHost />
+      <PermissionsHost />
+      <GitHistoryHost />
     </div>
   );
 }

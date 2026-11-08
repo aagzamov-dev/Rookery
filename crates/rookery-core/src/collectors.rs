@@ -127,9 +127,10 @@ pub fn parse_metrics(raw: &str, prev: Option<&RawCounters>, ts_ms: i64) -> Optio
 // Docker
 // ---------------------------------------------------------------------------
 
-pub const DOCKER_PS: &str = "docker ps -a --no-trunc --format '{{json .}}' 2>&1";
-pub const DOCKER_EVENTS: &str = "exec docker events --format '{{json .}}' --filter type=container";
-pub const DOCKER_STATS: &str = "exec docker stats --format '{{json .}}'";
+/// Arguments after `docker` (the command is built by `sudo::Sudo`, with or without sudo).
+pub const DOCKER_PS_ARGS: &str = "ps -a --no-trunc --format '{{json .}}'";
+pub const DOCKER_EVENTS_ARGS: &str = "events --format '{{json .}}' --filter type=container";
+pub const DOCKER_STATS_ARGS: &str = "stats --format '{{json .}}'";
 
 /// Turn `docker ps` output into containers, or a friendly error.
 pub fn parse_docker_ps(out: &str, exit: Option<u32>) -> Result<Vec<crate::model::Container>, String> {
@@ -139,7 +140,7 @@ pub fn parse_docker_ps(out: &str, exit: Option<u32>) -> Result<Vec<crate::model:
     }
     if lower.contains("permission denied") && lower.contains("docker") {
         return Err(
-            "No permission to use Docker. Add your user to the docker group: sudo usermod -aG docker $USER (then log in again)."
+            "No permission to use Docker. Use sudo for Docker on this server, or add your user to the docker group: sudo usermod -aG docker $USER (then log in again)."
                 .into(),
         );
     }
@@ -272,18 +273,20 @@ pub fn parse_processes(out: &str) -> Vec<crate::model::Process> {
 const SYNC_SEP: &str = "@@ROOK@@";
 
 /// Metrics twice (1 s apart, for CPU %), OS name, then optional docker / failed services.
-pub fn sync_script(collect: crate::model::Collect) -> String {
+/// `docker` = (prelude, command) from [`crate::sudo::Elevation::script`].
+pub fn sync_script(collect: crate::model::Collect, docker: (&str, &str)) -> String {
     use crate::model::Collect;
     let metrics = METRICS_SCRIPT.trim_start_matches("export LC_ALL=C; ");
+    let (prelude, docker) = docker;
     let mut s = format!(
-        "export LC_ALL=C; M(){{ {metrics}; }}; M; echo {SYNC_SEP}; sleep 1; M; echo {SYNC_SEP}; \
+        "export LC_ALL=C; {prelude}M(){{ {metrics}; }}; M; echo {SYNC_SEP}; sleep 1; M; echo {SYNC_SEP}; \
          ( . /etc/os-release 2>/dev/null && echo \"$PRETTY_NAME\" ) || uname -sr"
     );
     if matches!(collect, Collect::BasicDocker | Collect::Everything) {
-        s.push_str(&format!("; echo {SYNC_SEP}; "));
-        s.push_str(DOCKER_PS);
-        s.push_str(&format!("; echo \"@@exit $?\"; echo {SYNC_SEP}; "));
-        s.push_str("docker stats --no-stream --format '{{json .}}' 2>/dev/null");
+        // `stats` only runs when `ps` worked: a failed `ps` under sudo is already one failed auth,
+        // a second attempt in the same sync would push servers with pam_faillock toward a lockout.
+        s.push_str(&format!("; echo {SYNC_SEP}; {docker} {DOCKER_PS_ARGS} 2>&1; RK_E=$?; echo \"@@exit $RK_E\"; echo {SYNC_SEP}; "));
+        s.push_str(&format!("if [ \"$RK_E\" = 0 ]; then {docker} stats --no-stream --format '{{{{json .}}}}' 2>/dev/null; fi"));
     }
     if collect == Collect::Everything {
         s.push_str(&format!(
@@ -392,9 +395,17 @@ mod sync_tests {
 
     #[test]
     fn script_contains_requested_parts() {
-        assert!(!sync_script(Collect::Basic).contains("docker"));
-        assert!(sync_script(Collect::BasicDocker).contains("docker stats --no-stream --format '{{json .}}'"));
-        assert!(sync_script(Collect::Everything).contains("systemctl"));
+        let plain = ("", "docker");
+        assert!(!sync_script(Collect::Basic, plain).contains("docker"));
+        assert!(sync_script(Collect::BasicDocker, plain).contains("; docker ps -a --no-trunc --format '{{json .}}' 2>&1; RK_E=$?; echo \"@@exit $RK_E\""));
+        assert!(sync_script(Collect::BasicDocker, plain).contains("if [ \"$RK_E\" = 0 ]; then docker stats"));
+        assert!(sync_script(Collect::BasicDocker, plain).contains("docker stats --no-stream --format '{{json .}}'"));
+        assert!(sync_script(Collect::Everything, plain).contains("systemctl"));
+        let sudo = crate::sudo::Elevation::Password(zeroize::Zeroizing::new("pw".into())).script();
+        let s = sync_script(Collect::BasicDocker, sudo);
+        assert!(s.starts_with("export LC_ALL=C; IFS= read -r RK_SUDO_PW; M()"));
+        assert!(s.contains("printf '%s\\n' \"$RK_SUDO_PW\" | sudo -S -p '' docker ps"));
+        assert!(!s.contains("pw\""), "the password itself is never in the script");
     }
 }
 

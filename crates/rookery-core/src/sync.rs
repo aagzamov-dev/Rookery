@@ -15,7 +15,8 @@ use tokio::sync::{broadcast, Semaphore};
 use crate::collectors::{parse_sync, sync_script};
 use crate::db::Db;
 use crate::model::*;
-use crate::ssh::{exec, ConnectionManager};
+use crate::ssh::{exec, exec_with_input, ConnectionManager};
+use crate::sudo::Elevation;
 use crate::vault::Vault;
 use crate::{new_id, now_ms, CoreEvent, Error, Result};
 
@@ -47,6 +48,7 @@ pub struct SyncEngine {
     db: Arc<Db>,
     vault: Arc<Mutex<Vault>>,
     conns: Arc<ConnectionManager>,
+    sudo: Arc<crate::sudo::Sudo>,
     events: broadcast::Sender<CoreEvent>,
     inner: Mutex<Inner>,
     permits: Arc<Semaphore>,
@@ -61,6 +63,7 @@ impl SyncEngine {
         db: Arc<Db>,
         vault: Arc<Mutex<Vault>>,
         conns: Arc<ConnectionManager>,
+        sudo: Arc<crate::sudo::Sudo>,
         events: broadcast::Sender<CoreEvent>,
     ) -> Self {
         let limit = db.sync_settings().map(|s| s.concurrency as usize).unwrap_or(3).clamp(1, MAX_CONCURRENCY);
@@ -68,6 +71,7 @@ impl SyncEngine {
             db,
             vault,
             conns,
+            sudo,
             events,
             inner: Mutex::new(Inner::default()),
             permits: Arc::new(Semaphore::new(limit)),
@@ -305,10 +309,24 @@ impl SyncEngine {
                 Ok(Ok(_)) => {}
             }
         }
+        // Auto sudo: docker runs as `sudo docker`; a paused (refused) sudo is reported, not retried.
+        let (elevation, sudo_error) = if matches!(what, Collect::BasicDocker | Collect::Everything) {
+            match self.sudo.docker(&host.id) {
+                Ok(e) => (e, None),
+                Err(e) => (Elevation::Plain, Some(e.to_string())),
+            }
+        } else {
+            (Elevation::Plain, None)
+        };
+        let elevated = !matches!(elevation, Elevation::Plain);
         let lease = self.conns.acquire(&host.id).await?;
         let out = async {
             let handle = lease.handle().await?;
-            exec(&handle, &sync_script(what), COLLECT_TIMEOUT).await
+            let script = sync_script(what, elevation.script());
+            match elevation.script_input() {
+                Some(input) => exec_with_input(&handle, &script, &input, COLLECT_TIMEOUT).await,
+                None => exec(&handle, &script, COLLECT_TIMEOUT).await,
+            }
         }
         .await;
         drop(lease);
@@ -316,10 +334,20 @@ impl SyncEngine {
             self.conns.close_if_unused(&host.id).await;
         }
         let out = out?;
-        parse_sync(&out.stdout, what, now_ms()).ok_or_else(|| {
+        let mut collected = parse_sync(&out.stdout, what, now_ms()).ok_or_else(|| {
             let hint = out.stderr.lines().chain(out.stdout.lines()).find(|l| !l.trim().is_empty()).unwrap_or("");
             Error::Other(format!("unexpected output (Linux server needed) {hint}").trim().to_string())
-        })
+        })?;
+        if let Some(docker) = collected.docker.as_mut() {
+            if let Some(msg) = sudo_error {
+                *docker = DockerSummary { error: Some(msg), ..Default::default() };
+            } else if let Some(err) = docker.error.as_deref().filter(|_| elevated) {
+                if let Err(e) = self.sudo.check_output(&host.id, err) {
+                    docker.error = Some(e.to_string());
+                }
+            }
+        }
+        Ok(collected)
     }
 
     // ------------------------------------------------------------ scheduler

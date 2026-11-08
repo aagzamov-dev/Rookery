@@ -52,6 +52,13 @@ interface Entry {
   /** Long-command notification: when Enter was pressed and what was typed. */
   cmdStart: number | null;
   cmdText: string | null;
+  /** Auto sudo: the command (its `cmdStart`, or `openedAt` for a container shell) already filled once. */
+  sudoAutoFor: number | null;
+  /** When the channel opened. */
+  openedAt: number;
+  /** A command queued before the terminal existed ("Run…"): only for the auto-sudo check, so it
+   *  does not count as a typed command for long-command notifications. */
+  queuedCmd: { text: string; at: number } | null;
   /** Shell integration v2 reports exit codes (OSC 133;D). */
   has133: boolean;
   /** Triggers: where scanning continues (a marker survives scrollback trimming). */
@@ -69,6 +76,8 @@ const decodeB64 = (b64: string) => {
 
 const PRINTABLE = /^[^\x00-\x1f\x7f]+$/;
 const SUDO_PROMPT = /\[sudo[^\]\n]*\][^\r\n]*:\s*$/;
+/** A command line that runs sudo. */
+const SUDO_CMD = /(^|[\s;&|(`])sudo(\s|$)/;
 
 const fmtDuration = (ms: number) => {
   const s = Math.round(ms / 1000);
@@ -196,11 +205,19 @@ class TerminalRegistry {
       pending: this.queued.get(key) ?? "",
       cmdStart: null,
       cmdText: null,
+      sudoAutoFor: null,
+      openedAt: 0,
+      queuedCmd: null,
       has133: false,
       scanMarker: null,
       trigNotified: {},
     };
     this.queued.delete(key);
+    // A command queued before the terminal existed (e.g. "Run…" in a container): auto sudo may answer its prompt.
+    if (entry.pending.includes("\r")) {
+      const text = entry.pending.split("\r")[0].trim();
+      if (text) entry.queuedCmd = { text, at: Date.now() };
+    }
 
     term.onData((data) => {
       if (entry.exited) {
@@ -216,6 +233,7 @@ class TerminalRegistry {
         }
       }
       if (data.includes("\r")) {
+        entry.queuedCmd = null;
         const typed = entry.lineBuf;
         entry.cmdStart = typed === "" ? null : Date.now();
         entry.cmdText = typed?.trim() || null;
@@ -358,6 +376,7 @@ class TerminalRegistry {
       }
       e.termId = termId;
       e.lineBuf = "";
+      e.openedAt = Date.now();
       this.byTermId.set(termId, e);
       if (e.pending) {
         const p = e.pending;
@@ -385,9 +404,9 @@ class TerminalRegistry {
     const bytes = decodeB64(b64);
     e.term.write(bytes, () => this.runTriggers(e));
     if (!e.local) {
-      // "[sudo] password for deploy:" → offer to fill it from the vault.
+      // "[sudo] password for deploy:" → filled by itself with auto sudo, else offer to fill it from the vault.
       const tail = this.utf8.decode(bytes.length > 400 ? bytes.subarray(bytes.length - 400) : bytes);
-      if (SUDO_PROMPT.test(tail)) useTermUi.getState().setSudo(e.key, true);
+      if (SUDO_PROMPT.test(tail)) this.sudoPrompt(e);
       else if (tail.trim()) useTermUi.getState().setSudo(e.key, false);
     }
   }
@@ -469,6 +488,29 @@ class TerminalRegistry {
     if (!e) return;
     if (erase > 0) this.send(e, "\x7f".repeat(erase));
     this.typeText(key, text);
+  }
+
+  /**
+   * Auto sudo fills only a prompt that sudo itself is expected to show: once per command line
+   * that ran sudo, or once right after a container shell opened with `sudo docker exec`. Anything
+   * else (e.g. a program inside a container printing a look-alike prompt) gets the button only.
+   * Rust then checks that auto sudo is on for this server and limits fills per terminal.
+   */
+  private sudoPrompt(e: Entry) {
+    const termId = e.termId;
+    if (!termId) return;
+    const offer = () => {
+      if (e.termId === termId) useTermUi.getState().setSudo(e.key, true);
+    };
+    // sudo asks right away; a prompt long after the command started is not trusted.
+    const recent = (at: number | null) => at != null && at > 0 && Date.now() - at < 20_000;
+    const cmd = e.cmdStart != null ? { text: e.cmdText, at: e.cmdStart } : e.queuedCmd;
+    const owner = e.opts.container
+      ? (recent(e.openedAt) ? e.openedAt : null)
+      : (cmd && recent(cmd.at) && cmd.text && SUDO_CMD.test(cmd.text) ? cmd.at : null);
+    if (owner == null || e.sudoAutoFor === owner) return offer();
+    e.sudoAutoFor = owner;
+    void api.termSudoAuto(termId).then((filled) => { if (!filled) offer(); }, offer);
   }
 
   async sudoFill(key: string) {

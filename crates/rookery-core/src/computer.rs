@@ -98,6 +98,55 @@ pub fn list(value: &str) -> Result<Vec<FileEntry>> {
 pub fn mkdir(value: &str) -> Result<()> {
     Ok(std::fs::create_dir(path(value)?)?)
 }
+/// Copy a regular file; refuses an existing destination.
+pub fn duplicate(from: &str, to: &str) -> Result<()> {
+    let (from, to) = (path(from)?, path(to)?);
+    let meta = std::fs::symlink_metadata(&from)?;
+    if !meta.is_file() {
+        return Err(Error::Other("Only regular files can be duplicated.".into()));
+    }
+    let mut src = std::fs::File::open(&from)?;
+    let mut dst = match std::fs::OpenOptions::new().write(true).create_new(true).open(&to) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(Error::Other("A file or folder with this name already exists; nothing was replaced.".into()))
+        }
+        Err(e) => return Err(e.into()),
+    };
+    if let Err(e) = std::io::copy(&mut src, &mut dst).and_then(|_| dst.set_permissions(meta.permissions())) {
+        drop(dst);
+        let _ = std::fs::remove_file(&to);
+        return Err(e.into());
+    }
+    Ok(())
+}
+/// Set permission bits of one local file or folder (Unix only; never recursive).
+pub fn chmod(value: &str, mode: u32) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if mode > 0o7777 {
+            return Err(Error::Other("Invalid permissions.".into()));
+        }
+        Ok(std::fs::set_permissions(path(value)?, std::fs::Permissions::from_mode(mode))?)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (value, mode);
+        Err(Error::Other("Permissions can be changed on Linux and macOS only.".into()))
+    }
+}
+/// Create an empty file; refuses an existing one.
+pub fn create_file(value: &str) -> Result<()> {
+    let p = path(value)?;
+    match std::fs::OpenOptions::new().write(true).create_new(true).open(&p) {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(Error::Other(
+            "A file or folder with this name already exists; nothing was replaced.".into(),
+        )),
+        Err(e) => Err(e.into()),
+    }
+}
 pub fn rename(from: &str, to: &str) -> Result<()> {
     let to = path(to)?;
     if std::fs::symlink_metadata(&to).is_ok() {

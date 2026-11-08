@@ -1,11 +1,12 @@
 import { COMPUTER_ID } from "../local/target";
 import { useMemo, useState } from "react";
 import clsx from "clsx";
-import { Box, Database, Loader2, Play, RotateCw, ScrollText, Search, Square, SquareTerminal, Trash2, X, Zap } from "lucide-react";
+import { Box, Database, Download, Loader2, Play, RotateCw, ScrollText, Search, ShieldCheck, Square, SquareTerminal, Trash2, X, Zap } from "lucide-react";
 import { api, asCoreError } from "../../ipc/api";
 import type { Container } from "../../ipc/bindings/Container";
 import { askConfirm } from "../../stores/dialogs";
-import { isProblem, statsFor, useDocker } from "../../stores/docker";
+import { dockerCli, isProblem, statsFor, useDocker, useDockerSudo } from "../../stores/docker";
+import { DownloadLogsDialog, LogExportStatus, SudoButton, SudoDialog } from "./DockerTools";
 import { useHosts } from "../../stores/hosts";
 import { useSql } from "../../stores/sql";
 import { isDatabaseImage } from "../sql/shortcuts";
@@ -32,6 +33,8 @@ export function DockerView({ hostId, visible: active = true }: { hostId: string;
   const [problems, setProblems] = useState(false);
   const [busy, setBusy] = useState<Record<string, Act | "sql" | undefined>>({});
   const [err, setErr] = useState<string | null>(null);
+  const [dialog, setDialog] = useState<"sudo" | "logs" | null>(null);
+  const remote = hostId !== COMPUTER_ID;
 
   const containers = d?.containers ?? [];
   const f = q.trim().toLowerCase();
@@ -63,7 +66,7 @@ export function DockerView({ hostId, visible: active = true }: { hostId: string;
             : prod
               ? `This is a PRODUCTION server (${host?.name}).`
               : undefined,
-        preview: `docker ${a === "remove" ? "rm" : a} ${c.name}`,
+        preview: `${useDockerSudo.getState().byHost[hostId]?.enabled ? "sudo docker" : "docker"} ${a === "remove" ? "rm" : a} ${c.name}`,
         confirmLabel: a === "remove" ? "Remove container" : `${a[0].toUpperCase() + a.slice(1)}`,
         danger: true,
       });
@@ -116,8 +119,16 @@ export function DockerView({ hostId, visible: active = true }: { hostId: string;
         <div className="max-w-md text-center">
           <Box size={26} className="mx-auto mb-3 text-muted" />
           <p className="m-0 leading-relaxed text-muted">{d.error}</p>
-          <button className="mt-3 rounded-md border border-line px-3 py-1.5" onClick={() => useDocker.getState().forget(hostId)}>Reload Docker</button>
+          <div className="mt-3 flex justify-center gap-2">
+            {remote && (
+              <button className="flex items-center gap-1.5 rounded-md border border-accent-line bg-accent-bg px-3 py-1.5" onClick={() => setDialog("sudo")}>
+                <ShieldCheck size={13} className="text-accent" /> Use sudo…
+              </button>
+            )}
+            <button className="rounded-md border border-line px-3 py-1.5" onClick={() => useDocker.getState().forget(hostId)}>Reload Docker</button>
+          </div>
         </div>
+        {dialog === "sudo" && <SudoDialog hostId={hostId} onClose={() => setDialog(null)} />}
       </div>
     );
   }
@@ -135,12 +146,27 @@ export function DockerView({ hostId, visible: active = true }: { hostId: string;
               Problems {problemCount}
             </button>
           )}
-          {d.error && <span className="text-xs text-[#F7CB6A]">{d.error} <button className="underline" onClick={() => useDocker.getState().forget(hostId)}>Reload Docker</button></span>}
+          {d.error && (
+            <span className="text-xs text-[#F7CB6A]">
+              {d.error} <button className="underline" onClick={() => useDocker.getState().forget(hostId)}>Reload Docker</button>
+              {remote && <> · <button className="underline" onClick={() => setDialog("sudo")}>Use sudo…</button></>}
+            </span>
+          )}
           <label className="ml-auto flex h-7 items-center gap-1.5 rounded-md border border-line bg-bg px-2 text-muted">
             <Search size={12} />
             <input aria-label="Filter containers" placeholder="Filter" value={q} onChange={(e) => setQ(e.target.value)} className="w-32 bg-transparent text-xs text-text outline-none" />
           </label>
+          <button
+            onClick={() => setDialog("logs")}
+            disabled={containers.length === 0}
+            title="Download logs of chosen containers as a zip"
+            className="flex h-7 items-center gap-1.5 rounded-md border border-line px-2 text-xs text-muted hover:text-text disabled:opacity-50"
+          >
+            <Download size={12} /> Logs zip
+          </button>
+          {remote && <SudoButton hostId={hostId} onOpen={() => setDialog("sudo")} />}
         </div>
+        <LogExportStatus hostId={hostId} />
         {err && <div className="border-b border-[#5A2D33] bg-[#33232A] px-3.5 py-2 text-xs text-[#FFA8A8]">{err}</div>}
         <div className="min-h-0 flex-1 overflow-auto">
           <div className="min-w-[640px]">
@@ -223,6 +249,8 @@ export function DockerView({ hostId, visible: active = true }: { hostId: string;
         </div>
       </section>
 
+      {dialog === "sudo" && <SudoDialog hostId={hostId} onClose={() => setDialog(null)} />}
+      {dialog === "logs" && <DownloadLogsDialog hostId={hostId} containers={containers} preselect={selected?.id ?? null} onClose={() => setDialog(null)} />}
       {selected && active && (
         <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-line min-[1250px]:w-[44%] min-[1250px]:flex-none">
           <ContainerLogs key={selected.id} hostId={hostId} container={selected} onClose={() => select(hostId, null)} />
@@ -241,9 +269,10 @@ function QuickCommands({ hostId, container }: { hostId: string; container: Conta
     if (!cmd) return;
     const host = useHosts.getState().hostById(hostId);
     if (host?.env_label === "prod" && !await askConfirm({ title: `Run in ${container.name} on PROD — ${host.name}?`, preview: cmd, confirmLabel: "Run on production", danger: true })) return;
+    const docker = await dockerCli(hostId);
     const key = useTabs.getState().addTerminal(hostId, { title: `@ ${container.name}` });
     if (!key) return;
-    terminalRegistry.runCommand(key, `docker exec -it ${container.name} sh -lc ${shellQuote(cmd)}`);
+    terminalRegistry.runCommand(key, `${docker} exec -it ${container.name} sh -lc ${shellQuote(cmd)}`);
     setTimeout(() => terminalRegistry.focus(key), 50);
   };
   return (

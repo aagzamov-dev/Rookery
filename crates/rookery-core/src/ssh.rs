@@ -477,15 +477,44 @@ pub enum StreamChunk {
     Exit(Option<u32>),
 }
 
+/// What a streamed command gets on its input.
+pub enum StreamInput {
+    /// Sent once right after start, then EOF (no pty: `sudo -S` reads it from a pipe).
+    Stdin(zeroize::Zeroizing<Vec<u8>>),
+    /// Sent once when `prompt` appears in the output (pty: sending earlier would echo it).
+    /// The prompt is removed from the output. A second prompt means the reply was refused:
+    /// the stream reports [`PROMPT_REFUSED`] and closes instead of answering again.
+    /// Only the start of the stream is watched (sudo asks before the program runs): later
+    /// output is passed on untouched, so a program printing the prompt text never gets the reply.
+    Prompt { prompt: &'static [u8], reply: zeroize::Zeroizing<Vec<u8>> },
+}
+
+/// Output line sent when a [`StreamInput::Prompt`] reply was refused.
+pub const PROMPT_REFUSED: &str = "sudo: incorrect password attempt";
+
 /// Run a long-lived command. Dropping the receiver closes the channel; with
 /// `pty = true` the remote process gets SIGHUP, so nothing keeps running on the server.
 pub async fn exec_stream(handle: &SshHandle, cmd: &str, pty: bool) -> Result<tokio::sync::mpsc::Receiver<StreamChunk>> {
+    exec_stream_with(handle, cmd, pty, None).await
+}
+
+/// [`exec_stream`] with input: a password on stdin, or the reply to one prompt.
+pub async fn exec_stream_with(handle: &SshHandle, cmd: &str, pty: bool, input: Option<StreamInput>) -> Result<tokio::sync::mpsc::Receiver<StreamChunk>> {
     let mut ch = handle.channel_open_session().await?;
     if pty {
         // Wide, colourless terminal so lines don't wrap and tools don't add colours.
         ch.request_pty(false, "dumb", 1000, 50, 0, 0, &[]).await?;
     }
     ch.exec(true, cmd).await?;
+    let mut answer = match input {
+        Some(StreamInput::Stdin(bytes)) => {
+            ch.data(&bytes[..]).await?;
+            ch.eof().await?;
+            None
+        }
+        Some(StreamInput::Prompt { prompt, reply }) => Some(PromptAnswer::new(prompt, reply)),
+        None => None,
+    };
     let (tx, rx) = tokio::sync::mpsc::channel(256);
     tokio::spawn(async move {
         loop {
@@ -496,12 +525,32 @@ pub async fn exec_stream(handle: &SshHandle, cmd: &str, pty: bool) -> Result<tok
                 }
                 msg = ch.wait() => match msg {
                     Some(ChannelMsg::Data { ref data }) | Some(ChannelMsg::ExtendedData { ref data, .. }) => {
-                        if tx.send(StreamChunk::Data(data.to_vec())).await.is_err() {
+                        let (data, step) = match answer.as_mut() {
+                            Some(a) => a.scan_at(data, std::time::Instant::now()),
+                            None => (data.to_vec(), PromptStep::None),
+                        };
+                        if step == PromptStep::Reply {
+                            if let Some(a) = answer.as_ref() {
+                                if ch.data(&a.reply[..]).await.is_err() {
+                                    let _ = ch.close().await;
+                                    break;
+                                }
+                            }
+                        }
+                        if !data.is_empty() && tx.send(StreamChunk::Data(data)).await.is_err() {
+                            let _ = ch.close().await;
+                            break;
+                        }
+                        if step == PromptStep::Refused {
+                            let _ = tx.send(StreamChunk::Data(format!("{PROMPT_REFUSED}\n").into_bytes())).await;
                             let _ = ch.close().await;
                             break;
                         }
                     }
                     Some(ChannelMsg::ExitStatus { exit_status }) => {
+                        if let Some(rest) = answer.as_mut().map(|a| std::mem::take(&mut a.carry)).filter(|c| !c.is_empty()) {
+                            let _ = tx.send(StreamChunk::Data(rest)).await;
+                        }
                         let _ = tx.send(StreamChunk::Exit(Some(exit_status))).await;
                     }
                     Some(ChannelMsg::Close) | None => break,
@@ -511,6 +560,84 @@ pub async fn exec_stream(handle: &SshHandle, cmd: &str, pty: bool) -> Result<tok
         }
     });
     Ok(rx)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum PromptStep {
+    None,
+    /// Send the reply now.
+    Reply,
+    /// The prompt came back after the reply: stop.
+    Refused,
+}
+
+/// How long after start, and how much output, a prompt is still expected (sudo's lecture
+/// is ~300 bytes; a slow PAM module can take a few seconds).
+const PROMPT_WINDOW: std::time::Duration = std::time::Duration::from_secs(15);
+const PROMPT_WINDOW_BYTES: usize = 4096;
+
+struct PromptAnswer {
+    prompt: &'static [u8],
+    started: std::time::Instant,
+    /// Output passed on so far while watching.
+    seen: usize,
+    reply: zeroize::Zeroizing<Vec<u8>>,
+    /// End of the last chunk that may be the start of a split prompt.
+    carry: Vec<u8>,
+    answered: bool,
+    /// The newline the program prints after reading the reply.
+    skip_newline: bool,
+}
+
+impl PromptAnswer {
+    fn new(prompt: &'static [u8], reply: zeroize::Zeroizing<Vec<u8>>) -> Self {
+        Self { prompt, started: std::time::Instant::now(), seen: 0, reply, carry: Vec::new(), answered: false, skip_newline: false }
+    }
+
+    /// Still at the start of the stream, where sudo's prompt (or its re-prompt) can appear.
+    fn watching(&self, now: std::time::Instant) -> bool {
+        self.seen <= PROMPT_WINDOW_BYTES && now.saturating_duration_since(self.started) <= PROMPT_WINDOW
+    }
+
+    /// Output to pass on (prompt removed) and what to do about the prompt.
+    fn scan_at(&mut self, data: &[u8], now: std::time::Instant) -> (Vec<u8>, PromptStep) {
+        let mut buf = std::mem::take(&mut self.carry);
+        buf.extend_from_slice(data);
+        if !self.watching(now) {
+            // Past the start: the program's own output, passed on as is.
+            return (buf, PromptStep::None);
+        }
+        let (out, step) = self.scan_buf(buf);
+        self.seen += out.len();
+        (out, step)
+    }
+
+    fn scan_buf(&mut self, mut buf: Vec<u8>) -> (Vec<u8>, PromptStep) {
+        if self.skip_newline && !buf.is_empty() {
+            self.skip_newline = false;
+            let skip = if buf.starts_with(b"\r\n") { 2 } else if buf.starts_with(b"\n") { 1 } else { 0 };
+            buf.drain(..skip);
+        }
+        if let Some(pos) = buf.windows(self.prompt.len()).position(|w| w == self.prompt) {
+            let mut out = buf[..pos].to_vec();
+            if self.answered {
+                return (out, PromptStep::Refused);
+            }
+            self.answered = true;
+            self.skip_newline = true;
+            let rest = buf[pos + self.prompt.len()..].to_vec();
+            let (more, step) = self.scan_buf(rest);
+            out.extend(more);
+            return (out, if step == PromptStep::Refused { PromptStep::Refused } else { PromptStep::Reply });
+        }
+        // Hold back a tail that could be the beginning of a prompt split over two chunks.
+        let keep = (1..self.prompt.len().min(buf.len() + 1))
+            .rev()
+            .find(|&n| buf.ends_with(&self.prompt[..n]))
+            .unwrap_or(0);
+        self.carry = buf.split_off(buf.len() - keep);
+        (buf, PromptStep::None)
+    }
 }
 
 /// Splits a byte stream into lines, dropping `\r` and ANSI escape sequences.
@@ -683,6 +810,65 @@ mod tests {
         assert!(splitter.push(&text[8..]).is_empty());
         assert_eq!(splitter.finish().as_deref(), Some("hello 🌍"));
         assert!(splitter.finish().is_none());
+    }
+
+    fn answer() -> PromptAnswer {
+        PromptAnswer::new(b"[rookery-sudo]", zeroize::Zeroizing::new(b"pw\n".to_vec()))
+    }
+
+    impl PromptAnswer {
+        fn scan(&mut self, data: &[u8]) -> (Vec<u8>, PromptStep) {
+            self.scan_at(data, self.started)
+        }
+    }
+
+    #[test]
+    fn prompt_text_after_the_start_is_plain_output() {
+        // Late: sudo did not ask (cached / NOPASSWD), a container prints the marker later.
+        let mut a = answer();
+        let late = a.started + PROMPT_WINDOW + std::time::Duration::from_secs(1);
+        assert_eq!(a.scan_at(b"x [rookery-sudo] y\n", late), (b"x [rookery-sudo] y\n".to_vec(), PromptStep::None));
+        // After enough output, too.
+        let mut a = answer();
+        let lots = vec![b'a'; PROMPT_WINDOW_BYTES + 1];
+        assert_eq!(a.scan(&lots).1, PromptStep::None);
+        assert_eq!(a.scan(b"[rookery-sudo]"), (b"[rookery-sudo]".to_vec(), PromptStep::None));
+        // An answered stream is not closed by the marker showing up later.
+        let mut a = answer();
+        assert_eq!(a.scan(b"[rookery-sudo]").1, PromptStep::Reply);
+        assert_eq!(a.scan_at(b"[rookery-sudo]\n", late), (b"[rookery-sudo]\n".to_vec(), PromptStep::None));
+    }
+
+    #[test]
+    fn prompt_is_answered_once_and_removed_from_output() {
+        let mut a = answer();
+        assert_eq!(a.scan(b"[rookery-sudo]"), (Vec::new(), PromptStep::Reply));
+        // sudo's newline after the (unechoed) password is dropped too.
+        assert_eq!(a.scan(b"\r\n{\"a\":1}\n"), (b"{\"a\":1}\n".to_vec(), PromptStep::None));
+        assert_eq!(a.scan(b"more\n"), (b"more\n".to_vec(), PromptStep::None));
+    }
+
+    #[test]
+    fn prompt_split_over_chunks_is_still_found() {
+        let mut a = answer();
+        assert_eq!(a.scan(b"[rook"), (Vec::new(), PromptStep::None));
+        assert_eq!(a.scan(b"ery-sudo]"), (Vec::new(), PromptStep::Reply));
+        // A tail that only looks like the start is passed on once the next chunk shows otherwise.
+        assert_eq!(a.scan(b"x ["), (b"x ".to_vec(), PromptStep::None));
+        assert_eq!(a.scan(b"y]\n"), (b"[y]\n".to_vec(), PromptStep::None));
+    }
+
+    #[test]
+    fn second_prompt_means_refused() {
+        let mut a = answer();
+        assert_eq!(a.scan(b"[rookery-sudo]").1, PromptStep::Reply);
+        assert_eq!(a.scan(b"\nSorry, try again.\n[rookery-sudo]"), (b"Sorry, try again.\n".to_vec(), PromptStep::Refused));
+    }
+
+    #[test]
+    fn no_prompt_passes_output_through() {
+        let mut a = answer();
+        assert_eq!(a.scan(b"{\"ID\":\"x\"}\n"), (b"{\"ID\":\"x\"}\n".to_vec(), PromptStep::None));
     }
 
     #[test]

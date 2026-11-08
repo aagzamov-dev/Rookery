@@ -16,7 +16,7 @@ function TextAsk({ req }: { req: TextRequest }) {
   const done = useDialogs((s) => s.done);
   const [value, setValue] = useState(req.value);
   const finish = (ok: boolean) => {
-    req.resolve(ok && value.trim() ? value.trim() : null);
+    req.resolve(ok && value.trim() ? (req.exact ? value : value.trim()) : null);
     done();
   };
   return (

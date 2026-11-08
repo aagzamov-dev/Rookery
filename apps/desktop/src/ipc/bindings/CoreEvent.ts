@@ -3,6 +3,7 @@ import type { BackupStatus } from "./BackupStatus";
 import type { Container } from "./Container";
 import type { ContainerStats } from "./ContainerStats";
 import type { DatabaseJob } from "./DatabaseJob";
+import type { LogExportJob } from "./LogExportJob";
 import type { MergeSummary } from "./MergeSummary";
 import type { MetricsSample } from "./MetricsSample";
 import type { ResultColumn } from "./ResultColumn";
@@ -24,4 +25,4 @@ protected: boolean,
 /**
  * Writes turn off again at this time (ms).
  */
-writes_until: number | null, database: string | null, message: string | null, } | { "type": "database_job", job: DatabaseJob, } | { "type": "vault_locked" } | { "type": "vault_unlocked" };
+writes_until: number | null, database: string | null, message: string | null, } | { "type": "database_job", job: DatabaseJob, } | { "type": "log_export", job: LogExportJob, } | { "type": "vault_locked" } | { "type": "vault_unlocked" };

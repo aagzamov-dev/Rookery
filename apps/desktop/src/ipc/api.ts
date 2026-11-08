@@ -19,6 +19,11 @@ import type { SyncStatus } from "./bindings/SyncStatus";
 import type { Group } from "./bindings/Group";
 import type { Host } from "./bindings/Host";
 import type { Identity } from "./bindings/Identity";
+import type { SearchRequest } from "./bindings/SearchRequest";
+import type { SearchResult } from "./bindings/SearchResult";
+import type { GitCommit } from "./bindings/GitCommit";
+import type { BlameLine } from "./bindings/BlameLine";
+import type { PathUsage } from "./bindings/PathUsage";
 import type { FileEntry } from "./bindings/FileEntry";
 import type { KnownHost } from "./bindings/KnownHost";
 import type { LocalShell } from "./bindings/LocalShell";
@@ -58,6 +63,8 @@ import type { GitAction } from "./bindings/GitAction";
 import type { PinCredential } from "./bindings/PinCredential";
 
 import type { DatabaseFileInfo } from "./bindings/DatabaseFileInfo";
+import type { LogExportRequest } from "./bindings/LogExportRequest";
+import type { SudoState } from "./bindings/SudoState";
 import type { DatabaseBackup } from "./bindings/DatabaseBackup";
 import type { DatabaseOperation } from "./bindings/DatabaseOperation";
 import type { DatabaseJob } from "./bindings/DatabaseJob";
@@ -90,6 +97,8 @@ export interface IdentitySecrets {
   sudo?: string;
 }
 
+export type ArchiveMode = "zip" | "unzip" | "targz" | "untargz";
+
 async function remoteChange<T>(command: string, args: Record<string, unknown>, preview: string, confirmed = false, alwaysConfirm = false): Promise<T> {
   const hosts = args.hostId === COMPUTER_ID ? [] : await invoke<Host[]>("hosts_list");
   const host = hosts.find((h) => h.id === args.hostId);
@@ -105,6 +114,10 @@ export const api = {
   gitDiscover: (hostId: string, folder: string) => invoke<string[]>("git_discover", { hostId, folder }),
   gitDiff: (hostId: string, folder: string, file: GitFile, staged: boolean) => invoke<GitDiff>("git_diff", { hostId, folder, file, staged }),
   gitAction: (hostId: string, folder: string, action: GitAction, confirmed: boolean) => invoke<string>("git_action", { hostId, folder, action, confirmed }),
+  gitLocate: (hostId: string, file: string) => invoke<[string, string]>("git_locate", { hostId, file }),
+  gitHistory: (hostId: string, folder: string, path: string) => invoke<GitCommit[]>("git_history", { hostId, folder, path }),
+  gitFileAt: (hostId: string, folder: string, commit: string, path: string) => invoke<GitDiff>("git_file_at", { hostId, folder, commit, path }),
+  gitBlame: (hostId: string, folder: string, path: string) => invoke<BlameLine[]>("git_blame", { hostId, folder, path }),
   // vault
   vaultStatus: () => invoke<VaultStatus>("vault_status"),
   vaultCreate: (master: string) => invoke<VaultStatus>("vault_create", { master }),
@@ -165,6 +178,8 @@ export const api = {
   importApply: (hosts: ImportedHost[], group: string | null) => invoke<number>("import_apply", { hosts, group }),
 
   // clipboard
+  /** The login's password after checking the master password again; `identityId` null = only check it. */
+  identityRevealPassword: (identityId: string | null, master: string) => invoke<string | null>("identity_reveal_password", { identityId, master }),
   clipboardWrite: (text: string) => invoke<void>("clipboard_write", { text }),
   clipboardRead: () => invoke<string>("clipboard_read"),
 
@@ -183,6 +198,12 @@ export const api = {
   processesList: (hostId: string) => invoke<Process[]>("processes_list", { hostId }),
   processKill: (hostId: string, pid: number, force: boolean, confirmed = false) => remoteChange<void>("process_kill", { hostId, pid, force }, `kill -${force ? "KILL" : "TERM"} ${pid}`, confirmed),
   termSudoFill: (termId: string) => invoke<void>("term_sudo_fill", { termId }),
+  /** Fills a `[sudo]` prompt only when auto sudo is on for the server; false = not filled. */
+  termSudoAuto: (termId: string) => invoke<boolean>("term_sudo_auto", { termId }),
+  sudoState: (hostId: string) => invoke<SudoState>("sudo_state", { hostId }),
+  /** password: typed now (this app session only, or saved to the login with `save`). */
+  sudoSet: (hostId: string, enabled: boolean, password?: string, save = false) =>
+    invoke<SudoState>("sudo_set", { hostId, enabled, password: password || null, save }),
 
   // import / export (paths come from file dialogs)
   fileReadText: (path: string) => invoke<string>("file_read_text", { path }),
@@ -217,6 +238,7 @@ export const api = {
 
   // editor (docs/08): content goes webview → Rust → server only; never logged
   editorOpen: (hostId: string, path: string) => invoke<EditorFile>("editor_open", { hostId, path }),
+  editorOpenSudo: (hostId: string, path: string) => invoke<EditorFile>("editor_open_sudo", { hostId, path }),
   editorStat: (hostId: string, path: string) => invoke<FileStamp>("editor_stat", { hostId, path }),
   editorSave: (hostId: string, path: string, content: string, eol: Eol, bom: boolean, base: FileVersion, mode: SaveMode, confirmed = false) =>
     invoke<SaveOutcome>("editor_save", { hostId, path, content, eol, bom, base, mode, confirmed }),
@@ -225,7 +247,16 @@ export const api = {
 
   sftpList: (hostId: string, path: string) => invoke<FileEntry[]>("sftp_list", { hostId, path }),
   sftpMkdir: (hostId: string, path: string) => remoteChange<void>("sftp_mkdir", { hostId, path }, `Create folder ${path}`),
-  sftpArchive: (hostId: string, path: string, name: string, extract: boolean) => remoteChange<void>("sftp_archive", { hostId, path, name, extract }, `${extract ? "Extract" : "Archive"} ${path} → ${name}`),
+  sftpCreateFile: (hostId: string, path: string) => remoteChange<void>("sftp_create_file", { hostId, path }, `Create file ${path}`),
+  sftpDuplicate: (hostId: string, from: string, to: string) => remoteChange<void>("sftp_duplicate", { hostId, from, to }, `Duplicate ${from} → ${to}`),
+  sftpArchive: (hostId: string, path: string, name: string, mode: ArchiveMode, job: string) =>
+    remoteChange<void>("sftp_archive", { hostId, path, name, mode, job }, `${mode === "unzip" || mode === "untargz" ? "Extract" : "Archive"} ${path} → ${name}`),
+  sftpArchiveCancel: (job: string) => invoke<void>("sftp_archive_cancel", { job }),
+  sftpUsage: (hostId: string, path: string) => invoke<PathUsage>("sftp_usage", { hostId, path }),
+  sftpChmod: (hostId: string, path: string, mode: number) => remoteChange<void>("sftp_chmod", { hostId, path, mode }, `chmod ${mode.toString(8).padStart(3, "0")} ${path}`),
+  sftpOwner: (hostId: string, path: string) => invoke<[string, string]>("sftp_owner", { hostId, path }),
+  searchRun: (request: SearchRequest) => invoke<SearchResult>("search_run", { request }),
+  searchCancel: (hostId: string, slot: string) => invoke<void>("search_cancel", { hostId, slot }),
   sftpRename: (hostId: string, from: string, to: string) => remoteChange<void>("sftp_rename", { hostId, from, to }, `Rename ${from} → ${to}`),
   sftpDelete: (hostId: string, path: string, isDir: boolean, recursive: boolean, confirmed = false) =>
     remoteChange<void>("sftp_delete", { hostId, path, isDir, recursive }, `Delete ${path}`, confirmed),
@@ -241,6 +272,9 @@ export const api = {
   // docker, services, shell
   dockerAction: (hostId: string, container: string, action: "start" | "stop" | "restart" | "kill" | "remove", confirmed = false) =>
     remoteChange<void>("docker_action", { hostId, container, action }, `docker ${action} ${container}`, confirmed),
+  /** Download logs as one zip; progress comes as `log_export` events. Returns the job id. */
+  dockerLogsExport: (req: LogExportRequest) => invoke<string>("docker_logs_export", { req }),
+  dockerLogsExportCancel: (jobId: string) => invoke<void>("docker_logs_export_cancel", { jobId }),
   servicesList: (hostId: string) => invoke<Service[]>("services_list", { hostId }),
   shellIntegrationInstall: (hostId: string, confirmed = false) => remoteChange<number>("shell_integration_install", { hostId }, "Update ~/.bashrc and ~/.zshrc", confirmed),
 

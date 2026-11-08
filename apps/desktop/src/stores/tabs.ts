@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { COMPUTER_ID } from "../features/local/target";
 
-export type View = "overview" | "terminal" | "files" | "editor" | "git" | "docker" | "database" | "services" | "processes" | "logs" | "settings";
+export type View = "overview" | "terminal" | "files" | "editor" | "search" | "git" | "docker" | "database" | "services" | "processes" | "logs" | "settings";
 export type PageKind = "dashboard" | "snippets" | "hosts" | "tunnels" | "settings" | "shortcuts" | "backup";
 
 /** What a database tab opens. Never holds a password (URL passwords stay in memory, see DbTab). */

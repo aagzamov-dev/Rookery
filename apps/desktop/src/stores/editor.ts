@@ -33,6 +33,8 @@ export interface EditorDoc {
   changed: { size: number; mtime: number; exists: boolean } | null;
   /** Set after an automatic reload of an unchanged tab ("Reloaded: changed on the server"). */
   reloadedAt: number | null;
+  /** Opened with sudo: reload and save use sudo too. */
+  sudo: boolean;
 }
 
 interface HostEditor {
@@ -62,6 +64,8 @@ interface EditorState {
   load: () => Promise<void>;
   setPrefs: (p: Partial<EditorPrefs>) => void;
   togglePin: (hostId: string, path: string) => void;
+  /** Replace a server's pins (after a rename or delete in the file tree). */
+  setPins: (hostId: string, pins: string[]) => void;
   setRoot: (hostId: string, path: string) => void;
   /** Add (or refresh) a doc from a freshly opened file; makes it active. */
   put: (hostId: string, f: EditorFile, activate?: boolean) => EditorDoc;
@@ -100,7 +104,9 @@ export const useEditor = create<EditorState>((set, get) => ({
   },
   togglePin(hostId, path) {
     const cur = get().pins[hostId] ?? [];
-    const next = cur.includes(path) ? cur.filter((p) => p !== path) : [...cur, path];
+    get().setPins(hostId, cur.includes(path) ? cur.filter((p) => p !== path) : [...cur, path]);
+  },
+  setPins(hostId, next) {
     const pins = { ...get().pins, [hostId]: next };
     if (next.length === 0) delete pins[hostId];
     set({ pins });
@@ -135,6 +141,7 @@ export const useEditor = create<EditorState>((set, get) => ({
       dirty: false,
       changed: null,
       reloadedAt: null,
+      sudo: f.sudo,
     };
     set((s) => {
       const h = s.byHost[hostId] ?? { docs: [], active: null };

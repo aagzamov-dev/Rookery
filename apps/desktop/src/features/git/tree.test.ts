@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import type { GitFile } from "../../ipc/bindings/GitFile";
-import { buildChangeTree, changeView, type ChangeNode } from "./tree";
+import { buildChangeTree, changeView, discardPlan, discardPreview, type ChangeNode } from "./tree";
 
 const file = (path: string, index = ".", worktree = "M"): GitFile => ({ path, original_path: null, index, worktree, conflicted: false });
 const leaves = (nodes: ChangeNode[]): GitFile[] => nodes.flatMap((node) => node.kind === "file" ? [node.file] : leaves(node.children));
@@ -42,4 +42,13 @@ it("retains a deleted file beside a replacement directory of the same name", () 
   const tree = buildChangeTree([deleted, replacement]);
   expect(tree.map((node) => [node.kind, node.path])).toEqual([["folder", "src"], ["file", "src"]]);
   expect(leaves(tree)).toEqual([replacement, deleted]);
+});
+
+it("folder discard reverts changed files, deletes new ones, skips staged-only and conflicts", () => {
+  const files = [file("app/a.ts", ".", "M"), file("app/new.ts", "?", "?"), file("app/staged.ts", "M", "."), { ...file("app/c.ts", "U", "U"), conflicted: true }, file("app/del.ts", ".", "D")];
+  expect(discardPlan(files)).toEqual({ tracked: ["app/a.ts", "app/del.ts"], untracked: ["app/new.ts"] });
+  const preview = discardPreview("app", discardPlan(files));
+  expect(preview.split("\n")).toEqual(["app/", "revert  app/a.ts", "revert  app/del.ts", "delete  app/new.ts"]);
+  const many = { tracked: Array.from({ length: 30 }, (_, i) => `x/${i}`), untracked: [] };
+  expect(discardPreview("x", many).split("\n").at(-1)).toBe("… and 5 more");
 });

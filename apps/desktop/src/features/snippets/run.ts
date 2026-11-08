@@ -3,6 +3,7 @@ import { COMPUTER_ID } from "../local/target";
 import type { RunMode } from "../../ipc/bindings/RunMode";
 import type { Snippet } from "../../ipc/bindings/Snippet";
 import { askConfirm, askVars } from "../../stores/dialogs";
+import { dockerCli } from "../../stores/docker";
 import { useHosts } from "../../stores/hosts";
 import { appliesTo, isWorkflow, useSnippets, workflowCommand } from "../../stores/snippets";
 import { shellQuote } from "../files/quote";
@@ -37,9 +38,10 @@ export async function runInContainer(s: Snippet, hostId: string, container: stri
     const ok = await askConfirm({ title: `Run in ${container} on PROD — ${host.name}?`, preview: command, confirmLabel: "Run on production", danger: true });
     if (!ok) return;
   }
+  const docker = await dockerCli(hostId);
   const key = useTabs.getState().addTerminal(hostId, { title: `${s.alias ?? s.name} @ ${container}` });
   if (!key) return;
-  terminalRegistry.runCommand(key, `docker exec -it ${container} sh -lc ${shellQuote(command)}`);
+  terminalRegistry.runCommand(key, `${docker} exec -it ${container} sh -lc ${shellQuote(command)}`);
   setTimeout(() => terminalRegistry.focus(key), 50);
 }
 

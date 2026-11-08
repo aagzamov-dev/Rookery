@@ -45,6 +45,8 @@ export interface TextRequest {
   confirmLabel: string;
   /** Masked input (passwords). */
   secret?: boolean;
+  /** Return the text exactly as typed (no trimming): for passwords that are checked as is. */
+  exact?: boolean;
   /** Select only this part on open (e.g. the name without extension). */
   selectUntil?: number;
   resolve: (value: string | null) => void;

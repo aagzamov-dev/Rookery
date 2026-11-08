@@ -28,3 +28,20 @@ export function buildChangeTree(files: readonly GitFile[]): ChangeNode[] {
   ];
   return nodes(root);
 }
+
+/** Folder discard: which changed files go back to their staged/committed version, which (new) files are deleted. */
+export function discardPlan(files: readonly GitFile[]): { tracked: string[]; untracked: string[] } {
+  const changed = files.filter((file) => !file.conflicted && file.worktree !== ".");
+  return {
+    tracked: changed.filter((file) => file.index !== "?").map((file) => file.path),
+    untracked: changed.filter((file) => file.index === "?").map((file) => file.path),
+  };
+}
+
+/** The file list shown in the confirmation (first `max`, then a count). */
+export function discardPreview(folder: string, plan: { tracked: string[]; untracked: string[] }, max = 25): string {
+  const lines = [...plan.tracked.map((path) => `revert  ${path}`), ...plan.untracked.map((path) => `delete  ${path}`)];
+  const shown = lines.slice(0, max);
+  if (lines.length > max) shown.push(`… and ${lines.length - max} more`);
+  return [`${folder}/`, ...shown].join("\n");
+}

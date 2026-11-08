@@ -1,11 +1,13 @@
-import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
-import { AlertTriangle, FolderOpen, Loader2, Plus, Radio, ShieldAlert, ShieldQuestion, Terminal as TermIcon, X } from "lucide-react";
+import { AlertTriangle, FolderOpen, Loader2, MoreHorizontal, Plus, Radio, ShieldAlert, ShieldQuestion, Terminal as TermIcon, X } from "lucide-react";
 import { COMPUTER_ID } from "../local/target";
 import { ComputerDatabases } from "../local/ComputerDatabases";
 import { useLocalShells } from "../local/LocalTab";
 import { useKeys } from "../../stores/keys";
 import { Select } from "../../ui/primitives";
+import { useContextMenu } from "../../ui/ContextMenu";
+import { fitViews } from "./fitViews";
 import { isProblem, useDocker } from "../../stores/docker";
 import { useFiles } from "../../stores/files";
 import { useEditor } from "../../stores/editor";
@@ -15,6 +17,7 @@ import { ServicesView } from "../services/ServicesView";
 import { LogsView } from "../logs/LogsView";
 import { ProcessesView } from "../processes/ProcessesView";
 import { ServerDbView } from "../sql/ServerDbView";
+import { SearchView } from "../search/SearchView";
 const EditorWorkspace = lazy(() => import("../editor/EditorWorkspace").then((module) => ({ default: module.EditorWorkspace })));
 import { useTermUi } from "../../stores/termui";
 import { api, asCoreError } from "../../ipc/api";
@@ -38,6 +41,7 @@ const VIEWS: { id: View; label: string }[] = [
   { id: "terminal", label: "Terminal" },
   { id: "files", label: "Files" },
   { id: "editor", label: "Editor" },
+  { id: "search", label: "Search" },
   { id: "git", label: "Git" },
   { id: "docker", label: "Docker" },
   { id: "database", label: "Database" },
@@ -110,7 +114,7 @@ export function ServerTab({ hostId, active, onEditHost }: Props) {
         {mounted("terminal") && everConnected && <TerminalView hostId={hostId} visible={show("terminal")} active={visible("terminal")} />}
         {views.opened.includes("terminal") && !everConnected && show("terminal") && <Waiting hostId={hostId} />}
         {views.opened.includes("overview") && show("overview") && <OverviewView hostId={hostId} />}
-        {(["files", "editor", "git", "docker", "database", "services", "processes", "logs"] as const).map(
+        {(["files", "editor", "search", "git", "docker", "database", "services", "processes", "logs"] as const).map(
           (v) =>
             views.opened.includes(v) &&
             !everConnected &&
@@ -124,6 +128,11 @@ export function ServerTab({ hostId, active, onEditHost }: Props) {
         {everConnected && mounted("editor") && (
           <Keep show={show("editor")}>
             <Suspense fallback={<div role="status" className="p-4 text-muted">Loading file editor…</div>}><EditorWorkspace hostId={hostId} visible={visible("editor")} /></Suspense>
+          </Keep>
+        )}
+        {everConnected && mounted("search") && (
+          <Keep show={show("search")}>
+            <SearchView hostId={hostId} visible={visible("search")} />
           </Keep>
         )}
         {everConnected && mounted("git") && (
@@ -162,6 +171,9 @@ export function ServerTab({ hostId, active, onEditHost }: Props) {
   );
 }
 
+const TAB_GAP = 2;
+const MORE_WIDTH = 36;
+
 function ViewBar({ hostId, current, onSelect }: { hostId: string; current: View; onSelect: (v: View) => void }) {
   const views = useTabs((s) => s.views[hostId]);
   const panelOpen = useFiles((s) => s.byHost[hostId]?.panelOpen ?? false);
@@ -173,30 +185,95 @@ function ViewBar({ hostId, current, onSelect }: { hostId: string; current: View;
   const addTerminal = useTabs((s) => s.addTerminal);
   const closeTerminal = useTabs((s) => s.closeTerminal);
   const setActiveTerminal = useTabs((s) => s.setActiveTerminal);
+  const list = VIEWS.filter((v) => hostId !== COMPUTER_ID || !["services", "processes", "logs", "settings"].includes(v.id));
+  const activeIndex = list.findIndex((v) => v.id === current);
+  const box = useRef<HTMLDivElement>(null);
+  const measure = useRef<HTMLDivElement>(null);
+  const [shown, setShown] = useState<number[] | null>(null);
+  const more = useContextMenu();
+
+  // One line always: measure every tab (hidden copy), show what fits, the rest goes in ⋯.
+  useLayoutEffect(() => {
+    const el = box.current;
+    const m = measure.current;
+    if (!el || !m) return;
+    const calc = () => {
+      // Hidden (inactive server tab) or not laid out yet: keep what is shown.
+      if (el.clientWidth === 0) return;
+      const widths = Array.from(m.children, (c) => (c as HTMLElement).offsetWidth + TAB_GAP);
+      const next = fitViews(widths, el.clientWidth, activeIndex, MORE_WIDTH);
+      setShown((cur) => (cur && cur.length === next.length && cur.every((v, i) => v === next[i]) ? cur : next));
+      el.scrollLeft = 0;
+    };
+    calc();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(calc);
+    ro.observe(el);
+    ro.observe(m);
+    return () => ro.disconnect();
+  }, [activeIndex, list.length]);
+
+  const visible = shown ?? list.map((_, i) => i);
+  const hidden = list.filter((_, i) => !visible.includes(i));
+
+  const label = (v: (typeof VIEWS)[number]) => (
+    <>
+      {v.id === "terminal" && <TermIcon size={13} />}
+      {v.label}
+      {v.id === "terminal" && views && views.terminals.length > 0 && <span className="font-normal text-muted">{views.terminals.length}</span>}
+      {v.id === "editor" && editorDirty && <span aria-label="unsaved changes" className="h-1.5 w-1.5 rounded-full bg-text" />}
+      {v.id === "docker" && dockerProblem && <span aria-label="problems" className="h-1.5 w-1.5 rounded-full bg-warn" />}
+    </>
+  );
+  const tabClass = "flex h-7 flex-none items-center gap-1.5 rounded-md px-3 whitespace-nowrap";
+
   return (
-    <div role="tablist" aria-label="Server views" className="flex min-h-[42px] flex-wrap items-center gap-0.5 border-b border-line bg-term px-2.5">
-      {VIEWS.filter((v) => hostId !== COMPUTER_ID || !["services", "processes", "logs", "settings"].includes(v.id)).map((v) => (
-        <button
-          key={v.id}
-          role="tab"
-          aria-selected={current === v.id}
-          onClick={() => onSelect(v.id)}
-          className={clsx(
-            "flex h-7 items-center gap-1.5 rounded-md px-3",
-            current === v.id ? "bg-panel2 font-medium text-text" : "text-muted hover:text-text",
+    <div className="flex h-[46px] flex-none items-center gap-2 border-b border-line bg-term px-2.5 pt-1">
+      <div ref={box} className="relative flex min-w-0 flex-1 items-center overflow-hidden">
+        {/* Hidden copy for measuring (not a tab, not focusable); in a zero-size box so it never makes the bar scroll. */}
+        <div aria-hidden className="pointer-events-none invisible absolute top-0 left-0 h-0 w-0 overflow-hidden">
+          <div ref={measure} className="flex w-max gap-0.5">
+            {list.map((v) => (
+              <span key={v.id} className={clsx(tabClass, "font-medium")}>
+                {label(v)}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div role="tablist" aria-label="Server views" className="flex min-w-0 items-center gap-0.5">
+          {list.map((v, i) =>
+            visible.includes(i) ? (
+              <button
+                key={v.id}
+                role="tab"
+                aria-selected={current === v.id}
+                onClick={() => onSelect(v.id)}
+                className={clsx(tabClass, current === v.id ? "bg-panel2 font-medium text-text" : "text-muted hover:text-text")}
+              >
+                {label(v)}
+              </button>
+            ) : null,
           )}
-        >
-          {v.id === "terminal" && <TermIcon size={13} />}
-          {v.label}
-          {v.id === "terminal" && views && views.terminals.length > 0 && <span className="font-normal text-muted">{views.terminals.length}</span>}
-          {v.id === "editor" && editorDirty && <span aria-label="unsaved changes" className="h-1.5 w-1.5 rounded-full bg-text" />}
-          {v.id === "docker" && dockerProblem && <span aria-label="problems" className="h-1.5 w-1.5 rounded-full bg-warn" />}
-        </button>
-      ))}
+        </div>
+        {hidden.length > 0 && (
+          <button
+            aria-label={`More views: ${hidden.map((v) => v.label).join(", ")}`}
+            title={hidden.map((v) => v.label).join(", ")}
+            onClick={more.below(() => hidden.map((v) => ({ label: v.label, onClick: () => onSelect(v.id) })))}
+            className={clsx(
+              "ml-0.5 grid h-7 w-8 flex-none place-items-center rounded-md text-muted hover:bg-panel2 hover:text-text",
+              hidden.some((v) => (v.id === "editor" && editorDirty) || (v.id === "docker" && dockerProblem)) && "text-text",
+            )}
+          >
+            <MoreHorizontal size={16} />
+          </button>
+        )}
+        {more.node}
+      </div>
       {current === "terminal" && views && (
-        <div className="ml-auto flex items-center gap-0.5 rounded-[7px] border border-line p-0.5">
+        <div className="flex min-w-0 flex-shrink items-center gap-0.5 overflow-x-auto rounded-[7px] border border-line p-0.5 [scrollbar-width:none]">
           {views.terminals.map((t) => (
-            <span key={t.key} className={clsx("group/s flex h-6 items-center rounded-[5px] font-mono text-[11px]", views.activeTerminal === t.key ? "bg-panel2 text-text" : "text-muted")}>
+            <span key={t.key} className={clsx("group/s flex h-6 flex-none items-center rounded-[5px] font-mono text-[11px] whitespace-nowrap", views.activeTerminal === t.key ? "bg-panel2 text-text" : "text-muted")}>
               <button className="pl-2.5 pr-1" onClick={() => setActiveTerminal(hostId, t.key)}>
                 {t.title}
               </button>
@@ -212,7 +289,7 @@ function ViewBar({ hostId, current, onSelect }: { hostId: string; current: View;
               </button>
             </span>
           ))}
-          <button aria-label="New terminal on this server" title="New terminal" onClick={() => addTerminal(hostId)} className="grid h-6 w-6 place-items-center rounded-[5px] text-muted hover:text-text">
+          <button aria-label="New terminal on this server" title="New terminal" onClick={() => addTerminal(hostId)} className="grid h-6 w-6 flex-none place-items-center rounded-[5px] text-muted hover:text-text">
             <Plus size={12} />
           </button>
         </div>
@@ -221,26 +298,31 @@ function ViewBar({ hostId, current, onSelect }: { hostId: string; current: View;
         <button
           onClick={() => setBroadcast(broadcast.mode === "off" ? "tab" : broadcast.mode === "tab" ? "all" : "off", hostId)}
           aria-pressed={broadcast.mode !== "off"}
+          aria-label="Broadcast"
           title="Broadcast: type into several terminals at once (off → this tab → all tabs)"
           className={clsx(
-            "ml-1.5 flex h-7 items-center gap-1.5 rounded-md border px-2.5 text-xs",
+            "flex h-7 flex-none items-center gap-1.5 rounded-md border px-2.5 text-xs whitespace-nowrap",
             broadcast.mode !== "off" ? "border-[#6A5828] bg-[#352F20] text-[#F7CB6A]" : "border-line text-muted hover:text-text",
           )}
         >
           <Radio size={13} />
-          {broadcast.mode === "off" ? "Broadcast" : broadcast.mode === "tab" ? "Broadcast: this tab" : "Broadcast: all tabs"}
+          {/* Text only on wide windows; the icon (and its tooltip) stays. */}
+          <span className="hidden xl:inline">{broadcast.mode === "off" ? "Broadcast" : broadcast.mode === "tab" ? "Broadcast: this tab" : "Broadcast: all tabs"}</span>
         </button>
       )}
       {current === "terminal" && (
         <button
           onClick={() => patchFiles(hostId, { panelOpen: !panelOpen })}
           aria-pressed={panelOpen}
+          aria-label="Files panel"
+          title="Files panel"
           className={clsx(
-            "ml-1.5 flex h-7 items-center gap-1.5 rounded-md border px-2.5 text-xs",
+            "flex h-7 flex-none items-center gap-1.5 rounded-md border px-2.5 text-xs whitespace-nowrap",
             panelOpen ? "border-accent-line bg-accent-bg text-text" : "border-line text-muted hover:text-text",
           )}
         >
-          <FolderOpen size={13} /> Files panel
+          <FolderOpen size={13} />
+          <span className="hidden xl:inline">Files panel</span>
         </button>
       )}
     </div>

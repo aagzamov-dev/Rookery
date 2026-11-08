@@ -1,8 +1,10 @@
 // What the editor does, outside React: open, track unsaved changes, notice changes on the server,
 // reload, save. The UI (EditorWorkspace) handles the dialogs (review, merge, sudo).
 import type { EditorState, Extension, TransactionSpec } from "@codemirror/state";
-import type { EditorView, ViewUpdate } from "@codemirror/view";
-import { api } from "../../ipc/api";
+import { EditorView, type ViewUpdate } from "@codemirror/view";
+import { api, asCoreError } from "../../ipc/api";
+import { askConfirm } from "../../stores/dialogs";
+import { COMPUTER_ID } from "../local/target";
 import type { SaveMode } from "../../ipc/bindings/SaveMode";
 import type { SaveOutcome } from "../../ipc/bindings/SaveOutcome";
 import { docKey, langOfFile, useEditor, type EditorDoc } from "../../stores/editor";
@@ -10,6 +12,7 @@ import { createState, hide, hideExt, lang, readOnly, readOnlyExt, states, whites
 import type { LangId } from "./lang";
 import { useTabs } from "../../stores/tabs";
 import { useGit } from "../../stores/git";
+import { useRecent } from "../../stores/recent";
 import { supportFor } from "./languages";
 
 /** The editor view on screen per server, and which file it shows. */
@@ -52,6 +55,23 @@ export function dispatchTo(key: string, spec: TransactionSpec) {
   else {
     const s = states.get(key);
     if (s) states.set(key, s.update(spec).state);
+  }
+}
+
+/** Tabs to scroll to their cursor when they are next shown (opened from search). */
+export const pendingReveal = new Set<string>();
+
+/** Put the cursor at the start of `line` (1-based) and scroll there, now or when the tab is shown. */
+export function revealLine(key: string, line: number) {
+  const s = stateOf(key);
+  if (!s) return;
+  const at = s.doc.line(Math.min(Math.max(1, line), s.doc.lines)).from;
+  const v = shown(key);
+  if (v) {
+    v.dispatch({ selection: { anchor: at }, effects: EditorView.scrollIntoView(at, { y: "center" }) });
+  } else {
+    dispatchTo(key, { selection: { anchor: at } });
+    pendingReveal.add(key);
   }
 }
 
@@ -111,8 +131,9 @@ function newState(key: string, hostId: string, l: LangId, ro: boolean, text: str
  * Open a file in the editor (or switch to it). An open tab with unsaved changes is never replaced;
  * a clean one is refreshed from the server.
  */
-export async function openFile(hostId: string, path: string, activate = true): Promise<EditorDoc> {
-  const f = await api.editorOpen(hostId, path);
+export async function openFile(hostId: string, path: string, activate = true, sudo = false): Promise<EditorDoc> {
+  const f = sudo ? await api.editorOpenSudo(hostId, path) : await api.editorOpen(hostId, path);
+  useRecent.getState().addFile(hostId, f.path);
   const key = docKey(hostId, f.real_path);
   const existing = getDoc(key);
   const store = useEditor.getState();
@@ -133,17 +154,37 @@ export async function openFile(hostId: string, path: string, activate = true): P
   return store.put(hostId, f, activate);
 }
 
+export const isDenied = (e: unknown) => /permission denied/i.test(asCoreError(e).message);
+
+/**
+ * Open a file; when the login may not read it, offer "Open with sudo" (a button, never automatic).
+ * `null`: the user said no.
+ */
+export async function openFileOrSudo(hostId: string, path: string, activate = true): Promise<EditorDoc | null> {
+  try {
+    return await openFile(hostId, path, activate);
+  } catch (e) {
+    if (hostId === COMPUTER_ID || !isDenied(e)) throw e;
+    const ok = await askConfirm({
+      title: "Open with sudo?",
+      body: "Your login cannot read this file. Rookery can open it with sudo, using the sudo password saved for this server's login (it is never shown). Saving it also uses sudo; the file keeps its owner and permissions.",
+      preview: path,
+      confirmLabel: "Open with sudo",
+    });
+    return ok ? openFile(hostId, path, activate, true) : null;
+  }
+}
+
 /** Open a file and show the server's Editor view (Files → Edit in Rookery). */
 export async function openInEditor(hostId: string, path: string) {
-  await openFile(hostId, path);
-  useTabs.getState().setView(hostId, "editor");
+  if (await openFileOrSudo(hostId, path)) useTabs.getState().setView(hostId, "editor");
 }
 
 /** Re-read from the server, dropping unsaved changes (the caller asked first). */
 export async function reload(key: string, note = false) {
   const d = getDoc(key);
   if (!d) return;
-  const f = await api.editorOpen(d.hostId, d.realPath);
+  const f = d.sudo ? await api.editorOpenSudo(d.hostId, d.realPath) : await api.editorOpen(d.hostId, d.realPath);
   useEditor.getState().patch(key, {
     base: f.version,
     baseText: f.content,
@@ -209,7 +250,8 @@ export async function checkServer(hostId: string, keys?: string[], active: () =>
           if (cur.changed) useEditor.getState().patch(d.key, { changed: null });
           return;
         }
-        if (!cur.dirty && st.exists) {
+        // Opened with sudo: only show the banner (re-reading asks sudo; Reload does it on request).
+        if (!cur.dirty && st.exists && !cur.sudo) {
           // Only the time changed (e.g. `touch`)? Then the content is the same: just take the new version.
           const f = await api.editorOpen(hostId, d.realPath);
           if (f.version.sha256 === cur.base.sha256) useEditor.getState().patch(d.key, { base: f.version, changed: null });

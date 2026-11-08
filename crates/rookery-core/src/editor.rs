@@ -94,6 +94,8 @@ pub struct EditorFile {
     pub owned: bool,
     /// Octal permissions, e.g. "644".
     pub mode: String,
+    /// Opened with sudo (the login cannot read it): saving and reloading use sudo too.
+    pub sudo: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, TS)]
@@ -251,6 +253,53 @@ fn prune(entries: &mut Vec<EditorBackup>, now: i64, keep: usize, max_age_ms: i64
     removed
 }
 
+/// sudo's complaint → a message saying what to do. `what`: "save the file", "read the file".
+fn sudo_error(output: &str, what: &str) -> String {
+    let err = output.to_ascii_lowercase();
+    if err.contains("incorrect password") || err.contains("sorry") {
+        "sudo refused the saved password; update it in the server's login".into()
+    } else if err.contains("not in the sudoers") || err.contains("not allowed") {
+        "this login may not use sudo on the server".into()
+    } else if err.contains("a password is required") || err.contains("no password") {
+        "sudo needs a password: save one in the server's login".into()
+    } else {
+        let first = output.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+        format!("sudo could not {what}: {}", first.chars().take(300).collect::<String>())
+    }
+}
+
+struct SudoRead {
+    real_path: String,
+    bytes: Vec<u8>,
+    mtime: i64,
+    uid: Option<u32>,
+    mode: String,
+}
+
+/// Output of the sudo read script: real path, `size mtime uid mode`, base64 content.
+fn parse_sudo_read(out: &str) -> Result<Option<SudoRead>> {
+    use base64::Engine;
+    let bad = || Error::Other("sudo read returned something unexpected; the file was not opened".into());
+    let mut lines = out.splitn(3, '\n');
+    let real = lines.next().ok_or_else(bad)?.trim_end_matches('\r');
+    if real == "@@missing" {
+        return Ok(None);
+    }
+    let real_path = clean_path(real).map_err(|_| bad())?;
+    let meta: Vec<&str> = lines.next().ok_or_else(bad)?.split_whitespace().collect();
+    let [size, mtime, uid, mode] = meta[..] else { return Err(bad()) };
+    let size: u64 = size.parse().map_err(|_| bad())?;
+    if size > EDIT_MAX {
+        return Err(Error::Other(format!("this file is larger than {} MB; it cannot be opened with sudo here", EDIT_MAX / 1024 / 1024)));
+    }
+    let b64: String = lines.next().unwrap_or("").chars().filter(|c| !c.is_whitespace()).collect();
+    let bytes = base64::engine::general_purpose::STANDARD.decode(b64).map_err(|_| bad())?;
+    if bytes.len() as u64 != size {
+        return Err(Error::Other("the file changed while it was read with sudo; try again".into()));
+    }
+    Ok(Some(SudoRead { real_path, bytes, mtime: mtime.parse().map_err(|_| bad())?, uid: uid.parse().ok(), mode: mode.to_string() }))
+}
+
 // ------------------------------------------------------------------ engine
 
 pub struct Editor {
@@ -339,6 +388,7 @@ impl Editor {
             read_only_reason: too_big.then(|| format!("Larger than {} MB: read-only here. Use Files → Edit locally to change it.", EDIT_MAX / 1024 / 1024)),
             owned,
             mode: format!("{:o}", meta.permissions.unwrap_or(0) & 0o7777),
+            sudo: false,
         })
     }
 
@@ -361,18 +411,23 @@ impl Editor {
             return Err(Error::Other(format!("the text is larger than {} MB; it is not saved", EDIT_MAX / 1024 / 1024)));
         }
 
-        // 1. What is on the server now?
+        // 1. What is on the server now? (A file only root can read: with sudo, or ask for it.)
         let current = match self.read_all(host_id, &path).await {
-            Ok(v) => Some(v),
+            Ok((bytes, meta)) => Some((bytes, Some(meta))),
             Err(Error::Ssh(m)) if is_missing(&m) => None,
             Err(e) if is_missing(&e) => None,
+            Err(e) if is_denied(&e) && mode == SaveMode::Sudo => self.read_sudo(host_id, &path).await?.map(|r| (r.bytes, None)),
+            Err(e) if is_denied(&e) => {
+                return Ok(SaveOutcome::NeedsSudo { message: format!("Permission denied: your login cannot read {path}.") });
+            }
             Err(e) => return Err(e),
         };
+        let current_mtime = |meta: &Option<FileAttributes>| meta.as_ref().and_then(|m| m.mtime).unwrap_or(0) as i64;
         // Already exactly this text (e.g. someone saved the same change): nothing to write.
         if let Some((bytes, meta)) = &current {
             if sha256_hex(bytes) == sha256_hex(&new_bytes) {
                 return Ok(SaveOutcome::Saved {
-                    version: FileVersion { size: bytes.len() as u64, mtime: meta.mtime.unwrap_or(0) as i64, sha256: sha256_hex(bytes) },
+                    version: FileVersion { size: bytes.len() as u64, mtime: current_mtime(meta), sha256: sha256_hex(bytes) },
                     method: "unchanged".into(),
                 });
             }
@@ -386,7 +441,7 @@ impl Editor {
                     let theirs = decode(bytes).map(|d| d.text).map_err(Error::Other)?;
                     return Ok(SaveOutcome::Conflict {
                         theirs,
-                        theirs_version: FileVersion { size: bytes.len() as u64, mtime: meta.mtime.unwrap_or(0) as i64, sha256: sha256_hex(bytes) },
+                        theirs_version: FileVersion { size: bytes.len() as u64, mtime: current_mtime(meta), sha256: sha256_hex(bytes) },
                         deleted: false,
                     });
                 }
@@ -400,7 +455,7 @@ impl Editor {
         }
 
         // 3. Write.
-        let orig = current.as_ref().map(|(_, m)| m.clone());
+        let orig = current.as_ref().and_then(|(_, m)| m.clone());
         let owned = match (orig.as_ref().and_then(|m| m.uid), self.uid(host_id).await) {
             (Some(file), Some(me)) => file == me,
             _ => false,
@@ -419,14 +474,21 @@ impl Editor {
         };
 
         // 4. Read it back: it must be exactly what was saved.
-        let (back, meta) = self.read_all(host_id, &path).await?;
+        let (back, back_mtime) = match self.read_all(host_id, &path).await {
+            Ok((b, m)) => (b, m.mtime.unwrap_or(0) as i64),
+            Err(e) if is_denied(&e) && mode == SaveMode::Sudo => {
+                let r = self.read_sudo(host_id, &path).await?.ok_or_else(|| Error::Other(format!("{path} was written but is gone now")))?;
+                (r.bytes, r.mtime)
+            }
+            Err(e) => return Err(e),
+        };
         if sha256_hex(&back) != sha256_hex(&new_bytes) {
             return Err(Error::Other(format!(
                 "{path} was written, but reading it back gives different content (someone may have changed it at the same moment). Your text is still in the editor; the previous version is in History."
             )));
         }
         Ok(SaveOutcome::Saved {
-            version: FileVersion { size: back.len() as u64, mtime: meta.mtime.unwrap_or(0) as i64, sha256: sha256_hex(&back) },
+            version: FileVersion { size: back.len() as u64, mtime: back_mtime, sha256: sha256_hex(&back) },
             method: method.into(),
         })
     }
@@ -495,6 +557,58 @@ impl Editor {
         Ok(moved)
     }
 
+    /// Open a file the login cannot read, with `sudo` (one sudo call; the password is the only
+    /// thing on its stdin). Up to [`EDIT_MAX`]; the content travels base64-encoded.
+    pub async fn open_sudo(&self, host_id: &str, path: &str) -> Result<EditorFile> {
+        let asked = self.resolve(host_id, path).await?;
+        let read = self.read_sudo(host_id, &asked).await?.ok_or_else(|| Error::NotFound(asked.clone()))?;
+        let d = decode(&read.bytes).map_err(Error::Other)?;
+        let owned = matches!((read.uid, self.uid(host_id).await), (Some(file), Some(me)) if file == me);
+        Ok(EditorFile {
+            path: asked,
+            real_path: read.real_path,
+            content: d.text,
+            version: FileVersion { size: read.bytes.len() as u64, mtime: read.mtime, sha256: sha256_hex(&read.bytes) },
+            eol: d.eol,
+            mixed_eol: d.mixed,
+            bom: d.bom,
+            read_only: false,
+            read_only_reason: None,
+            owned,
+            mode: read.mode,
+            sudo: true,
+        })
+    }
+
+    /// `sudo` read of `path` (symlinks resolved). `None`: it does not exist.
+    async fn read_sudo(&self, host_id: &str, path: &str) -> Result<Option<SudoRead>> {
+        let path = clean_path(path)?;
+        if path.contains(['\n', '\r']) {
+            return Err(Error::Other("paths with line breaks cannot be opened with sudo".into()));
+        }
+        let password = self.sudo_password(host_id)?;
+        let c = self.sftp.conn(host_id).await?;
+        let h = c.lease.handle().await?;
+        let mut input = Zeroizing::new(Vec::with_capacity(password.len() + 1));
+        input.extend_from_slice(password.as_bytes());
+        input.push(b'\n');
+        let script = "f=$1; [ -e \"$f\" ] || { echo @@missing; exit 0; }; r=$(readlink -f -- \"$f\") || exit 3; \
+                      [ -f \"$r\" ] || { echo 'not a regular file' >&2; exit 4; }; \
+                      printf '%s\\n' \"$r\"; stat -c '%s %Y %u %a' -- \"$r\" || exit 5; head -c \"$2\" -- \"$r\" | base64";
+        let cmd = format!(
+            // stdout carries only the script's output (sudo's own messages go to stderr).
+            "LC_ALL=C sudo -S -p '' sh -c {} rookery-read {} {}",
+            shell_quote(script),
+            shell_quote(&path),
+            EDIT_MAX + 1
+        );
+        let out = exec_with_input(&h, &cmd, &input, CMD_TIMEOUT).await?;
+        if out.exit != Some(0) {
+            return Err(Error::Other(sudo_error(&out.stderr, "read the file")));
+        }
+        parse_sudo_read(&out.stdout)
+    }
+
     /// `sudo cp` from a private temp file; the sudo password is the only thing on stdin.
     async fn write_sudo(&self, host_id: &str, path: &str, bytes: &[u8]) -> Result<()> {
         let password = self.sudo_password(host_id)?;
@@ -518,14 +632,7 @@ impl Editor {
             let cmd = format!("sudo -S -p '' cp -- {} {}", shell_quote(&tmp), shell_quote(path));
             let out = exec_with_input(&h, &cmd, &input, CMD_TIMEOUT).await?;
             if out.exit != Some(0) {
-                let err = out.stderr.to_ascii_lowercase();
-                return Err(Error::Other(if err.contains("incorrect password") || err.contains("sorry") {
-                    "sudo refused the saved password; update it in the server's login".into()
-                } else if err.contains("not in the sudoers") || err.contains("not allowed") {
-                    "this login may not use sudo on the server".into()
-                } else {
-                    format!("sudo could not save the file: {}", out.stderr.trim())
-                }));
+                return Err(Error::Other(sudo_error(&out.stderr, "save the file")));
             }
             Ok(())
         }
@@ -574,6 +681,7 @@ impl Editor {
                 .then(|| "This local file is read-only or larger than 5 MB.".into()),
             owned: true,
             mode: String::new(),
+            sudo: false,
         })
     }
 
@@ -794,6 +902,29 @@ impl Backups {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sudo_read_output_is_parsed_and_checked() {
+        let ok = parse_sudo_read("/etc/secret\n11 1700000000 0 600\naGVsbG8gd29y\nbGQ=\n").unwrap().unwrap();
+        assert_eq!(ok.real_path, "/etc/secret");
+        assert_eq!(ok.bytes, b"hello world");
+        assert_eq!((ok.mtime, ok.uid, ok.mode.as_str()), (1700000000, Some(0), "600"));
+        assert!(parse_sudo_read("@@missing\n").unwrap().is_none());
+        // Size and content disagree: changed while reading.
+        assert!(parse_sudo_read("/etc/x\n99 1 0 600\naGk=\n").is_err());
+        // Too big for the editor.
+        assert!(parse_sudo_read(&format!("/etc/x\n{} 1 0 600\n\n", EDIT_MAX + 1)).is_err());
+        // Garbage (e.g. something else printed first) never opens as the file.
+        assert!(parse_sudo_read("We trust you have received the usual lecture\n").is_err());
+        assert!(parse_sudo_read("relative\n1 1 0 600\naA==\n").is_err());
+    }
+
+    #[test]
+    fn sudo_errors_say_what_to_do() {
+        assert!(sudo_error("Sorry, try again.\nsudo: 1 incorrect password attempt", "x").contains("refused"));
+        assert!(sudo_error("deploy is not in the sudoers file.", "x").contains("may not use sudo"));
+        assert!(sudo_error("not a regular file", "read the file").contains("read the file: not a regular file"));
+    }
+
     use super::*;
 
     #[test]

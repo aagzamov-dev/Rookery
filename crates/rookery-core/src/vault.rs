@@ -204,6 +204,19 @@ impl Vault {
         Ok(())
     }
 
+    /// Check the master password without changing anything (for "copy credentials").
+    /// The vault must already be unlocked; a wrong password gives [`Error::WrongPassword`].
+    pub fn verify_master(&self, master: &str) -> Result<()> {
+        if self.vk.is_none() {
+            return Err(Error::VaultLocked);
+        }
+        let file = self.file.as_ref().ok_or(Error::VaultNotInitialised)?;
+        let salt = B64.decode(&file.salt).map_err(|_| Error::Crypto)?;
+        let kek = derive(master.as_bytes(), &salt, file.kdf)?;
+        open(&kek, &file.wrapped_vk, b"vk").map_err(|_| Error::WrongPassword)?;
+        Ok(())
+    }
+
     pub fn lock(&mut self) {
         self.vk = None; // Zeroizing wipes on drop
     }
@@ -467,6 +480,20 @@ fn open(key: &[u8; 32], s: &Sealed, aad: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn verify_master_checks_without_changing_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut v = Vault::load_or_new(dir.path().join("v.bin")).unwrap();
+        assert!(v.verify_master("whatever").is_err());
+        v.create("correct horse").unwrap();
+        assert!(v.verify_master("correct horse").is_ok());
+        assert!(matches!(v.verify_master("wrong one"), Err(Error::WrongPassword)));
+        assert!(v.is_unlocked(), "a wrong password does not lock or unlock anything");
+        v.lock();
+        assert!(matches!(v.verify_master("correct horse"), Err(Error::VaultLocked)));
+        assert!(!v.is_unlocked());
+    }
+
     use super::*;
     use parking_lot::Mutex;
     use std::collections::HashMap;

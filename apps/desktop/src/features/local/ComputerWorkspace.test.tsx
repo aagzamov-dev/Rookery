@@ -34,7 +34,7 @@ it("opens one cohesive computer workspace with lazy views and no remote-only tab
   };
   try {
     await act(async () => root.render(<StrictMode><ServerTab hostId={COMPUTER_ID} active onEditHost={() => {}} /></StrictMode>));
-    expect([...element.querySelectorAll('[role="tab"]')].map((e) => e.textContent?.trim())).toEqual(["Overview", "Terminal", "Files", "Editor", "Git", "Docker", "Database"]);
+    expect([...element.querySelectorAll('[role="tab"]')].map((e) => e.textContent?.trim())).toEqual(["Overview", "Terminal", "Files", "Editor", "Search", "Git", "Docker", "Database"]);
     expect(ipc.attach).not.toHaveBeenCalled();
     expect(ipc.files).not.toHaveBeenCalled();
     expect(ipc.shells).not.toHaveBeenCalled();

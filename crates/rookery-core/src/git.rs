@@ -60,6 +60,10 @@ pub enum GitAction {
     Stage { paths: Vec<String> },
     Unstage { paths: Vec<String> },
     Discard { path: String, untracked: bool },
+    /// Discard the working-tree changes of exactly these files (a folder in the Changes
+    /// list): tracked files go back to their staged/committed version, untracked files are
+    /// deleted. Staged changes stay. Only the listed files are touched, never the whole folder.
+    DiscardPaths { tracked: Vec<String>, untracked: Vec<String> },
     Commit { message: String },
     Switch { branch: String },
     CreateBranch { branch: String },
@@ -337,6 +341,16 @@ fn paths_arg(paths: &[String]) -> Result<String> {
         .map(|p| p.join(" "))
 }
 
+fn check_discard_lists(tracked: &[String], untracked: &[String]) -> Result<()> {
+    if tracked.is_empty() && untracked.is_empty() || tracked.len() + untracked.len() > 10_000 {
+        return Err(Error::Other("Select up to 10,000 changed files.".into()));
+    }
+    if tracked.iter().chain(untracked).any(|p| p.ends_with('/')) {
+        return Err(Error::Other("Discard lists files, not folders.".into()));
+    }
+    Ok(())
+}
+
 fn check_branch(branch: &str) -> Result<()> {
     if branch.is_empty()
         || branch.starts_with('-')
@@ -377,6 +391,17 @@ fn action_command(action: &GitAction) -> Result<String> {
                     shell_quote(path)
                 )
             }
+        }
+        GitAction::DiscardPaths { tracked, untracked } => {
+            check_discard_lists(tracked, untracked)?;
+            let mut parts = Vec::new();
+            if !tracked.is_empty() {
+                parts.push(format!("git --literal-pathspecs restore --worktree -- {}", paths_arg(tracked)?));
+            }
+            if !untracked.is_empty() {
+                parts.push(format!("git --literal-pathspecs clean -f -- {}", paths_arg(untracked)?));
+            }
+            parts.join(" && ")
         }
         GitAction::Commit { message } => {
             if message.trim().is_empty() || message.contains('\0') || message.len() > 65536 {
@@ -511,8 +536,192 @@ pub async fn diff(
     })
 }
 
+// ------------------------------------------------------------------ history, blame (read-only)
+
+/// One commit that changed a file.
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+#[ts(export, export_to = "../../../apps/desktop/src/ipc/bindings/")]
+pub struct GitCommit {
+    pub hash: String,
+    pub short: String,
+    pub author: String,
+    /// Seconds since 1970.
+    #[ts(type = "number")]
+    pub time: i64,
+    pub subject: String,
+    /// The file's path in that commit (it may have been renamed since).
+    pub path: String,
+}
+
+/// One line of `git blame`.
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+#[ts(export, export_to = "../../../apps/desktop/src/ipc/bindings/")]
+pub struct BlameLine {
+    pub line: u32,
+    /// Short hash; all zeros for a line that is not committed yet.
+    pub short: String,
+    pub author: String,
+    #[ts(type = "number")]
+    pub time: i64,
+    pub summary: String,
+    pub text: String,
+}
+
+const HISTORY_MAX: u32 = 200;
+
+fn check_commit(hash: &str) -> Result<()> {
+    if !(7..=64).contains(&hash.len()) || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(Error::Other("Invalid commit.".into()));
+    }
+    Ok(())
+}
+
+fn history_args(path: &str) -> Vec<String> {
+    ["-c", "core.quotepath=off", "log", "-n", &HISTORY_MAX.to_string(), "--follow", "--name-only", "--format=%x1e%H%x1f%h%x1f%an%x1f%at%x1f%s", "--", path]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+fn blame_args(path: &str) -> Vec<String> {
+    ["blame", "--line-porcelain", "--", path].iter().map(|s| s.to_string()).collect()
+}
+
+/// `git log --name-only` records → commits (newest first).
+fn parse_history(out: &str, path: &str) -> Vec<GitCommit> {
+    out.split('\x1e')
+        .filter_map(|rec| {
+            let (head, names) = rec.split_once('\n').unwrap_or((rec, ""));
+            let f: Vec<&str> = head.split('\x1f').collect();
+            let [hash, short, author, time, subject] = f[..] else { return None };
+            Some(GitCommit {
+                hash: hash.into(),
+                short: short.into(),
+                author: author.into(),
+                time: time.trim().parse().unwrap_or(0),
+                subject: subject.into(),
+                path: names.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or(path).to_string(),
+            })
+        })
+        .collect()
+}
+
+/// `git blame --line-porcelain` → one entry per line.
+fn parse_blame(out: &str) -> Vec<BlameLine> {
+    let mut lines = Vec::new();
+    let mut cur: Option<BlameLine> = None;
+    for l in out.split('\n') {
+        if let Some(text) = l.strip_prefix('\t') {
+            if let Some(mut b) = cur.take() {
+                b.text = text.to_string();
+                lines.push(b);
+            }
+        } else if let Some(c) = cur.as_mut() {
+            if let Some(v) = l.strip_prefix("author ") {
+                c.author = v.into();
+            } else if let Some(v) = l.strip_prefix("author-time ") {
+                c.time = v.trim().parse().unwrap_or(0);
+            } else if let Some(v) = l.strip_prefix("summary ") {
+                c.summary = v.into();
+            }
+        } else {
+            let mut parts = l.split(' ');
+            if let (Some(hash), Some(_orig), Some(fin)) = (parts.next(), parts.next(), parts.next()) {
+                if hash.len() >= 40 && hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    cur = Some(BlameLine { line: fin.parse().unwrap_or(0), short: hash[..8].into(), author: String::new(), time: 0, summary: String::new(), text: String::new() });
+                }
+            }
+        }
+    }
+    lines
+}
+
+/// Run a read-only git command in the repository of `folder` (server or this computer).
+async fn read_git(conns: &ConnectionManager, host_id: &str, folder: &str, values: Vec<String>, seconds: u64) -> Result<String> {
+    if host_id == crate::computer::ID {
+        return native::read(folder, values, seconds).await;
+    }
+    let command = folder_command(folder, &format!("git {}", values.iter().map(|v| shell_quote(v)).collect::<Vec<_>>().join(" ")))?;
+    let lease = conns.acquire(host_id).await?;
+    let handle = lease.handle().await?;
+    run(&handle, &command, seconds).await
+}
+
+/// The repository of an absolute file path: (root, path relative to it).
+pub async fn locate(conns: &ConnectionManager, host_id: &str, file: &str) -> Result<(String, String)> {
+    let local = host_id == crate::computer::ID;
+    let file = if local { file.replace('\\', "/") } else { file.to_string() };
+    let (dir, _) = file.rsplit_once('/').ok_or_else(|| Error::Other("Use an absolute file path.".into()))?;
+    let dir = if dir.is_empty() { "/" } else { dir };
+    let root = read_git(conns, host_id, dir, vec!["rev-parse".into(), "--show-toplevel".into()], 20)
+        .await
+        .map_err(|_| Error::Other("This file is not in a Git repository.".into()))?;
+    let root = root.trim_end_matches(['\r', '\n']).replace('\\', "/");
+    let rel = file
+        .strip_prefix(&format!("{}/", root.trim_end_matches('/')))
+        .ok_or_else(|| Error::Other("This file is not inside its Git repository's folder (a symbolic link?).".into()))?;
+    Ok((root.to_string(), rel.to_string()))
+}
+
+/// Commits that changed `path` (relative to the repository root), newest first, following renames.
+pub async fn history(conns: &ConnectionManager, host_id: &str, folder: &str, path: &str) -> Result<Vec<GitCommit>> {
+    check_path(path)?;
+    Ok(parse_history(&read_git(conns, host_id, folder, history_args(path), 60).await?, path))
+}
+
+/// `path` as it was before and after `commit` (left empty when the commit added it).
+pub async fn file_at(conns: &ConnectionManager, host_id: &str, folder: &str, commit: &str, path: &str) -> Result<GitDiff> {
+    check_commit(commit)?;
+    check_path(path)?;
+    let show = |spec: String| vec!["show".to_string(), spec];
+    let right = read_git(conns, host_id, folder, show(format!("{commit}:{path}")), 30).await?;
+    let left = read_git(conns, host_id, folder, show(format!("{commit}^:{path}")), 30).await.unwrap_or_default();
+    if left.contains('\0') || right.contains('\0') {
+        return Ok(GitDiff { left: String::new(), right: String::new(), notice: Some("Binary files cannot be shown in the text diff.".into()) });
+    }
+    Ok(GitDiff { left, right, notice: None })
+}
+
+/// Who last changed each line of `path` (working tree; uncommitted lines show zeros).
+pub async fn blame(conns: &ConnectionManager, host_id: &str, folder: &str, path: &str) -> Result<Vec<BlameLine>> {
+    check_path(path)?;
+    Ok(parse_blame(&read_git(conns, host_id, folder, blame_args(path), 60).await?))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn history_and_blame_parse() {
+        let log = "\x1eaaaaaaaa1\x1faaaaaaa\x1fAnn Lee\x1f1700000000\x1fFix: thing\n\nsrc/new.php\n\x1ebbbbbbbb2\x1fbbbbbbb\x1fBo\x1f1600000000\x1fFirst\n\nsrc/old.php\n";
+        let h = parse_history(log, "src/new.php");
+        assert_eq!(h.len(), 2);
+        assert_eq!((h[0].author.as_str(), h[0].time, h[0].subject.as_str(), h[0].path.as_str()), ("Ann Lee", 1700000000, "Fix: thing", "src/new.php"));
+        assert_eq!(h[1].path, "src/old.php");
+        let blame = "0123456789012345678901234567890123456789 1 1 1\nauthor Ann\nauthor-time 1700000000\nsummary First\nfilename a\n\tline one\n0000000000000000000000000000000000000000 2 2\nauthor Not Committed Yet\nauthor-time 0\nsummary Version of a from a\nfilename a\n\t\n";
+        let b = parse_blame(blame);
+        assert_eq!(b.len(), 2);
+        assert_eq!((b[0].line, b[0].short.as_str(), b[0].author.as_str(), b[0].text.as_str()), (1, "01234567", "Ann", "line one"));
+        assert_eq!((b[1].line, b[1].short.as_str(), b[1].text.as_str()), (2, "00000000", ""));
+        assert!(check_commit("abc").is_err());
+        assert!(check_commit("abcdef1; rm").is_err());
+        assert!(check_commit("abcdef1").is_ok());
+    }
+
+    #[test]
+    fn history_blame_and_file_at_in_a_real_repository() {
+        let dir = repository();
+        let folder = dir.path();
+        std::fs::write(folder.join("old.txt"), "one\n").unwrap();
+        local(folder, "git add -A && git commit -qm first");
+        local(folder, "git mv old.txt new.txt && git commit -qm rename");
+        std::fs::write(folder.join("new.txt"), "one\ntwo\n").unwrap();
+        local(folder, "git commit -qam second");
+        let q = |v: Vec<String>| local(folder, &format!("git {}", v.iter().map(|x| shell_quote(x)).collect::<Vec<_>>().join(" ")));
+        let h = parse_history(&q(history_args("new.txt")), "new.txt");
+        assert_eq!(h.iter().map(|c| (c.subject.as_str(), c.path.as_str())).collect::<Vec<_>>(), [("second", "new.txt"), ("rename", "new.txt"), ("first", "old.txt")]);
+        let b = parse_blame(&q(blame_args("new.txt")));
+        assert_eq!(b.iter().map(|l| (l.line, l.summary.as_str(), l.text.as_str())).collect::<Vec<_>>(), [(1, "first", "one"), (2, "second", "two")]);
+    }
     use super::*;
     use std::process::Command;
 
@@ -635,6 +844,44 @@ mod tests {
             },
         );
         assert!(!folder.join("untracked").exists());
+    }
+
+    #[test]
+    fn discard_paths_reverts_only_the_listed_files() {
+        let dir = repository();
+        let folder = dir.path();
+        std::fs::create_dir_all(folder.join("app/sub")).unwrap();
+        for f in ["app/a", "app/sub/b", "keep"] {
+            std::fs::write(folder.join(f), "first\n").unwrap();
+        }
+        local(folder, "git add -A && git commit -qm initial");
+        for f in ["app/a", "app/sub/b", "keep"] {
+            std::fs::write(folder.join(f), "changed\n").unwrap();
+        }
+        std::fs::write(folder.join("app/sub/new file"), "new").unwrap();
+        // Staged change in the folder stays staged.
+        std::fs::write(folder.join("app/sub/b"), "staged\n").unwrap();
+        local(folder, "git add app/sub/b");
+        std::fs::write(folder.join("app/sub/b"), "staged and changed\n").unwrap();
+        // Created after the list was shown: not in the list, so it survives.
+        std::fs::write(folder.join("app/later"), "later").unwrap();
+        local_action(
+            folder,
+            GitAction::DiscardPaths {
+                tracked: vec!["app/a".into(), "app/sub/b".into()],
+                untracked: vec!["app/sub/new file".into()],
+            },
+        );
+        assert_eq!(std::fs::read_to_string(folder.join("app/a")).unwrap(), "first\n");
+        assert_eq!(std::fs::read_to_string(folder.join("app/sub/b")).unwrap(), "staged\n");
+        assert!(!folder.join("app/sub/new file").exists());
+        assert!(folder.join("app/later").exists());
+        assert_eq!(std::fs::read_to_string(folder.join("keep")).unwrap(), "changed\n");
+
+        assert!(action_command(&GitAction::DiscardPaths { tracked: vec![], untracked: vec![] }).is_err());
+        assert!(action_command(&GitAction::DiscardPaths { tracked: vec!["app/".into()], untracked: vec![] }).is_err());
+        assert!(action_command(&GitAction::DiscardPaths { tracked: vec!["../x".into()], untracked: vec![] }).is_err());
+        assert!(action_command(&GitAction::DiscardPaths { tracked: vec![], untracked: vec![".git/config".into()] }).is_err());
     }
 
     #[test]
@@ -925,6 +1172,11 @@ mod native {
     async fn git(folder: &Path, values: &[&str]) -> Result<String> {
         run("git", &args(values), Some(folder), 120).await
     }
+    /// A read-only git command (history, blame) in the repository of `folder`.
+    pub async fn read(folder: &str, values: Vec<String>, seconds: u64) -> Result<String> {
+        let root = root(folder).await?;
+        run("git", &values, Some(&root), seconds).await
+    }
     async fn root(folder: &str) -> Result<std::path::PathBuf> {
         let folder = path(folder)?;
         let result = git(&folder, &["rev-parse", "--show-toplevel"]).await?;
@@ -1045,6 +1297,7 @@ mod native {
         if matches!(
             action,
             GitAction::Discard { .. }
+                | GitAction::DiscardPaths { .. }
                 | GitAction::StashDrop { .. }
                 | GitAction::AbortMerge
                 | GitAction::AbortRebase
@@ -1078,6 +1331,22 @@ mod native {
                     args(&["--literal-pathspecs", "restore", "--worktree", "--"])
                 };
                 a.push(path.clone());
+                a
+            }
+            GitAction::DiscardPaths { tracked, untracked } => {
+                for p in tracked.iter().chain(untracked) {
+                    valid_path(p)?;
+                }
+                if !tracked.is_empty() {
+                    let mut a = args(&["--literal-pathspecs", "restore", "--worktree", "--"]);
+                    a.extend(tracked.iter().cloned());
+                    let out = run("git", &a, Some(&root), 120).await?;
+                    if untracked.is_empty() {
+                        return Ok(out);
+                    }
+                }
+                let mut a = args(&["--literal-pathspecs", "clean", "-f", "--"]);
+                a.extend(untracked.iter().cloned());
                 a
             }
             GitAction::Commit { message } => args(&["commit", "-m", message]),
@@ -1186,6 +1455,29 @@ mod native {
 #[cfg(test)]
 mod local_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn local_discard_paths_needs_confirmation_and_reverts_the_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join("app")).unwrap();
+        for a in [&["init", "--initial-branch=main"][..], &["config", "user.email", "t@example.com"], &["config", "user.name", "T"]] {
+            crate::computer::run("git", &crate::computer::args(a), Some(&repo), 10).await.unwrap();
+        }
+        std::fs::write(repo.join("app/a"), "first\n").unwrap();
+        for a in [&["add", "-A"][..], &["commit", "-qm", "init"]] {
+            crate::computer::run("git", &crate::computer::args(a), Some(&repo), 10).await.unwrap();
+        }
+        std::fs::write(repo.join("app/a"), "changed\n").unwrap();
+        std::fs::write(repo.join("app/new"), "new").unwrap();
+        let folder = crate::computer::display(&repo);
+        let action = GitAction::DiscardPaths { tracked: vec!["app/a".into()], untracked: vec!["app/new".into()] };
+        assert!(native::mutate(&folder, &action, false).await.is_err());
+        assert_eq!(std::fs::read_to_string(repo.join("app/a")).unwrap(), "changed\n");
+        native::mutate(&folder, &action, true).await.unwrap();
+        assert_eq!(std::fs::read_to_string(repo.join("app/a")).unwrap(), "first\n");
+        assert!(!repo.join("app/new").exists());
+    }
     #[tokio::test]
     async fn local_git_uses_literal_native_argv_and_preserves_other_files() {
         let dir = tempfile::tempdir().unwrap();

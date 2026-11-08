@@ -999,7 +999,7 @@ const HOST_SELECT: &str = "SELECT id, group_id, name, address, port, env_label, 
     created_at, updated_at FROM hosts";
 
 /// Settings that stay on this device (open tabs, dashboard tab, sync / backup config, SQL editor text).
-pub const LOCAL_SETTING_KEYS: &[&str] = &["ui.session", "ui.dashboard.tab", "sync.settings", "ui.sql.drafts", "ui.sql.tables", "ui.computer.enabled", "ui.computer.editor", "ui.git.folders.__computer__"];
+pub const LOCAL_SETTING_KEYS: &[&str] = &["ui.session", "ui.dashboard.tab", "sync.settings", "ui.sql.drafts", "ui.sql.tables", "ui.computer.enabled", "ui.computer.editor", "ui.git.folders.__computer__", crate::sudo::AUTO_HOSTS_KEY];
 
 pub fn is_local_setting(key: &str) -> bool {
     LOCAL_SETTING_KEYS.contains(&key) || key.starts_with("backup.")

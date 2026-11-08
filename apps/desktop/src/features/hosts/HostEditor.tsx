@@ -1,5 +1,9 @@
 import { useMemo, useState } from "react";
-import { asCoreError } from "../../ipc/api";
+import { Check, Copy, KeyRound } from "lucide-react";
+import { api, asCoreError } from "../../ipc/api";
+import { copyText, readClipboard } from "../../ipc/clipboard";
+import { askText } from "../../stores/dialogs";
+import { CLEAR_AFTER_MS, credentialsText } from "./credentials";
 import type { AuthKind } from "../../ipc/bindings/AuthKind";
 import type { EnvLabel } from "../../ipc/bindings/EnvLabel";
 import type { Host } from "../../ipc/bindings/Host";
@@ -52,9 +56,8 @@ export function HostEditor({ draft, onClose }: { draft: HostDraft; onClose: () =
     return null;
   }, [h.group_id, groups, identities]);
 
-  const [identSel, setIdentSel] = useState<string>(
-    initial.identity_id ?? (draft.quick?.user || (!groupIdentity && identities.length === 0) ? NEW : INHERIT),
-  );
+  // A new host starts with a new login; an existing one shows what it uses (its own or the group's).
+  const [identSel, setIdentSel] = useState<string>(initial.identity_id ?? (draft.host ? INHERIT : NEW));
   const [newUser, setNewUser] = useState(draft.quick?.user ?? "");
   const [auth, setAuth] = useState<AuthKind>("password");
   const [secret, setSecret] = useState("");
@@ -67,6 +70,61 @@ export function HostEditor({ draft, onClose }: { draft: HostDraft; onClose: () =
   const [busy, setBusy] = useState(false);
 
   const selected = identities.find((i) => i.id === identSel);
+  /** The login this host would use: the chosen one, or the group's when inheriting. */
+  const effective = selected ?? (identSel === INHERIT ? groupIdentity : null);
+  const username = identSel === NEW ? newUser.trim() : (effective?.username ?? "");
+  const [copied, setCopied] = useState<"user" | "all" | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+
+  const flash = (what: "user" | "all") => {
+    setCopied(what);
+    setTimeout(() => setCopied((c) => (c === what ? null : c)), 1500);
+  };
+
+  const copyUsername = async () => {
+    if (!username) return;
+    try {
+      await copyText(username);
+      flash("user");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : asCoreError(e).message);
+    }
+  };
+
+  /** Address, port, user and password; asks the master password every time. */
+  const copyCredentials = async () => {
+    setErr(null);
+    setNote(null);
+    if (!h.address.trim() || !username) return setErr("Enter the address and choose a login first.");
+    const master = await askText({ title: "Copy credentials", label: "Master password (asked every time)", value: "", confirmLabel: "Copy", secret: true, exact: true });
+    if (!master) return;
+    try {
+      const kind: AuthKind = identSel === NEW ? auth : (effective?.auth ?? "password");
+      const saved = await api.identityRevealPassword(identSel === NEW ? null : (effective?.id ?? null), master);
+      const password = identSel === NEW ? (kind === "password" && secret ? secret : null) : saved;
+      const text = credentialsText({
+        address: h.address.trim(),
+        port: h.port,
+        username,
+        auth: kind,
+        password,
+        keyPath: identSel === NEW ? (kind === "key_file" ? keyPath.trim() : null) : (effective?.key_path ?? null),
+      });
+      await copyText(text);
+      flash("all");
+      if (password) {
+        setNote("Copied with the password. The clipboard is emptied in 30 seconds.");
+        // Empty it later, unless something else was copied meanwhile.
+        setTimeout(() => {
+          void readClipboard()
+            .then((now) => (now === text ? copyText("") : undefined))
+            .catch(() => {});
+        }, CLEAR_AFTER_MS);
+      } else setNote("Copied (no saved password for this login).");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : asCoreError(e).message);
+    }
+  };
   const set = <K extends keyof Host>(k: K, v: Host[K]) => setH((x) => ({ ...x, [k]: v }));
 
   const save = async (connect: boolean) => {
@@ -181,7 +239,28 @@ export function HostEditor({ draft, onClose }: { draft: HostDraft; onClose: () =
       </div>
 
       <section className="flex flex-col gap-3 rounded-xl border border-line bg-bg p-4">
-        <h3 className="m-0 text-xs font-semibold tracking-wider text-muted uppercase">Login</h3>
+        <div className="flex items-center gap-1.5">
+          <h3 className="m-0 mr-auto text-xs font-semibold tracking-wider text-muted uppercase">Login</h3>
+          <Button
+            type="button"
+            className="h-7 px-2.5 text-xs"
+            disabled={!username}
+            onClick={() => void copyUsername()}
+            title={username ? `Copy the username “${username}”` : "No username yet"}
+          >
+            {copied === "user" ? <Check size={13} className="text-ok" /> : <Copy size={13} />} {copied === "user" ? "Copied" : "Copy username"}
+          </Button>
+          <Button
+            type="button"
+            className="h-7 px-2.5 text-xs"
+            disabled={!username || !h.address.trim()}
+            onClick={() => void copyCredentials()}
+            title="Copy address, port, username and password (asks your master password)"
+          >
+            {copied === "all" ? <Check size={13} className="text-ok" /> : <KeyRound size={13} />} {copied === "all" ? "Copied" : "Copy credentials"}
+          </Button>
+        </div>
+        {note && <p className="m-0 text-xs text-muted">{note}</p>}
         <Field label="Identity">
           <Select value={identSel} onChange={(e) => setIdentSel(e.target.value)}>
             <option value={INHERIT}>{groupIdentity ? `Inherit from group (${groupIdentity.name})` : "Inherit from group (none set)"}</option>

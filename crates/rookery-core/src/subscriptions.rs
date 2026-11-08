@@ -14,11 +14,12 @@ use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
 use crate::collectors::{
-    parse_docker_ps, parse_docker_stats_line, parse_metrics, valid_container_ref, valid_since, RawCounters, DOCKER_EVENTS,
-    DOCKER_PS, DOCKER_STATS, METRICS_SCRIPT,
+    parse_docker_ps, parse_docker_stats_line, parse_metrics, valid_container_ref, valid_since, RawCounters, DOCKER_EVENTS_ARGS,
+    DOCKER_PS_ARGS, DOCKER_STATS_ARGS, METRICS_SCRIPT,
 };
 use crate::model::{Container, ContainerStats, MetricsSample, SubParams};
 use crate::ssh::{exec, exec_stream, ConnectionManager, Lease, LineSplitter, StreamChunk};
+use crate::sudo::Sudo;
 use crate::terminal::shell_quote;
 use crate::{new_id, now_ms, CoreEvent, Error, Result};
 
@@ -41,6 +42,7 @@ struct Caches {
 
 pub struct Subscriptions {
     conns: Arc<ConnectionManager>,
+    sudo: Arc<Sudo>,
     events: broadcast::Sender<CoreEvent>,
     running: tokio::sync::Mutex<HashMap<String, Running>>,
     subs: Mutex<HashMap<String, String>>,
@@ -48,8 +50,8 @@ pub struct Subscriptions {
 }
 
 impl Subscriptions {
-    pub fn new(conns: Arc<ConnectionManager>, events: broadcast::Sender<CoreEvent>) -> Self {
-        Self { conns, events, running: Default::default(), subs: Default::default(), cache: Default::default() }
+    pub fn new(conns: Arc<ConnectionManager>, sudo: Arc<Sudo>, events: broadcast::Sender<CoreEvent>) -> Self {
+        Self { conns, sudo, events, running: Default::default(), subs: Default::default(), cache: Default::default() }
     }
 
     /// Returns the subscription id and the cached last value for this source (if any).
@@ -252,16 +254,16 @@ impl Subscriptions {
                 let every = params.interval_ms.unwrap_or(METRICS_DEFAULT_MS).max(METRICS_MIN_MS);
                 tokio::spawn(metrics_loop(lease, Duration::from_millis(every as u64), events, cache))
             }
-            "docker" => tokio::spawn(docker_loop(lease, events, cache)),
-            "docker.stats" => tokio::spawn(docker_stats_loop(lease, events)),
+            "docker" => tokio::spawn(docker_loop(lease, self.sudo.clone(), events, cache)),
+            "docker.stats" => tokio::spawn(docker_stats_loop(lease, self.sudo.clone(), events)),
             "docker.logs" => {
                 let since = params.since.as_deref().map(|s| format!(" --since {s}")).unwrap_or_default();
-                let cmd = format!("exec docker logs --timestamps --tail 500{since} -f {param} 2>&1");
+                let cmd = LogCmd::Docker(self.sudo.clone(), format!("logs --timestamps --tail 500{since} -f {param}"));
                 tokio::spawn(log_loop(lease, events, format!("docker:{param}"), cmd))
             }
             _ => {
                 let cmd = format!("exec tail -n 200 -F -- {} 2>&1", shell_quote(param));
-                tokio::spawn(log_loop(lease, events, format!("file:{param}"), cmd))
+                tokio::spawn(log_loop(lease, events, format!("file:{param}"), LogCmd::Shell(cmd)))
             }
         }
     }
@@ -279,6 +281,50 @@ impl Subscriptions {
         if stop {
             if let Some(r) = running.remove(&key) {
                 r.task.abort(); // drops the lease and any stream receiver inside the task
+            }
+        }
+    }
+
+    /// Restart this server's running Docker collectors in place (auto sudo turned on or off).
+    /// Followed logs resume from now, so no line is shown twice.
+    pub async fn restart_docker(&self, host_id: &str) {
+        if host_id == crate::computer::ID {
+            return;
+        }
+        let prefix = format!("{host_id}|docker");
+        let keys: Vec<String> = self.running.lock().await.keys().filter(|k| k.starts_with(&prefix)).cloned().collect();
+        if keys.is_empty() {
+            return;
+        }
+        // Connect first, without holding the lock (other subscriptions keep working meanwhile).
+        let mut leases = Vec::new();
+        for _ in &keys {
+            match self.conns.acquire(host_id).await {
+                Ok(lease) => leases.push(lease),
+                Err(e) => {
+                    // Never leave collectors running in the old sudo mode: stop them all.
+                    let running = self.running.lock().await;
+                    for key in &keys {
+                        if let Some(r) = running.get(key) {
+                            r.task.abort();
+                        }
+                    }
+                    drop(running);
+                    stop_docker(&self.events, host_id, &e.to_string());
+                    return;
+                }
+            }
+        }
+        let now = time::OffsetDateTime::now_utc().format(&time::format_description::well_known::Rfc3339).ok();
+        let mut running = self.running.lock().await;
+        for (key, lease) in keys.into_iter().zip(leases) {
+            let mut parts = key.splitn(3, '|').skip(1);
+            let (source, param) = (parts.next().unwrap_or_default().to_string(), parts.next().unwrap_or_default().to_string());
+            let params = SubParams { container: Some(param.clone()), since: now.clone(), ..Default::default() };
+            // Unsubscribed meanwhile: the lease is simply dropped.
+            if let Some(r) = running.get_mut(&key) {
+                r.task.abort();
+                r.task = self.spawn(lease, &source, &param, &params);
             }
         }
     }
@@ -354,12 +400,20 @@ fn docker_permanent_error(line: &str) -> bool {
     lower.contains("permission denied") || lower.contains("operation not permitted") || lower.contains("docker: not found") || lower.contains("docker: command not found")
 }
 
+/// A line that ends the stream for good: sudo's own failure (a refusal pauses auto sudo) or a Docker one.
+fn docker_stop_reason(sudo: &Sudo, host_id: &str, line: &str) -> Option<String> {
+    if let Err(e) = sudo.check_output(host_id, line) {
+        return Some(e.to_string());
+    }
+    docker_permanent_error(line).then(|| line.to_string())
+}
+
 fn stop_docker(events: &broadcast::Sender<CoreEvent>, host_id: &str, message: &str) {
-    let _ = events.send(CoreEvent::DockerList { host_id: host_id.into(), containers: Vec::new(), error: Some(format!("{message}. Use Reload Docker after correcting the problem.")) });
+    let _ = events.send(CoreEvent::DockerList { host_id: host_id.into(), containers: Vec::new(), error: Some(format!("{}. Use Reload Docker after correcting the problem.", message.trim_end_matches('.'))) });
 }
 
 /// `docker ps` once, then again only when `docker events` reports a change.
-async fn docker_loop(lease: Lease, events: broadcast::Sender<CoreEvent>, cache: Arc<Mutex<Caches>>) {
+async fn docker_loop(lease: Lease, sudo: Arc<Sudo>, events: broadcast::Sender<CoreEvent>, cache: Arc<Mutex<Caches>>) {
     let host_id = lease.host_id().to_string();
     for attempt in 0..3 {
         let h = match lease.handle().await {
@@ -369,10 +423,14 @@ async fn docker_loop(lease: Lease, events: broadcast::Sender<CoreEvent>, cache: 
                 return;
             }
         };
-        if !relist(&h, &host_id, &events, &cache).await {
+        if !relist(&h, &sudo, &host_id, &events, &cache).await {
             return;
         }
-        if let Ok(mut rx) = exec_stream(&h, DOCKER_EVENTS, true).await {
+        // Under sudo every relist is one sudo login on the server (auth log, PAM):
+        // keep them at least a few seconds apart.
+        let gap = if sudo.enabled(&host_id) { RELIST_GAP_SUDO } else { Duration::ZERO };
+        let mut last_relist = tokio::time::Instant::now();
+        if let Ok(mut rx) = sudo.stream_docker(&h, &host_id, DOCKER_EVENTS_ARGS, true).await {
             let mut lines = LineSplitter::default();
             let mut dirty = false;
             loop {
@@ -380,16 +438,17 @@ async fn docker_loop(lease: Lease, events: broadcast::Sender<CoreEvent>, cache: 
                     chunk = rx.recv() => match chunk {
                         Some(StreamChunk::Data(b)) => {
                             for line in lines.push(&b) {
-                                if docker_permanent_error(&line) { stop_docker(&events, &host_id, &line); return; }
-                                if line.starts_with('{') { dirty = true; }
+                                if line.starts_with('{') { dirty |= changes_list(&line); continue; }
+                                if let Some(reason) = docker_stop_reason(&sudo, &host_id, &line) { stop_docker(&events, &host_id, &reason); return; }
                             }
                         }
                         _ => break,
                     },
                     // Debounce bursts (compose up/down emits many events).
-                    _ = tokio::time::sleep(Duration::from_millis(400)), if dirty => {
+                    _ = tokio::time::sleep_until((last_relist + gap).max(tokio::time::Instant::now() + Duration::from_millis(400))), if dirty => {
                         dirty = false;
-                        if !relist(&h, &host_id, &events, &cache).await { return; }
+                        last_relist = tokio::time::Instant::now();
+                        if !relist(&h, &sudo, &host_id, &events, &cache).await { return; }
                     }
                 }
             }
@@ -399,13 +458,25 @@ async fn docker_loop(lease: Lease, events: broadcast::Sender<CoreEvent>, cache: 
     let _ = events.send(CoreEvent::DockerList { host_id, containers: Vec::new(), error: Some("Docker event stream stopped after 3 attempts. Use Reload Docker.".into()) });
 }
 
+const RELIST_GAP_SUDO: Duration = Duration::from_secs(5);
+
+/// `exec_*` events (health checks run every few seconds, `docker exec`) never change
+/// `docker ps`; health changes arrive as their own `health_status` event.
+fn changes_list(event_line: &str) -> bool {
+    match serde_json::from_str::<serde_json::Value>(event_line) {
+        Ok(v) => !v.get("Action").or_else(|| v.get("status")).and_then(|a| a.as_str()).is_some_and(|a| a.starts_with("exec_")),
+        Err(_) => true,
+    }
+}
+
 async fn relist(
     h: &crate::ssh::SshHandle,
+    sudo: &Sudo,
     host_id: &str,
     events: &broadcast::Sender<CoreEvent>,
     cache: &Arc<Mutex<Caches>>,
 ) -> bool {
-    let (containers, error) = match exec(h, DOCKER_PS, Duration::from_secs(15)).await {
+    let (containers, error) = match sudo.exec_docker(h, host_id, DOCKER_PS_ARGS, Duration::from_secs(15)).await {
         Ok(out) => match parse_docker_ps(&out.stdout, out.exit) {
             Ok(list) => {
                 cache.lock().docker.insert(host_id.to_string(), list.clone());
@@ -421,14 +492,14 @@ async fn relist(
 }
 
 /// One streaming `docker stats` process; snapshots every 2 s.
-async fn docker_stats_loop(lease: Lease, events: broadcast::Sender<CoreEvent>) {
+async fn docker_stats_loop(lease: Lease, sudo: Arc<Sudo>, events: broadcast::Sender<CoreEvent>) {
     let host_id = lease.host_id().to_string();
     for attempt in 0..3 {
         let Ok(h) = lease.handle().await else {
             tokio::time::sleep(Duration::from_secs(2)).await;
             continue;
         };
-        if let Ok(mut rx) = exec_stream(&h, DOCKER_STATS, true).await {
+        if let Ok(mut rx) = sudo.stream_docker(&h, &host_id, DOCKER_STATS_ARGS, true).await {
             let mut lines = LineSplitter::default();
             let mut latest: HashMap<String, ContainerStats> = HashMap::new();
             let mut tick = tokio::time::interval(Duration::from_millis(STATS_EMIT_MS));
@@ -437,9 +508,11 @@ async fn docker_stats_loop(lease: Lease, events: broadcast::Sender<CoreEvent>) {
                     chunk = rx.recv() => match chunk {
                         Some(StreamChunk::Data(b)) => {
                             for line in lines.push(&b) {
-                                if docker_permanent_error(&line) { stop_docker(&events, &host_id, &line); return; }
                                 if let Some(s) = parse_docker_stats_line(&line) {
                                     latest.insert(s.id.clone(), s);
+                                } else if let Some(reason) = docker_stop_reason(&sudo, &host_id, &line) {
+                                    stop_docker(&events, &host_id, &reason);
+                                    return;
                                 }
                             }
                         }
@@ -461,8 +534,14 @@ async fn docker_stats_loop(lease: Lease, events: broadcast::Sender<CoreEvent>) {
 
 // -------------------------------------------------------------------- logs
 
+enum LogCmd {
+    Shell(String),
+    /// Arguments after `docker` (run with auto sudo when it is on).
+    Docker(Arc<Sudo>, String),
+}
+
 /// Follow a command's output (docker logs -f / tail -F) and emit batched lines.
-async fn log_loop(lease: Lease, events: broadcast::Sender<CoreEvent>, stream: String, cmd: String) {
+async fn log_loop(lease: Lease, events: broadcast::Sender<CoreEvent>, stream: String, cmd: LogCmd) {
     let host_id = lease.host_id().to_string();
     let ended = |reason: String| {
         let _ = events.send(CoreEvent::LogEnded { host_id: host_id.clone(), stream: stream.clone(), reason });
@@ -471,9 +550,18 @@ async fn log_loop(lease: Lease, events: broadcast::Sender<CoreEvent>, stream: St
         Ok(h) => h,
         Err(e) => return ended(e.to_string()),
     };
-    let mut rx = match exec_stream(&h, &cmd, true).await {
+    let started = match &cmd {
+        LogCmd::Shell(cmd) => exec_stream(&h, cmd, true).await,
+        LogCmd::Docker(sudo, args) => sudo.stream_docker(&h, &host_id, args, true).await,
+    };
+    let mut rx = match started {
         Ok(rx) => rx,
         Err(e) => return ended(e.to_string()),
+    };
+    // sudo writes its failure before any log line: only the first lines are checked.
+    let mut sudo_check = match &cmd {
+        LogCmd::Docker(sudo, _) => Some((sudo.clone(), 0usize)),
+        LogCmd::Shell(_) => None,
     };
     let mut lines = LineSplitter::default();
     let mut batch: Vec<String> = Vec::new();
@@ -491,7 +579,15 @@ async fn log_loop(lease: Lease, events: broadcast::Sender<CoreEvent>, stream: St
         tokio::select! {
             chunk = rx.recv() => match chunk {
                 Some(StreamChunk::Data(b)) => {
-                    batch.extend(lines.push(&b));
+                    let new = lines.push(&b);
+                    if let Some((sudo, seen)) = sudo_check.as_mut() {
+                        for line in new.iter().take(3usize.saturating_sub(*seen)) {
+                            let _ = sudo.check_output(&host_id, line);
+                        }
+                        *seen += new.len();
+                        if *seen >= 3 { sudo_check = None; }
+                    }
+                    batch.extend(new);
                     if batch.len() >= LOG_BATCH_MAX {
                         flush(&mut batch);
                     }
@@ -517,7 +613,7 @@ async fn log_loop(lease: Lease, events: broadcast::Sender<CoreEvent>, stream: St
 
 
 /// Explicit, bounded history reads. File timestamps are filtered locally; rotated files are never scanned.
-pub async fn log_history(conns: &ConnectionManager, host_id: &str, source: &str, target: &str, since: &str, until: &str) -> Result<Vec<String>> {
+pub async fn log_history(conns: &ConnectionManager, sudo: &Sudo, host_id: &str, source: &str, target: &str, since: &str, until: &str) -> Result<Vec<String>> {
     if !valid_since(since) || !valid_since(until) { return Err(Error::Other("invalid time range".into())); }
     if host_id == crate::computer::ID {
         if source != "docker" || !valid_container_ref(target) {return Err(Error::Other("Invalid local Docker log target.".into()));}
@@ -527,7 +623,10 @@ pub async fn log_history(conns: &ConnectionManager, host_id: &str, source: &str,
     let command = history_command(source, target, since, until)?;
     let lease = conns.acquire(host_id).await?;
     let handle = lease.handle().await?;
-    let out = exec(&handle, &command, Duration::from_secs(15)).await?;
+    let out = match command.strip_prefix("docker ").and_then(|c| c.strip_suffix(" 2>&1")) {
+        Some(args) => sudo.exec_docker(&handle, host_id, args, Duration::from_secs(15)).await?,
+        None => exec(&handle, &command, Duration::from_secs(15)).await?,
+    };
     if out.exit != Some(0) { return Err(Error::Other(format!("{}{}", out.stdout, out.stderr).trim().into())); }
     Ok(history_lines(&out.stdout, source == "file"))
 }
@@ -598,4 +697,18 @@ async fn computer_docker_list(
         error: None,
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod relist_tests {
+    use super::changes_list;
+
+    #[test]
+    fn exec_events_do_not_relist() {
+        assert!(!changes_list(r#"{"status":"exec_start: sh -c curl -f localhost","id":"abc","Type":"container","Action":"exec_start: sh -c curl -f localhost"}"#));
+        assert!(!changes_list(r#"{"Type":"container","Action":"exec_die"}"#));
+        assert!(changes_list(r#"{"Type":"container","Action":"health_status: unhealthy"}"#));
+        assert!(changes_list(r#"{"Type":"container","Action":"die"}"#));
+        assert!(changes_list("{not json"));
+    }
 }

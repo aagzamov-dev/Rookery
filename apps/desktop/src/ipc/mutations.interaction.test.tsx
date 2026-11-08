@@ -26,7 +26,9 @@ async function click(label: string) {
 
 it.each([
   ["sftp_mkdir", () => api.sftpMkdir("host", "/new")],
-  ["sftp_archive", () => api.sftpArchive("host", "/file", "file.zip", false)],
+  ["sftp_archive", () => api.sftpArchive("host", "/file", "file.zip", "zip", "job")],
+  ["sftp_create_file", () => api.sftpCreateFile("host", "/Dockerfile")],
+  ["sftp_duplicate", () => api.sftpDuplicate("host", "/a.txt", "/a copy.txt")],
   ["sftp_rename", () => api.sftpRename("host", "/old", "/new")],
   ["sftp_upload", () => api.sftpUpload("host", ["/local"], "/remote")],
   ["edit_upload", () => api.editUpload("host", "/file", false)],

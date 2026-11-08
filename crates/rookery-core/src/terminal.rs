@@ -31,12 +31,13 @@ pub struct Terminals {
     events: broadcast::Sender<CoreEvent>,
     map: Arc<Mutex<HashMap<String, TermHandle>>>,
     db: Arc<Db>,
+    sudo: Arc<crate::sudo::Sudo>,
     logs_dir: std::path::PathBuf,
 }
 
 impl Terminals {
-    pub fn new(conns: Arc<ConnectionManager>, events: broadcast::Sender<CoreEvent>, db: Arc<Db>, logs_dir: std::path::PathBuf) -> Self {
-        Self { conns, events, map: Default::default(), db, logs_dir }
+    pub fn new(conns: Arc<ConnectionManager>, events: broadcast::Sender<CoreEvent>, db: Arc<Db>, sudo: Arc<crate::sudo::Sudo>, logs_dir: std::path::PathBuf) -> Self {
+        Self { conns, events, map: Default::default(), db, sudo, logs_dir }
     }
 
     pub async fn open(&self, req: TermOpen) -> Result<String> {
@@ -52,7 +53,8 @@ impl Terminals {
             }
             ch.exec(
                 true,
-                format!("docker exec -it {container} sh -c 'command -v bash >/dev/null && exec bash || exec sh'"),
+                // With auto sudo the terminal fills sudo's prompt.
+                format!("{}docker exec -it {container} sh -c 'command -v bash >/dev/null && exec bash || exec sh'", self.sudo.terminal_prefix(&req.host_id)),
             )
             .await?;
         } else if let Some(cwd) = req.cwd.as_deref().filter(|c| !c.is_empty()) {
