@@ -2,6 +2,30 @@
 
 The release workflow copies the section for the version (e.g. `## 0.7.0`), plus any versions since the last published release, into the GitHub Release notes, which the in-app updater shows under "What's new".
 
+## 1.1.0
+
+- **Docker with sudo:** when Docker access is denied, **Use sudo…** turns on `sudo docker` for that server (device-local setting). The password comes from the login's saved sudo password, its login password or one typed for this session; it is only ever sent on stdin. The dashboard, Docker view, logs, stats and container shells use it, and terminal `[sudo]` prompts after a sudo command are filled automatically. One refused password pauses all automatic sudo for the server until a new one is entered, so it cannot lock the account. Container output that imitates a sudo prompt is never answered.
+
+- **Docker logs as ZIP:** pick containers and a period (last hour … custom range); one ZIP with a log file per container and a manifest. Streams to disk, can be cancelled, stops at 2 GiB, and the file appears complete or not at all.
+
+- **Search tab:** search file contents (grep) or names (find) in a folder on the server or this computer. Every filter is visible: case, whole word, regex, files to include/skip, folders to skip, hidden files, symbolic links, depth and result limit. Typing searches after a pause; a new search cancels the previous one on the server; searches run at low priority with a 60 s limit. Results open in the editor at the matching line. Needs `find`, `xargs` and `grep` on the server.
+
+- **Open with sudo:** files your login cannot read offer **Open with sudo** (never automatic); reloading and saving such a tab use sudo too. Up to 5 MB.
+
+- **Files and editor tree:** ⋮ / right-click menus with New file, New folder, Rename, Duplicate, Copy path, ZIP, tar.gz, Extract, Permissions, Make executable, Follow in Logs and Delete. Names without an extension (`Dockerfile`) and dot files work. Nothing is ever overwritten; production deletes need the name typed. Archives run in the background with Cancel, appear complete or not at all, and refuse unsafe paths and links (Python 3 on the server). Multi-select in Files (Ctrl/⌘/Shift-click) deletes after one confirmation. Open tabs and pins follow renames; unsaved tabs block rename/delete.
+
+- **Editor:** quick open (⌘P / Ctrl+P) with recent files; recent folders in Files; a tab menu (close others/saved/all, rename, copy path, show in Files).
+
+- **Git:** discard all changes in a folder (the confirmation lists every file; staged changes stay), file history following renames, and blame.
+
+- **Host editor:** new hosts start with a new login. **Copy connection** copies `ssh user@host`; **Copy credentials** copies address, port, user and password after asking the master password every time, and empties the clipboard 30 s later.
+
+- **Layout:** the server view bar stays on one line; views that do not fit move into a ⋯ menu and the active view always stays visible.
+
+- **Fixes:** fewer Docker refreshes (health checks no longer trigger them; spaced out under sudo); a failed reconnect stops Docker collectors instead of leaving some in the old mode; the log download period is computed when you click Download; commands Rookery sends to a new terminal no longer trigger "command finished" notifications.
+
+Verified with unit and interaction tests, real local grep/find/Git/archive runs and the mocked UI. Sudo, search, archives and Git history on live Linux servers have had limited testing.
+
 ## 1.0.0
 
 - **Global notifications:** a shared notification center keeps operation results available across workspaces, with unread counts, clear-all controls and desktop notification permission/testing.

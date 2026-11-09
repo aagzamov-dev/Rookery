@@ -4535,7 +4535,7 @@ dependencies = [
 
 [[package]]
 name = "rookery-core"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -4575,7 +4575,7 @@ dependencies = [
 
 [[package]]
 name = "rookery-tauri"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "mac-usernotifications",
  "parking_lot",
