@@ -3,7 +3,7 @@ import { Check, Copy, KeyRound } from "lucide-react";
 import { api, asCoreError } from "../../ipc/api";
 import { copyText, readClipboard } from "../../ipc/clipboard";
 import { askText } from "../../stores/dialogs";
-import { CLEAR_AFTER_MS, credentialsText } from "./credentials";
+import { CLEAR_AFTER_MS, connectionCommand, credentialsText } from "./credentials";
 import type { AuthKind } from "../../ipc/bindings/AuthKind";
 import type { EnvLabel } from "../../ipc/bindings/EnvLabel";
 import type { Host } from "../../ipc/bindings/Host";
@@ -81,10 +81,12 @@ export function HostEditor({ draft, onClose }: { draft: HostDraft; onClose: () =
     setTimeout(() => setCopied((c) => (c === what ? null : c)), 1500);
   };
 
-  const copyUsername = async () => {
-    if (!username) return;
+  /** `ssh user@host` (with -p when not 22); no password, so no master password needed. */
+  const connection = h.address.trim() && username ? connectionCommand({ address: h.address.trim(), port: h.port, username }) : "";
+  const copyConnection = async () => {
+    if (!connection) return;
     try {
-      await copyText(username);
+      await copyText(connection);
       flash("user");
     } catch (e) {
       setErr(e instanceof Error ? e.message : asCoreError(e).message);
@@ -244,11 +246,11 @@ export function HostEditor({ draft, onClose }: { draft: HostDraft; onClose: () =
           <Button
             type="button"
             className="h-7 px-2.5 text-xs"
-            disabled={!username}
-            onClick={() => void copyUsername()}
-            title={username ? `Copy the username “${username}”` : "No username yet"}
+            disabled={!connection}
+            onClick={() => void copyConnection()}
+            title={connection ? `Copy “${connection}”` : "Enter the address and choose a login first"}
           >
-            {copied === "user" ? <Check size={13} className="text-ok" /> : <Copy size={13} />} {copied === "user" ? "Copied" : "Copy username"}
+            {copied === "user" ? <Check size={13} className="text-ok" /> : <Copy size={13} />} {copied === "user" ? "Copied" : "Copy connection"}
           </Button>
           <Button
             type="button"

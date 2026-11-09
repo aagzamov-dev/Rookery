@@ -768,7 +768,8 @@ mod tests {
     fn git_commands_work_in_new_and_existing_repositories() {
         let dir = repository();
         let folder = dir.path();
-        let name = "space ' quote\nfile";
+        // Windows does not allow a line break in a file name.
+        let name = if cfg!(windows) { "space ' quote file" } else { "space ' quote\nfile" };
         std::fs::write(folder.join(name), "first\n").unwrap();
         assert_eq!(local_status(folder).files[0].path, name);
         local_action(

@@ -11,3 +11,12 @@ export function credentialsText(c: { address: string; port: number; username: st
 
 /** Clipboard holding a password is emptied after this long (if it still holds it). */
 export const CLEAR_AFTER_MS = 30_000;
+
+/** Quote for a POSIX shell only when needed (`deploy` stays as is). */
+const sh = (v: string) => (/^[\w.@%+=:,/-]+$/.test(v) ? v : `'${v.replace(/'/g, `'\\''`)}'`);
+
+/** "Copy connection": the ssh command for this host (no password). */
+export function connectionCommand(c: { address: string; port: number; username: string }): string {
+  const target = c.username ? `${c.username}@${c.address}` : c.address;
+  return `ssh ${c.port && c.port !== 22 ? `-p ${c.port} ` : ""}${sh(target)}`;
+}
