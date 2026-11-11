@@ -2,6 +2,10 @@
 
 The release workflow copies the section for the version (e.g. `## 0.7.0`), plus any versions since the last published release, into the GitHub Release notes, which the in-app updater shows under "What's new".
 
+## 1.1.1
+
+- **Fixes:** the Docker list no longer goes empty after using the **Problems** filter when the problem container recovers (the filter now turns off with its button). A filter that matches nothing says so and offers **Show all**; the filter also matches compose project names regardless of case. CPU/memory of stopped or recreated containers no longer show old numbers. The Docker list and stats keep updating through Docker daemon restarts and dropped connections over long sessions, instead of stopping after the third one.
+
 ## 1.1.0
 
 - **Docker with sudo:** when Docker access is denied, **Use sudo…** turns on `sudo docker` for that server (device-local setting). The password comes from the login's saved sudo password, its login password or one typed for this session; it is only ever sent on stdin. The dashboard, Docker view, logs, stats and container shells use it, and terminal `[sudo]` prompts after a sudo command are filled automatically. One refused password pauses all automatic sudo for the server until a new one is entered, so it cannot lock the account. Container output that imitates a sudo prompt is never answered.
