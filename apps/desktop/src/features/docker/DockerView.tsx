@@ -38,8 +38,11 @@ export function DockerView({ hostId, visible: active = true }: { hostId: string;
 
   const containers = d?.containers ?? [];
   const f = q.trim().toLowerCase();
+  // The Problems toggle hides once no container is a problem (e.g. after a restart),
+  // so the filter must switch off with it or every row stays hidden with no way back.
+  const onlyProblems = problems && containers.some(isProblem);
   const visible = containers.filter(
-    (c) => (!problems || isProblem(c)) && (!f || c.name.toLowerCase().includes(f) || c.image.toLowerCase().includes(f) || (c.project ?? "").includes(f)),
+    (c) => (!onlyProblems || isProblem(c)) && (!f || c.name.toLowerCase().includes(f) || c.image.toLowerCase().includes(f) || (c.project ?? "").toLowerCase().includes(f)),
   );
   const groups = useMemo(() => {
     const m = new Map<string, Container[]>();
@@ -142,7 +145,7 @@ export function DockerView({ hostId, visible: active = true }: { hostId: string;
             {running} running · {containers.length - running} stopped
           </span>
           {problemCount > 0 && (
-            <button onClick={() => setProblems(!problems)} className={clsx("h-6 rounded-full px-2.5 text-xs", problems ? "bg-[#352F20] text-[#F7CB6A]" : "border border-[#6A5828] text-[#F7CB6A]")}>
+            <button onClick={() => setProblems(!onlyProblems)} className={clsx("h-6 rounded-full px-2.5 text-xs", onlyProblems ? "bg-[#352F20] text-[#F7CB6A]" : "border border-[#6A5828] text-[#F7CB6A]")}>
               Problems {problemCount}
             </button>
           )}
@@ -245,6 +248,20 @@ export function DockerView({ hostId, visible: active = true }: { hostId: string;
               </div>
             ))}
             {containers.length === 0 && <div className="px-4 py-6 text-center text-muted">No containers.</div>}
+            {containers.length > 0 && visible.length === 0 && (
+              <div className="px-4 py-6 text-center text-muted">
+                No containers match{onlyProblems ? " the Problems filter" : ""}{f ? ` “${q.trim()}”` : ""}.{" "}
+                <button
+                  className="underline"
+                  onClick={() => {
+                    setQ("");
+                    setProblems(false);
+                  }}
+                >
+                  Show all
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </section>

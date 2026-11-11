@@ -54,7 +54,10 @@ export const useDocker = create<DockerState>((set) => ({
 /** Stats are keyed by full id; `docker stats` may report the short id. */
 export function statsFor(d: HostDocker | undefined, c: Container): ContainerStats | undefined {
   if (!d) return undefined;
-  return d.stats[c.id] ?? Object.values(d.stats).find((s) => c.id.startsWith(s.id) || s.name === c.name);
+  const all = Object.values(d.stats);
+  // Match by id first: a recreated container keeps its name, and a stale entry for the
+  // old one must not show its frozen numbers.
+  return d.stats[c.id] ?? all.find((s) => c.id.startsWith(s.id)) ?? all.find((s) => s.name === c.name);
 }
 
 export function isProblem(c: Container): boolean {

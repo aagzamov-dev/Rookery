@@ -28,6 +28,8 @@ pub const METRICS_MIN_MS: u32 = 1_000;
 const LOG_BATCH_MS: u64 = 150;
 const LOG_BATCH_MAX: usize = 500;
 const STATS_EMIT_MS: u64 = 2_000;
+/// A container missing from `docker stats` this long has stopped (it reports every ~1 s).
+const STATS_STALE: Duration = Duration::from_secs(6);
 
 struct Running {
     refs: u32,
@@ -415,7 +417,8 @@ fn stop_docker(events: &broadcast::Sender<CoreEvent>, host_id: &str, message: &s
 /// `docker ps` once, then again only when `docker events` reports a change.
 async fn docker_loop(lease: Lease, sudo: Arc<Sudo>, events: broadcast::Sender<CoreEvent>, cache: Arc<Mutex<Caches>>) {
     let host_id = lease.host_id().to_string();
-    for attempt in 0..3 {
+    let mut failures = 0;
+    loop {
         let h = match lease.handle().await {
             Ok(h) => h,
             Err(error) => {
@@ -430,6 +433,7 @@ async fn docker_loop(lease: Lease, sudo: Arc<Sudo>, events: broadcast::Sender<Co
         // keep them at least a few seconds apart.
         let gap = if sudo.enabled(&host_id) { RELIST_GAP_SUDO } else { Duration::ZERO };
         let mut last_relist = tokio::time::Instant::now();
+        let started = tokio::time::Instant::now();
         if let Ok(mut rx) = sudo.stream_docker(&h, &host_id, DOCKER_EVENTS_ARGS, true).await {
             let mut lines = LineSplitter::default();
             let mut dirty = false;
@@ -453,12 +457,31 @@ async fn docker_loop(lease: Lease, sudo: Arc<Sudo>, events: broadcast::Sender<Co
                 }
             }
         }
-        if attempt < 2 { tokio::time::sleep(Duration::from_secs(3)).await; }
+        if !retry_stream(&mut failures, started).await { break; }
     }
     let _ = events.send(CoreEvent::DockerList { host_id, containers: Vec::new(), error: Some("Docker event stream stopped after 3 attempts. Use Reload Docker.".into()) });
 }
 
 const RELIST_GAP_SUDO: Duration = Duration::from_secs(5);
+
+/// A stream that stayed up this long was healthy: its end (a Docker daemon restart,
+/// a dropped channel) starts a fresh retry count instead of using up the old one.
+const HEALTHY_STREAM: Duration = Duration::from_secs(60);
+
+/// After a Docker stream ended: count the failure and wait before the next try.
+/// False once 3 streams in a row ended quickly (the caller gives up).
+async fn retry_stream(failures: &mut u32, started: tokio::time::Instant) -> bool {
+    *failures = next_failures(*failures, started.elapsed());
+    if *failures >= 3 {
+        return false;
+    }
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    true
+}
+
+fn next_failures(failures: u32, ran_for: Duration) -> u32 {
+    if ran_for >= HEALTHY_STREAM { 1 } else { failures + 1 }
+}
 
 /// `exec_*` events (health checks run every few seconds, `docker exec`) never change
 /// `docker ps`; health changes arrive as their own `health_status` event.
@@ -494,14 +517,18 @@ async fn relist(
 /// One streaming `docker stats` process; snapshots every 2 s.
 async fn docker_stats_loop(lease: Lease, sudo: Arc<Sudo>, events: broadcast::Sender<CoreEvent>) {
     let host_id = lease.host_id().to_string();
-    for attempt in 0..3 {
+    let mut failures = 0;
+    loop {
+        let started = tokio::time::Instant::now();
         let Ok(h) = lease.handle().await else {
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            if !retry_stream(&mut failures, started).await { break; }
             continue;
         };
         if let Ok(mut rx) = sudo.stream_docker(&h, &host_id, DOCKER_STATS_ARGS, true).await {
             let mut lines = LineSplitter::default();
-            let mut latest: HashMap<String, ContainerStats> = HashMap::new();
+            // Last sample per container and when it came: `docker stats` stops reporting
+            // a container that stopped or was removed, so old entries are dropped.
+            let mut latest: HashMap<String, (ContainerStats, tokio::time::Instant)> = HashMap::new();
             let mut tick = tokio::time::interval(Duration::from_millis(STATS_EMIT_MS));
             loop {
                 tokio::select! {
@@ -509,7 +536,7 @@ async fn docker_stats_loop(lease: Lease, sudo: Arc<Sudo>, events: broadcast::Sen
                         Some(StreamChunk::Data(b)) => {
                             for line in lines.push(&b) {
                                 if let Some(s) = parse_docker_stats_line(&line) {
-                                    latest.insert(s.id.clone(), s);
+                                    latest.insert(s.id.clone(), (s, tokio::time::Instant::now()));
                                 } else if let Some(reason) = docker_stop_reason(&sudo, &host_id, &line) {
                                     stop_docker(&events, &host_id, &reason);
                                     return;
@@ -519,15 +546,18 @@ async fn docker_stats_loop(lease: Lease, sudo: Arc<Sudo>, events: broadcast::Sen
                         _ => break,
                     },
                     _ = tick.tick() => {
-                        if !latest.is_empty() {
-                            let stats = latest.values().cloned().collect();
+                        let before = latest.len();
+                        latest.retain(|_, (_, at)| at.elapsed() < STATS_STALE);
+                        // Also send an emptied list, so the last numbers of a stopped container do not linger.
+                        if !latest.is_empty() || latest.len() != before {
+                            let stats = latest.values().map(|(s, _)| s.clone()).collect();
                             let _ = events.send(CoreEvent::DockerStats { host_id: host_id.clone(), stats });
                         }
                     }
                 }
             }
         }
-        if attempt < 2 { tokio::time::sleep(Duration::from_secs(3)).await; }
+        if !retry_stream(&mut failures, started).await { break; }
     }
     let _ = events.send(CoreEvent::DockerList { host_id, containers: Vec::new(), error: Some("Docker stats stopped after 3 attempts. Use Reload Docker.".into()) });
 }
@@ -653,6 +683,14 @@ fn history_lines(output: &str, file: bool) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retry_count_resets_after_a_healthy_stream() {
+        assert_eq!(next_failures(0, Duration::from_secs(1)), 1);
+        assert_eq!(next_failures(2, Duration::from_secs(1)), 3);
+        // A Docker daemon restart after hours of a good stream is not the 3rd strike.
+        assert_eq!(next_failures(2, HEALTHY_STREAM), 1);
+    }
 
     #[test]
     fn permanent_docker_failures_stop_without_retry() {
