@@ -5,6 +5,8 @@ mod commands;
 mod notifications;
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use parking_lot::Mutex;
 use rookery_core::ssh::Lease;
@@ -19,6 +21,7 @@ pub struct AppState {
 }
 
 pub fn run() {
+    let quitting = Arc::new(AtomicBool::new(false));
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,russh=warn".into()),
@@ -107,6 +110,15 @@ pub fn run() {
             commands::sudo_set,
             commands::docker_logs_export,
             commands::docker_logs_export_cancel,
+            commands::docker_images,
+            commands::docker_images_remove,
+            commands::docker_images_prune,
+            commands::docker_images_export,
+            commands::docker_images_export_cancel,
+            commands::docker_image_archive_inspect,
+            commands::docker_image_import_check,
+            commands::docker_images_import,
+            commands::docker_images_import_cancel,
             commands::file_read_text,
             commands::file_write_text,
             commands::session_attach,
@@ -219,6 +231,26 @@ pub fn run() {
             commands::sql_history,
             commands::sql_history_clear,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Rookery");
+        .build(tauri::generate_context!())
+        .expect("error while building Rookery")
+        .run(move |app, event| {
+            // Quitting during an image import: give it one bounded moment to delete the file it uploaded.
+            if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
+                // Our own `exit(0)` below carries a code; once waiting has begun it is never repeated.
+                if code.is_some() || quitting.load(Ordering::SeqCst) {
+                    return;
+                }
+                let imports = app.state::<AppState>().core.image_imports.clone();
+                if imports.has_running() {
+                    quitting.store(true, Ordering::SeqCst);
+                    api.prevent_exit();
+                    imports.begin_shutdown();
+                    let handle = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        imports.wait_idle(std::time::Duration::from_secs(30)).await;
+                        handle.exit(0);
+                    });
+                }
+            }
+        });
 }

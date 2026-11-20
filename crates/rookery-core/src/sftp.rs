@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -473,6 +474,78 @@ impl Sftp {
         self.transfers.lock().insert(id.clone(), task);
         let _ = start.send(());
         Ok(id)
+    }
+
+    /// Upload `local` to a NEW remote file (created exclusively with mode 600, so an existing file
+    /// is never touched) for a caller that owns the whole pipeline, e.g. the image import: no
+    /// `Transfer` row, no staging rename. `progress` gets the bytes sent so far; `cancel` stops the
+    /// upload (`Ok(false)`). The partly written file is left for the caller to delete.
+    pub(crate) async fn put_new_file(&self, host_id: &str, local: &Path, remote: &str, cancel: &AtomicBool, mut progress: impl FnMut(u64) + Send) -> Result<bool> {
+        let c = self.conn(host_id).await?;
+        let mut src = tokio::fs::File::open(local).await.map_err(|e| Error::Other(format!("Cannot read {}: {e}", local.display())))?;
+        let mut dst = create_staging(&c, remote).await?;
+        let mut buf = vec![0u8; CHUNK];
+        let (mut sent, mut last) = (0u64, Instant::now());
+        // Only trouble on the server side makes the shared session suspect; a local read error does not.
+        let mut server_side = false;
+        let result: Result<bool> = async {
+            loop {
+                if cancel.load(Ordering::SeqCst) {
+                    return Ok(false);
+                }
+                let n = src.read(&mut buf).await.map_err(|e| Error::Other(format!("Cannot read {}: {e}", local.display())))?;
+                if n == 0 {
+                    break;
+                }
+                server_side = true;
+                dst.write_all(&buf[..n]).await?;
+                server_side = false;
+                sent += n as u64;
+                if last.elapsed() >= PROGRESS_EVERY {
+                    progress(sent);
+                    last = Instant::now();
+                }
+            }
+            progress(sent);
+            Ok(true)
+        }
+        .await;
+        let closed = dst.shutdown().await;
+        match result {
+            Ok(true) => closed.map(|_| true).map_err(Error::from),
+            Ok(false) => Ok(false),
+            Err(e) => {
+                if server_side {
+                    self.sessions.lock().await.remove(host_id);
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Forget the cached SFTP session of this server (the next call opens a new one), e.g. after
+    /// an upload was abandoned in the middle of a write.
+    pub(crate) async fn forget_session(&self, host_id: &str) {
+        self.sessions.lock().await.remove(host_id);
+    }
+
+    /// Delete a remote file over SFTP, falling back to `rm -f` (which also succeeds when the file
+    /// was never created). `Err` = the file may still be there.
+    pub(crate) async fn remove_file_best_effort(&self, host_id: &str, remote: &str) -> Result<()> {
+        let sftp = async {
+            let c = self.conn(host_id).await?;
+            c.s.remove_file(remote).await.map_err(sftp_err)
+        };
+        match tokio::time::timeout(Duration::from_secs(30), sftp).await {
+            Ok(Ok(())) => return Ok(()),
+            // "No such file" is an answer, not a broken session.
+            Ok(Err(e)) if e.to_string().to_ascii_lowercase().contains("no such file") => {}
+            _ => self.forget_session(host_id).await,
+        }
+        let lease = self.conns.acquire(host_id).await?;
+        let h = lease.handle().await?;
+        let out = exec(&h, &format!("rm -f -- {} 2>&1", shell_quote(remote)), Duration::from_secs(30)).await?;
+        if out.exit == Some(0) { Ok(()) } else { Err(Error::Other(out.stdout.trim().chars().take(200).collect())) }
     }
 
     /// Upload a local folder (recursively) into `remote_dir` as one transfer.

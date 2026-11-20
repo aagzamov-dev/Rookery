@@ -6,7 +6,8 @@ import { api, asCoreError } from "../../ipc/api";
 import type { Container } from "../../ipc/bindings/Container";
 import { askConfirm } from "../../stores/dialogs";
 import { dockerCli, isProblem, statsFor, useDocker, useDockerSudo } from "../../stores/docker";
-import { DownloadLogsDialog, LogExportStatus, SudoButton, SudoDialog } from "./DockerTools";
+import { DownloadLogsDialog, ImageExportStatus, ImageImportStatus, LogExportStatus, SudoButton, SudoDialog } from "./DockerTools";
+import { DockerTabs, ImagesView, type DockerTab } from "./ImagesView";
 import { useHosts } from "../../stores/hosts";
 import { useSql } from "../../stores/sql";
 import { isDatabaseImage } from "../sql/shortcuts";
@@ -34,6 +35,7 @@ export function DockerView({ hostId, visible: active = true }: { hostId: string;
   const [busy, setBusy] = useState<Record<string, Act | "sql" | undefined>>({});
   const [err, setErr] = useState<string | null>(null);
   const [dialog, setDialog] = useState<"sudo" | "logs" | null>(null);
+  const [tab, setTab] = useState<DockerTab>("containers");
   const remote = hostId !== COMPUTER_ID;
 
   const containers = d?.containers ?? [];
@@ -106,19 +108,31 @@ export function DockerView({ hostId, visible: active = true }: { hostId: string;
     if (key) setTimeout(() => terminalRegistry.focus(key), 50);
   };
 
+  if (tab === "images") return <ImagesView hostId={hostId} visible={active} onTab={setTab} />;
+
+  // Loading and error screens keep the switch, so Images stay reachable while `docker ps` is slow or failing.
+  const frame = (body: React.ReactNode) => (
+    <div className="flex h-full min-h-0 flex-col bg-bg">
+      <div className="flex items-center border-b border-line px-3.5 py-2.5">
+        <DockerTabs value={tab} onChange={setTab} />
+      </div>
+      {body}
+    </div>
+  );
+
   if (!d?.at) {
-    return (
-      <div className="grid h-full place-items-center bg-bg text-muted">
+    return frame(
+      <div className="grid flex-1 place-items-center text-muted">
         <span className="flex items-center gap-2">
           <Loader2 size={14} className="animate-spin" /> Loading containers…
         </span>
-      </div>
+      </div>,
     );
   }
 
   if (d.error && containers.length === 0) {
-    return (
-      <div className="grid h-full place-items-center bg-bg p-6">
+    return frame(
+      <div className="grid flex-1 place-items-center p-6">
         <div className="max-w-md text-center">
           <Box size={26} className="mx-auto mb-3 text-muted" />
           <p className="m-0 leading-relaxed text-muted">{d.error}</p>
@@ -132,7 +146,7 @@ export function DockerView({ hostId, visible: active = true }: { hostId: string;
           </div>
         </div>
         {dialog === "sudo" && <SudoDialog hostId={hostId} onClose={() => setDialog(null)} />}
-      </div>
+      </div>,
     );
   }
 
@@ -140,7 +154,7 @@ export function DockerView({ hostId, visible: active = true }: { hostId: string;
     <div className="flex h-full min-h-0 flex-col gap-3 bg-bg p-3 min-[1250px]:flex-row">
       <section aria-label="Containers" className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-line bg-panel">
         <div className="flex flex-wrap items-center gap-2.5 border-b border-line px-3.5 py-2.5">
-          <h2 className="m-0 text-sm font-semibold">Containers</h2>
+          <DockerTabs value={tab} onChange={setTab} />
           <span className="text-xs text-muted">
             {running} running · {containers.length - running} stopped
           </span>
@@ -170,6 +184,8 @@ export function DockerView({ hostId, visible: active = true }: { hostId: string;
           {remote && <SudoButton hostId={hostId} onOpen={() => setDialog("sudo")} />}
         </div>
         <LogExportStatus hostId={hostId} />
+        <ImageExportStatus hostId={hostId} />
+        <ImageImportStatus hostId={hostId} />
         {err && <div className="border-b border-[#5A2D33] bg-[#33232A] px-3.5 py-2 text-xs text-[#FFA8A8]">{err}</div>}
         <div className="min-h-0 flex-1 overflow-auto">
           <div className="min-w-[640px]">

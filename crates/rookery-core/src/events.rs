@@ -83,6 +83,10 @@ pub enum CoreEvent {
     DatabaseJob { job: crate::sql::backup::DatabaseJob },
     /// Docker "Download logs" progress; the last event has state done | failed | cancelled.
     LogExport { job: crate::logexport::LogExportJob },
+    /// Docker "Download images" progress; the last event has state done | failed | cancelled.
+    ImageExport { job: crate::imageexport::ImageExportJob },
+    /// Docker "Import images" progress; the last event has state done | failed | cancelled.
+    ImageImport { job: crate::imageimport::ImageImportJob },
     VaultLocked,
     VaultUnlocked,
 }

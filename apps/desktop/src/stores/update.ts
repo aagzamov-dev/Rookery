@@ -7,6 +7,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { api } from "../ipc/api";
 import { useFiles } from "./files";
 import { useTabs } from "./tabs";
+import { anyImageImportRunning, useImageImports } from "./docker";
 
 export const RELEASES_URL = "https://github.com/aagzamov-dev/Rookery/releases";
 const PREFS_KEY = "ui.update";
@@ -98,6 +99,8 @@ export const useUpdate = create<UpdateStore>((set, get) => ({
 
   install: async () => {
     if (!pending) return;
+    // Restarting would cut an image import off in the middle (the uploaded file would stay on the server).
+    if (anyImageImportRunning(useImageImports.getState().jobs)) return;
     set({ phase: "downloading", progress: { done: 0, total: null }, error: null });
     try {
       await pending.downloadAndInstall((ev) => {

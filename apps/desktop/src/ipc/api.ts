@@ -28,6 +28,13 @@ import type { FileEntry } from "./bindings/FileEntry";
 import type { KnownHost } from "./bindings/KnownHost";
 import type { LocalShell } from "./bindings/LocalShell";
 import type { Process } from "./bindings/Process";
+import type { DockerImage } from "./bindings/DockerImage";
+import type { ImageExportRequest } from "./bindings/ImageExportRequest";
+import type { ImageArchiveInfo } from "./bindings/ImageArchiveInfo";
+import type { ImageImportRequest } from "./bindings/ImageImportRequest";
+import type { ImportSpaceReport } from "./bindings/ImportSpaceReport";
+import type { ImagePruneResult } from "./bindings/ImagePruneResult";
+import type { ImageRemoveResult } from "./bindings/ImageRemoveResult";
 import type { Service } from "./bindings/Service";
 import type { SessionInfo } from "./bindings/SessionInfo";
 import type { SubParams } from "./bindings/SubParams";
@@ -275,6 +282,22 @@ export const api = {
   /** Download logs as one zip; progress comes as `log_export` events. Returns the job id. */
   dockerLogsExport: (req: LogExportRequest) => invoke<string>("docker_logs_export", { req }),
   dockerLogsExportCancel: (jobId: string) => invoke<void>("docker_logs_export_cancel", { jobId }),
+  /** Images with the containers using each (one row per repository:tag). */
+  dockerImages: (hostId: string) => invoke<DockerImage[]>("docker_images", { hostId }),
+  /** `docker rmi` per reference, never `-f`. `confirmed` = the user accepted the dialog (required on PROD and for this computer). */
+  dockerImagesRemove: (hostId: string, refs: string[], confirmed: boolean) => invoke<ImageRemoveResult>("docker_images_remove", { hostId, refs, confirmed }),
+  /** `docker image prune`; `all` also removes tagged images no container uses. `confirmed` as for remove. */
+  dockerImagesPrune: (hostId: string, all: boolean, confirmed: boolean) => invoke<ImagePruneResult>("docker_images_prune", { hostId, all, confirmed }),
+  /** Save images with one `docker save`; progress comes as `image_export` events. Returns the job id. */
+  dockerImagesExport: (req: ImageExportRequest) => invoke<string>("docker_images_export", { req }),
+  dockerImagesExportCancel: (jobId: string) => invoke<void>("docker_images_export_cancel", { jobId }),
+  /** Read an image file on this computer (nothing is sent anywhere): names, size, size unpacked. Fails for files that are not `docker save` archives. */
+  dockerImageArchiveInspect: (path: string) => invoke<ImageArchiveInfo>("docker_image_archive_inspect", { path }),
+  /** Free space on the server for an import; `problem` set = it must not start. Nothing to check for this computer. */
+  dockerImageImportCheck: (hostId: string, archiveBytes: number, tarBytes: number) => invoke<ImportSpaceReport>("docker_image_import_check", { hostId, archiveBytes, tarBytes }),
+  /** Upload (servers) and `docker load -i`; progress comes as `image_import` events. `confirmed` = the user accepted the import dialog (always required). Returns the job id. */
+  dockerImagesImport: (req: ImageImportRequest, confirmed: boolean) => invoke<string>("docker_images_import", { req, confirmed }),
+  dockerImagesImportCancel: (jobId: string) => invoke<void>("docker_images_import_cancel", { jobId }),
   servicesList: (hostId: string) => invoke<Service[]>("services_list", { hostId }),
   shellIntegrationInstall: (hostId: string, confirmed = false) => remoteChange<number>("shell_integration_install", { hostId }, "Update ~/.bashrc and ~/.zshrc", confirmed),
 

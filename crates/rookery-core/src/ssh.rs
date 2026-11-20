@@ -562,6 +562,57 @@ pub async fn exec_stream_with(handle: &SshHandle, cmd: &str, pty: bool, input: O
     Ok(rx)
 }
 
+/// Output of [`exec_stream_binary`]: stdout and stderr kept apart.
+pub enum BinChunk {
+    Out(Vec<u8>),
+    Err(Vec<u8>),
+    Exit(Option<u32>),
+}
+
+/// Run a command whose stdout is binary (e.g. `docker save`). No pty, and stderr arrives as
+/// [`BinChunk::Err`] instead of being mixed into the data, so nothing but the program's own
+/// stdout can end up in the saved bytes. `stdin` is sent once, then EOF (a `sudo -S` password).
+/// Dropping the receiver closes the channel.
+pub async fn exec_stream_binary(handle: &SshHandle, cmd: &str, stdin: Option<zeroize::Zeroizing<Vec<u8>>>) -> Result<tokio::sync::mpsc::Receiver<BinChunk>> {
+    let mut ch = handle.channel_open_session().await?;
+    ch.exec(true, cmd).await?;
+    if let Some(bytes) = stdin {
+        ch.data(&bytes[..]).await?;
+    }
+    ch.eof().await?;
+    let (tx, rx) = tokio::sync::mpsc::channel(64);
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = tx.closed() => {
+                    let _ = ch.close().await;
+                    break;
+                }
+                msg = ch.wait() => match msg {
+                    Some(ChannelMsg::Data { ref data }) => {
+                        if tx.send(BinChunk::Out(data.to_vec())).await.is_err() {
+                            let _ = ch.close().await;
+                            break;
+                        }
+                    }
+                    Some(ChannelMsg::ExtendedData { ref data, .. }) => {
+                        if tx.send(BinChunk::Err(data.to_vec())).await.is_err() {
+                            let _ = ch.close().await;
+                            break;
+                        }
+                    }
+                    Some(ChannelMsg::ExitStatus { exit_status }) => {
+                        let _ = tx.send(BinChunk::Exit(Some(exit_status))).await;
+                    }
+                    Some(ChannelMsg::Close) | None => break,
+                    _ => {}
+                },
+            }
+        }
+    });
+    Ok(rx)
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum PromptStep {
     None,

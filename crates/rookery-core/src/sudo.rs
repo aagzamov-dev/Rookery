@@ -19,7 +19,7 @@ use zeroize::Zeroizing;
 
 use crate::db::Db;
 use crate::model::AuthKind;
-use crate::ssh::{exec, exec_stream_with, exec_with_input, ExecOutput, SshHandle, StreamChunk, StreamInput};
+use crate::ssh::{exec, exec_stream_binary, exec_stream_with, exec_with_input, BinChunk, ExecOutput, SshHandle, StreamChunk, StreamInput};
 use crate::vault::Vault;
 use crate::{Error, Result};
 
@@ -221,6 +221,19 @@ impl Sudo {
             Elevation::Password(p) => (format!("exec env LC_ALL=C sudo -S -p '' docker {args} 2>&1"), Some(StreamInput::Stdin(line(&p)))),
         };
         exec_stream_with(h, &cmd, pty, input).await
+    }
+
+    /// `docker <args>` whose stdout is binary (`docker save`). Unlike [`Self::stream_docker`] there is
+    /// no `2>&1` and no pty: stderr (including everything sudo says itself) comes separately as
+    /// [`BinChunk::Err`], so only docker's stdout can reach the saved file. The password, if any,
+    /// goes to `sudo -S` on stdin (`-p ''`: no prompt text anywhere).
+    pub async fn stream_docker_binary(&self, h: &SshHandle, host_id: &str, args: &str) -> Result<tokio::sync::mpsc::Receiver<BinChunk>> {
+        let (cmd, input) = match self.docker(host_id)? {
+            Elevation::Plain => (format!("exec docker {args}"), None),
+            Elevation::NoPassword => (format!("exec env LC_ALL=C sudo -n docker {args}"), None),
+            Elevation::Password(p) => (format!("exec env LC_ALL=C sudo -S -p '' docker {args}"), Some(line(&p))),
+        };
+        exec_stream_binary(h, &cmd, input).await
     }
 
     /// Turn sudo's own failure in `text` into an error; a refused password pauses auto sudo.

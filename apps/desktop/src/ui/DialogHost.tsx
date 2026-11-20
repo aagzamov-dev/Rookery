@@ -120,11 +120,11 @@ function Choice({ req }: { req: ChoiceRequest }) {
       width={520}
       footer={
         <>
-          <Button variant="ghost" onClick={() => finish(null)}>
+          <Button variant="ghost" autoFocus={req.focusCancel} onClick={() => finish(null)}>
             Cancel
           </Button>
           {req.choices.map((c, i) => (
-            <Button key={c.id} autoFocus={i === 0} variant={c.variant ?? "outline"} onClick={() => finish(c.id)}>
+            <Button key={c.id} autoFocus={i === 0 && !req.focusCancel} variant={c.variant ?? "outline"} onClick={() => finish(c.id)}>
               {c.label}
             </Button>
           ))}

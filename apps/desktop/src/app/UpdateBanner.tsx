@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ArrowUpCircle, PartyPopper, X } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { askConfirm } from "../stores/dialogs";
+import { anyImageImportRunning, useImageImports } from "../stores/docker";
 import { openWork, RELEASES_URL, useUpdate } from "../stores/update";
 import { Button } from "../ui/primitives";
 
@@ -9,6 +10,7 @@ import { Button } from "../ui/primitives";
 export function UpdateBanner() {
   const u = useUpdate();
   const [notes, setNotes] = useState(false);
+  const importing = useImageImports((s) => anyImageImportRunning(s.jobs));
 
   if (u.justUpdated) {
     return (
@@ -63,7 +65,13 @@ export function UpdateBanner() {
                 {notes ? "Hide" : "What's new"}
               </button>
             )}
-            <Button variant="primary" className="h-7" onClick={() => void start()}>
+            <Button
+              variant="primary"
+              className="h-7"
+              disabled={importing}
+              title={importing ? "An image import is running. Update when it has finished: restarting now would cut it off." : undefined}
+              onClick={() => void start()}
+            >
               {u.phase === "error" ? "Try again" : "Update"}
             </Button>
             <Button variant="ghost" className="h-7" onClick={() => u.later()}>

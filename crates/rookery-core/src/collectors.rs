@@ -206,6 +206,12 @@ pub fn valid_container_ref(s: &str) -> bool {
     !s.is_empty() && s.len() <= 128 && s.chars().all(|c| c.is_ascii_alphanumeric() || "_.-".contains(c))
 }
 
+/// Image references (`repo/name:tag`, `name@sha256:…`, a short id) that are passed to the shell:
+/// only characters that are not special to it, and never a leading `-` (an option).
+pub fn valid_image_ref(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 255 && !s.starts_with('-') && s.chars().all(|c| c.is_ascii_alphanumeric() || "_.-/:@".contains(c))
+}
+
 /// RFC 3339 timestamps for `docker logs --since`.
 pub fn valid_since(s: &str) -> bool {
     !s.is_empty() && s.len() <= 40 && s.chars().all(|c| c.is_ascii_digit() || "TZ:.+-".contains(c))
@@ -473,6 +479,13 @@ cron.service loaded active running Regular background program processing daemon\
     fn validates_refs() {
         assert!(valid_container_ref("shop-app-1"));
         assert!(!valid_container_ref("x; rm -rf /"));
+        assert!(valid_image_ref("ghcr.io/acme/web:1.2.3"));
+        assert!(valid_image_ref("redis@sha256:0123abcd"));
+        assert!(valid_image_ref("0123456789ab"));
+        for bad in ["", "-f", "--all", "nginx; id", "a b", "$(id)", "a`b`", "x|y", "a'b", "a\nb", "a&b", "a>b", "~/x"] {
+            assert!(!valid_image_ref(bad), "{bad:?}");
+        }
+        assert!(!valid_image_ref(&"a".repeat(256)));
         assert!(valid_since("2026-10-15T08:12:44.123456789Z"));
         assert!(!valid_since("$(id)"));
     }

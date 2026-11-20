@@ -536,6 +536,52 @@ where
     Ok(())
 }
 
+/// `docker <args>` on this computer with raw (binary-safe) output, e.g. `docker save`: stdout bytes
+/// arrive untouched as [`crate::ssh::BinChunk::Out`], stderr separately as `Err`, then `Exit`.
+/// Dropping the receiver kills the process.
+pub fn docker_stream_bytes(values: Vec<String>) -> Result<tokio::sync::mpsc::Receiver<crate::ssh::BinChunk>> {
+    use crate::ssh::BinChunk;
+    let mut child = command("docker").args(values).spawn().map_err(|e| {
+        Error::Other(format!(
+            "Cannot start Docker CLI: {e}. Install Docker and restart Rookery, then Reload Docker."
+        ))
+    })?;
+    let mut out = child.stdout.take().unwrap();
+    let mut err = child.stderr.take().unwrap();
+    let (tx, rx) = tokio::sync::mpsc::channel(64);
+    tokio::spawn(async move {
+        let err_tx = tx.clone();
+        let errors = tokio::spawn(async move {
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = err.read(&mut buf).await {
+                if n == 0 || err_tx.send(BinChunk::Err(buf[..n].to_vec())).await.is_err() {
+                    break;
+                }
+            }
+        });
+        let mut buf = vec![0u8; 64 * 1024];
+        loop {
+            tokio::select! {
+                // The receiver is gone (cancelled): returning drops `child`, which kills docker.
+                _ = tx.closed() => { errors.abort(); return; }
+                n = out.read(&mut buf) => match n {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if tx.send(BinChunk::Out(buf[..n].to_vec())).await.is_err() {
+                            errors.abort();
+                            return;
+                        }
+                    }
+                },
+            }
+        }
+        let _ = errors.await;
+        let code = child.wait().await.ok().and_then(|s| s.code()).map(|c| c as u32);
+        let _ = tx.send(BinChunk::Exit(code)).await;
+    });
+    Ok(rx)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -3,12 +3,16 @@ import { useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import { Download, Loader2, ShieldCheck, X } from "lucide-react";
+import { Download, Loader2, ShieldCheck, Upload, X } from "lucide-react";
 import { api, asCoreError } from "../../ipc/api";
 import type { Container } from "../../ipc/bindings/Container";
+import type { ImageExportJob } from "../../ipc/bindings/ImageExportJob";
+import type { ImageImportJob } from "../../ipc/bindings/ImageImportJob";
 import type { LogExportJob } from "../../ipc/bindings/LogExportJob";
-import { useDocker, useDockerSudo, useLogExports } from "../../stores/docker";
+import { useDocker, useDockerImages, useDockerSudo, useImageExports, useImageImports, useLogExports } from "../../stores/docker";
+import { loadedLabel } from "./images";
 import { useHosts } from "../../stores/hosts";
+import { COMPUTER_ID } from "../local/target";
 import { Button, Field, Modal, Select, TextInput } from "../../ui/primitives";
 import { dateInputValue } from "../logs/history";
 
@@ -34,6 +38,7 @@ export function SudoDialog({ hostId, onClose }: { hostId: string; onClose: () =>
       await useDockerSudo.getState().set(hostId, enabled, enabled ? password : undefined, enabled && savePw && !!password);
       // A stopped Docker view (permission error) starts again; running collectors were restarted in the core.
       if (useDocker.getState().byHost[hostId]?.error) useDocker.getState().forget(hostId);
+      if (useDockerImages.getState().byHost[hostId]?.error) useDockerImages.getState().forget(hostId);
       onClose();
     } catch (e) {
       setErr(asCoreError(e).message);
@@ -333,6 +338,121 @@ function ExportRow({ job }: { job: LogExportJob }) {
       )}
       {!running && (
         <button aria-label="Dismiss" onClick={() => dismiss(job.id)} className="text-muted hover:text-text">
+          <X size={12} />
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** Running and finished image downloads of this server, under the Docker header. */
+export function ImageExportStatus({ hostId }: { hostId: string }) {
+  const all = useImageExports((s) => s.jobs);
+  const jobs = Object.values(all).filter((j) => j.host_id === hostId);
+  if (jobs.length === 0) return null;
+  return (
+    <div className="flex flex-col border-b border-line">
+      {jobs.map((j) => (
+        <ImageExportRow key={j.id} job={j} />
+      ))}
+    </div>
+  );
+}
+
+function ImageExportRow({ job }: { job: ImageExportJob }) {
+  const dismiss = useImageExports((s) => s.dismiss);
+  const running = job.state === "running";
+  // The estimate is the sum of the image sizes; shared layers are saved once, so never show 100% before the end.
+  const pct = job.expected_bytes ? Math.min(99, Math.round((job.bytes / job.expected_bytes) * 100)) : 0;
+  const noun = job.total === 1 ? "image" : "images";
+  return (
+    <div className={clsx("flex items-center gap-2 px-3.5 py-1.5 text-xs", job.state === "failed" ? "bg-[#33232A] text-[#FFA8A8]" : "bg-panel2")}>
+      {running ? <Loader2 size={12} className="animate-spin text-accent" /> : <Download size={12} className="text-muted" />}
+      <span className="min-w-0 flex-1 truncate" title={job.state === "failed" ? (job.error ?? undefined) : undefined}>
+        {running && `Saving ${job.current ?? "images"} · ${size(job.bytes)}${job.expected_bytes ? ` of about ${size(job.expected_bytes)}` : ""}`}
+        {job.state === "done" && `Saved ${job.total} ${noun} (${size(job.file_bytes)} file${job.gzip ? `, compressed from ${size(job.bytes)}` : ""})`}
+        {job.state === "cancelled" && "Image download cancelled; nothing was saved."}
+        {job.state === "failed" && `Image download failed: ${job.error ?? "unknown error"}`}
+      </span>
+      {running && job.expected_bytes > 0 && (
+        <span className="h-1.5 w-24 flex-none overflow-hidden rounded-full bg-line" aria-label={`${pct}%`}>
+          <span className="block h-full bg-accent" style={{ width: `${pct}%` }} />
+        </span>
+      )}
+      {running && (
+        <button className="text-accent" onClick={() => void api.dockerImagesExportCancel(job.id)}>
+          Cancel
+        </button>
+      )}
+      {job.state === "done" && (
+        <button className="text-accent" onClick={() => void revealItemInDir(job.path).catch(() => {})}>
+          Show in folder
+        </button>
+      )}
+      {!running && (
+        <button aria-label="Dismiss" onClick={() => dismiss(job.id)} className="text-muted hover:text-text">
+          <X size={12} />
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** Running and finished image imports of this server, under the Docker header. */
+export function ImageImportStatus({ hostId }: { hostId: string }) {
+  const all = useImageImports((s) => s.jobs);
+  const jobs = Object.values(all).filter((j) => j.host_id === hostId);
+  if (jobs.length === 0) return null;
+  return (
+    <div className="flex flex-col border-b border-line">
+      {jobs.map((j) => (
+        <ImageImportRow key={j.id} job={j} />
+      ))}
+    </div>
+  );
+}
+
+const baseName = (path: string) => path.split(/[\\/]/).pop() || path;
+
+function ImageImportRow({ job }: { job: ImageImportJob }) {
+  const dismiss = useImageImports((s) => s.dismiss);
+  const running = job.state === "running";
+  const uploading = running && job.phase === "uploading";
+  const loading = running && job.phase === "loading";
+  const pct = job.total ? Math.min(100, Math.round((job.bytes / job.total) * 100)) : 0;
+  const name = baseName(job.path);
+  const remote = job.host_id !== COMPUTER_ID;
+  const loaded = job.loaded.map(loadedLabel);
+  return (
+    <div className={clsx("flex items-start gap-2 px-3.5 py-1.5 text-xs", job.state === "failed" ? "bg-[#33232A] text-[#FFA8A8]" : "bg-panel2")}>
+      <span className="mt-0.5 flex-none">{running ? <Loader2 size={12} className="animate-spin text-accent" /> : <Upload size={12} className="text-muted" />}</span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate" title={job.state === "failed" ? (job.error ?? undefined) : undefined}>
+          {running && job.phase === "checking" && `Reading ${name}…`}
+          {uploading && `Uploading ${name} · ${size(job.bytes)} of ${size(job.total)}`}
+          {loading && (remote ? `Loading ${name} into Docker on the server (docker load)… this can take several minutes` : `Loading ${name} into Docker (docker load)… this can take several minutes`)}
+          {job.state === "done" && (loaded.length > 0 ? `Imported ${loaded.join(", ")}` : `Imported ${name}; docker load reported no image names`)}
+          {job.state === "cancelled" && "Image import cancelled."}
+          {job.state === "failed" && `Image import failed: ${job.error ?? "unknown error"}`}
+        </span>
+        {job.note && <span className={clsx("block break-words", job.state === "failed" ? "" : "text-muted")}>{job.note}</span>}
+      </span>
+      {uploading && (
+        <span className="mt-1 h-1.5 w-24 flex-none overflow-hidden rounded-full bg-line" aria-label={`${pct}%`}>
+          <span className="block h-full bg-accent" style={{ width: `${pct}%` }} />
+        </span>
+      )}
+      {running && (
+        <button
+          className="flex-none text-accent"
+          title={loading && remote ? "Stops waiting. docker load may keep running on the server and the images may still appear." : undefined}
+          onClick={() => void api.dockerImagesImportCancel(job.id)}
+        >
+          {loading && remote ? "Stop waiting" : "Cancel"}
+        </button>
+      )}
+      {!running && (
+        <button aria-label="Dismiss" onClick={() => dismiss(job.id)} className="mt-0.5 flex-none text-muted hover:text-text">
           <X size={12} />
         </button>
       )}

@@ -2,7 +2,7 @@
 import { api } from "./api";
 import { listen } from "@tauri-apps/api/event";
 import type { CoreEvent } from "./bindings/CoreEvent";
-import { useDocker, useDockerSudo, useLogExports } from "../stores/docker";
+import { useDocker, useDockerSudo, useImageExports, useImageImports, useLogExports } from "../stores/docker";
 import { editKey, useFiles } from "../stores/files";
 import { useLogs } from "../stores/logs";
 import { useSessions } from "../stores/sessions";
@@ -96,6 +96,12 @@ export function dispatch(ev: CoreEvent) {
       break;
     case "log_export":
       useLogExports.getState().received(ev.job);
+      break;
+    case "image_export":
+      useImageExports.getState().received(ev.job);
+      break;
+    case "image_import":
+      useImageImports.getState().received(ev.job);
       break;
     case "sql_result":
       useSql.getState().onResult(ev);

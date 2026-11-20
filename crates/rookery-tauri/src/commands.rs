@@ -479,6 +479,67 @@ pub fn docker_logs_export_cancel(s: State<'_, AppState>, job_id: String) {
     s.core.log_exports.cancel(&job_id);
 }
 
+/// Images of this server (or this computer) with the containers using each.
+#[tauri::command]
+pub async fn docker_images(s: State<'_, AppState>, host_id: String) -> Result<Vec<rookery_core::images::DockerImage>> {
+    rookery_core::images::list(&s.core.connections, &s.core.sudo, &host_id).await
+}
+
+/// `docker rmi` per reference (never `-f`). Local deletes need `confirmed` from the UI dialog.
+#[tauri::command]
+pub async fn docker_images_remove(s: State<'_, AppState>, host_id: String, refs: Vec<String>, confirmed: bool) -> Result<rookery_core::images::ImageRemoveResult> {
+    require_remote_change(&s, &host_id, confirmed)?;
+    if host_id == rookery_core::computer::ID && !confirmed { return Err(Error::Other("Confirm this destructive local Docker action first.".into())); }
+    rookery_core::images::remove(&s.core.connections, &s.core.sudo, &host_id, &refs).await
+}
+
+/// `docker image prune` (`all` = `-a`: every image no container uses).
+#[tauri::command]
+pub async fn docker_images_prune(s: State<'_, AppState>, host_id: String, all: bool, confirmed: bool) -> Result<rookery_core::images::ImagePruneResult> {
+    require_remote_change(&s, &host_id, confirmed)?;
+    if host_id == rookery_core::computer::ID && !confirmed { return Err(Error::Other("Confirm this destructive local Docker action first.".into())); }
+    rookery_core::images::prune(&s.core.connections, &s.core.sudo, &host_id, all).await
+}
+
+/// Download images: one `docker save` → .tar / .tar.gz (progress: `image_export` events).
+#[tauri::command]
+pub async fn docker_images_export(s: State<'_, AppState>, req: rookery_core::imageexport::ImageExportRequest) -> Result<String> {
+    if !s.core.vault.lock().is_unlocked() { return Err(Error::VaultLocked); }
+    s.core.image_exports.start(req)
+}
+
+#[tauri::command]
+pub fn docker_images_export_cancel(s: State<'_, AppState>, job_id: String) {
+    s.core.image_exports.cancel(&job_id);
+}
+
+/// Read an image file on this computer (is it a `docker save` archive, which names, how big).
+#[tauri::command]
+pub async fn docker_image_archive_inspect(s: State<'_, AppState>, path: String) -> Result<rookery_core::imageimport::ImageArchiveInfo> {
+    s.core.image_imports.inspect(&path).await
+}
+
+/// Free space on the server for an import (upload folder and Docker's data folder).
+#[tauri::command]
+pub async fn docker_image_import_check(s: State<'_, AppState>, host_id: String, archive_bytes: u64, tar_bytes: u64) -> Result<rookery_core::imageimport::ImportSpaceReport> {
+    if !s.core.vault.lock().is_unlocked() { return Err(Error::VaultLocked); }
+    s.core.image_imports.check_space(&host_id, archive_bytes, tar_bytes).await
+}
+
+/// Import images: upload (servers), `docker load -i`, clean up (progress: `image_import` events).
+/// Always needs the dialog's `confirmed`: it can take a name from an existing image.
+#[tauri::command]
+pub async fn docker_images_import(s: State<'_, AppState>, req: rookery_core::imageimport::ImageImportRequest, confirmed: bool) -> Result<String> {
+    require_remote_change(&s, &req.host_id, confirmed)?;
+    if !confirmed { return Err(Error::Other("Confirm this Docker image import first.".into())); }
+    s.core.image_imports.start(req)
+}
+
+#[tauri::command]
+pub fn docker_images_import_cancel(s: State<'_, AppState>, job_id: String) {
+    s.core.image_imports.cancel(&job_id);
+}
+
 #[tauri::command]
 pub async fn services_list(s: State<'_, AppState>, host_id: String) -> Result<Vec<Service>> {
     rookery_core::actions::services_list(&s.core.connections, &host_id).await

@@ -19,6 +19,9 @@ pub mod events;
 pub mod forward;
 pub mod git;
 pub mod computer;
+pub mod imageexport;
+pub mod imageimport;
+pub mod images;
 pub mod importers;
 pub mod logexport;
 pub mod search;
@@ -64,6 +67,8 @@ pub struct Core {
     pub editor: Arc<editor::Editor>,
     pub sudo: Arc<sudo::Sudo>,
     pub log_exports: Arc<logexport::LogExports>,
+    pub image_exports: Arc<imageexport::ImageExports>,
+    pub image_imports: Arc<imageimport::ImageImports>,
     pub search: Arc<search::Search>,
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     pub local: Arc<local::LocalTerminals>,
@@ -102,6 +107,8 @@ impl Core {
         let database_files = Arc::new(sql::backup::DatabaseFiles::new(sql.clone(), db.clone(), sftp.clone(), connections.clone(), events.clone(), data_dir.join("database-jobs")));
         // Local copies of edited files: never synced, never in backups (they may hold secrets).
         let log_exports = Arc::new(logexport::LogExports::new(db.clone(), connections.clone(), sudo.clone(), events.clone()));
+        let image_exports = Arc::new(imageexport::ImageExports::new(db.clone(), connections.clone(), sudo.clone(), events.clone()));
+        let image_imports = Arc::new(imageimport::ImageImports::new(db.clone(), connections.clone(), sudo.clone(), sftp.clone(), events.clone()));
         let search = Arc::new(search::Search::new(connections.clone()));
         let editor = Arc::new(editor::Editor::new(sftp.clone(), db.clone(), vault.clone(), data_dir.join("editor-backups")));
 
@@ -120,6 +127,8 @@ impl Core {
             editor,
             sudo,
             log_exports,
+            image_exports,
+            image_imports,
             search,
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             local: Arc::new(local::LocalTerminals::new(events.clone())),
@@ -145,14 +154,21 @@ impl Core {
         self.backup.lock();
         self.database_files.cancel_all();
         self.log_exports.cancel_all();
+        self.image_exports.cancel_all();
+        // Locked first: nothing new can start (imports are refused), and the secrets are gone right away.
+        self.image_imports.begin_shutdown();
+        self.vault.lock().lock();
+        self.sudo.clear();
+        // A cancelled import deletes the file it uploaded (SFTP / `rm`, no vault or sudo needed) over
+        // its session, which is still open: wait for that before the connections close.
+        self.image_imports.wait_idle(std::time::Duration::from_secs(30)).await;
+        self.image_imports.allow_new();
         self.sql.close_all().await;
         self.subscriptions.stop_all().await;
         if close_sessions {
             self.terminals.close_all().await;
             self.connections.close_all().await;
         }
-        self.vault.lock().lock();
-        self.sudo.clear();
         let _ = self.events.send(CoreEvent::VaultLocked);
     }
 }

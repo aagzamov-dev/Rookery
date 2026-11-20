@@ -24,6 +24,8 @@ export interface ChoiceRequest {
   body?: string;
   /** Buttons, left to right; Cancel is always added. */
   choices: { id: string; label: string; variant?: "primary" | "danger" | "outline" }[];
+  /** Focus Cancel instead of the first choice (destructive choices: Enter must not run them). */
+  focusCancel?: boolean;
   resolve: (choice: string | null) => void;
 }
 
