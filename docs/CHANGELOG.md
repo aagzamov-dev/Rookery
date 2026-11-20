@@ -2,6 +2,14 @@
 
 The release workflow copies the section for the version (e.g. `## 0.7.0`), plus any versions since the last published release, into the GitHub Release notes, which the in-app updater shows under "What's new".
 
+## 1.2.0
+
+- **Docker Images tab:** next to Containers. All images newest first with size, created time and an **In use** badge naming the containers that use each one; search, an **Unused** filter and Refresh. Select images to **Download** them as one `.tar` or `.tar.gz` (restore with `docker load -i`; streams to disk with progress and Cancel, appears complete or not at all) or **Delete** them (`docker rmi`, never forced; images still in use are named and refused). **Clean up** removes dangling or all unused images and shows the space freed.
+
+- **Import images:** pick a `.tar` / `.tar.gz` made with `docker save`. The file is checked on this computer before anything is sent: it lists the image names, warns about each name that already exists on the server (and says when it is the same image, unchanged), and refuses damaged or crafted files. On a server it checks free disk space (including Docker's peak need), uploads to a temporary file, runs `docker load` and always removes the temporary file, also on failure or Cancel. Works with auto sudo.
+
+- **Production servers:** deleting, cleaning up and importing images need the server name typed.
+
 ## 1.1.1
 
 - **Fixes:** the Docker list no longer goes empty after using the **Problems** filter when the problem container recovers (the filter now turns off with its button). A filter that matches nothing says so and offers **Show all**; the filter also matches compose project names regardless of case. CPU/memory of stopped or recreated containers no longer show old numbers. The Docker list and stats keep updating through Docker daemon restarts and dropped connections over long sessions, instead of stopping after the third one.
